@@ -1,8 +1,11 @@
 <script lang="ts">
   import { api, type Cluster, type TopicSummary } from '../lib/api'
-  import { fmt } from '../lib/format'
+  import { fmt, bytes } from '../lib/format'
   import { href, go } from '../lib/router.svelte'
   import Modal from '../lib/Modal.svelte'
+  import MoreRows from '../lib/MoreRows.svelte'
+  import { forgetNames } from '../lib/names'
+  import { ArrowDown, ArrowUp, RefreshCw, Plus } from '@lucide/svelte'
 
   let { cluster }: { cluster: Cluster } = $props()
 
@@ -31,11 +34,18 @@
     const q = search.trim().toLowerCase()
     const list = topics.filter((t) => (showInternal || !t.internal) && (!q || t.name.toLowerCase().includes(q)))
     return list.sort((a, b) => {
-      const av = a[sortKey]
-      const bv = b[sortKey]
+      const av = a[sortKey] ?? ''
+      const bv = b[sortKey] ?? ''
       const r = typeof av === 'string' ? av.localeCompare(bv as string) : (av as number) - (bv as number)
       return sortDesc ? -r : r
     })
+  })
+
+  const page = 200
+  let shown = $state(page)
+  $effect(() => {
+    void search, showInternal, sortKey, sortDesc
+    shown = page
   })
 
   function sort(key: keyof TopicSummary) {
@@ -68,6 +78,7 @@
         configs,
       })
       creating = false
+      forgetNames(cluster.name)
       go(cluster.name, 'topics', form.name.trim())
     } catch (e: any) {
       createError = e.message
@@ -81,17 +92,17 @@
   <h1>Topics</h1>
   <span class="faint">{rows.length}</span>
   <span class="spacer"></span>
-  <button onclick={load} disabled={loading}>Yenile</button>
+  <button onclick={load} disabled={loading}><RefreshCw size={14} class={loading ? 'animate-spin' : ''} />Refresh</button>
   <button class="primary" disabled={cluster.read_only} onclick={() => {
     form = { name: '', partitions: 3, replication_factor: 0, configs: '' }
     createError = ''
     creating = true
-  }}>Topic oluştur</button>
+  }}><Plus size={14} />Create topic</button>
 </div>
 
-<div class="row filters">
-  <input type="search" placeholder="Topic ara…" bind:value={search} />
-  <label class="check"><input type="checkbox" bind:checked={showInternal} /> Internal topic'leri göster</label>
+<div class="filters">
+  <input type="search" placeholder="Search topics…" bind:value={search} />
+  <label class="check"><input type="checkbox" bind:checked={showInternal} /> Show internal topics</label>
 </div>
 
 {#if error}
@@ -101,15 +112,17 @@
     <table>
       <thead>
         <tr>
-          <th><button class="ghost th" onclick={() => sort('name')}>Ad {sortKey === 'name' ? (sortDesc ? '↓' : '↑') : ''}</button></th>
-          <th class="num"><button class="ghost th" onclick={() => sort('partitions')}>Partitions {sortKey === 'partitions' ? (sortDesc ? '↓' : '↑') : ''}</button></th>
+          <th><button class="ghost th" onclick={() => sort('name')}>Name {#if sortKey === 'name'}{#if sortDesc}<ArrowDown size={12} />{:else}<ArrowUp size={12} />{/if}{/if}</button></th>
+          <th class="num"><button class="ghost th" onclick={() => sort('partitions')}>Partitions {#if sortKey === 'partitions'}{#if sortDesc}<ArrowDown size={12} />{:else}<ArrowUp size={12} />{/if}{/if}</button></th>
           <th class="num">RF</th>
-          <th class="num"><button class="ghost th" onclick={() => sort('messages')}>Mesaj {sortKey === 'messages' ? (sortDesc ? '↓' : '↑') : ''}</button></th>
-          <th class="num"><button class="ghost th" onclick={() => sort('under_replicated')}>Under-replicated {sortKey === 'under_replicated' ? (sortDesc ? '↓' : '↑') : ''}</button></th>
+          <th class="num"><button class="ghost th" onclick={() => sort('messages')}>Messages {#if sortKey === 'messages'}{#if sortDesc}<ArrowDown size={12} />{:else}<ArrowUp size={12} />{/if}{/if}</button></th>
+          <th class="num"><button class="ghost th" onclick={() => sort('size')}>Size {#if sortKey === 'size'}{#if sortDesc}<ArrowDown size={12} />{:else}<ArrowUp size={12} />{/if}{/if}</button></th>
+          <th>Cleanup</th>
+          <th class="num"><button class="ghost th" onclick={() => sort('under_replicated')}>Under-replicated {#if sortKey === 'under_replicated'}{#if sortDesc}<ArrowDown size={12} />{:else}<ArrowUp size={12} />{/if}{/if}</button></th>
         </tr>
       </thead>
       <tbody>
-        {#each rows as t (t.name)}
+        {#each rows.slice(0, shown) as t (t.name)}
           <tr>
             <td>
               <a class="mono" href={href(cluster.name, 'topics', t.name)}>{t.name}</a>
@@ -118,42 +131,38 @@
             <td class="num">{t.partitions}</td>
             <td class="num">{t.replication_factor}</td>
             <td class="num">{fmt(t.messages)}</td>
+            <td class="num">{t.size >= 0 ? bytes(t.size) : '—'}</td>
+            <td class="muted">{t.cleanup_policy ?? '—'}</td>
             <td class="num">
               {#if t.under_replicated > 0}<span class="badge warn">{t.under_replicated}</span>{:else}<span class="faint">0</span>{/if}
             </td>
           </tr>
         {:else}
-          <tr><td colspan="5" class="empty">{loading ? 'Yükleniyor…' : search ? 'Aramayla eşleşen topic yok.' : 'Bu cluster\'da topic yok.'}</td></tr>
+          <tr><td colspan="7" class="empty">{loading ? 'Loading…' : search ? 'No topics match your search.' : 'This cluster has no topics.'}</td></tr>
         {/each}
       </tbody>
     </table>
+    <MoreRows total={rows.length} bind:shown step={page} />
   </div>
 {/if}
 
-<Modal title="Topic oluştur" bind:open={creating}>
-  <label>Ad <input bind:value={form.name} placeholder="orders.created" /></label>
+<Modal title="Create topic" bind:open={creating}>
+  <label>Name <input bind:value={form.name} placeholder="orders.created" /></label>
   <div class="grid2">
     <label>Partitions <input type="number" min="1" bind:value={form.partitions} /></label>
-    <label>Replication factor <input type="number" min="0" bind:value={form.replication_factor} placeholder="0 = broker varsayılanı" /></label>
+    <label>Replication factor <input type="number" min="0" bind:value={form.replication_factor} placeholder="0 = broker default" /></label>
   </div>
-  <label>Config (her satıra bir key=value)
+  <label>Config (one key=value per line)
     <textarea rows="4" bind:value={form.configs} placeholder={'retention.ms=604800000\ncleanup.policy=delete'}></textarea>
   </label>
-  <p class="faint hint">Replication factor 0 olursa broker varsayılanı kullanılır.</p>
+  <p class="faint hint">A replication factor of 0 uses the broker default.</p>
   {#if createError}<div class="error">{createError}</div>{/if}
   {#snippet footer()}
-    <button onclick={() => (creating = false)}>Vazgeç</button>
-    <button class="primary" disabled={busy || !form.name.trim()} onclick={create}>{busy ? 'Oluşturuluyor…' : 'Oluştur'}</button>
+    <button onclick={() => (creating = false)}>Cancel</button>
+    <button class="primary" disabled={busy || !form.name.trim()} onclick={create}>{busy ? 'Creating…' : 'Create'}</button>
   {/snippet}
 </Modal>
 
 <style>
-  .head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
-  .filters { margin-bottom: 12px; }
-  .filters input[type='search'] { width: 320px; }
-  .check { display: flex; flex-direction: row; align-items: center; gap: 6px; font-weight: 400; }
-  .th { padding: 0; font-size: 12px; color: inherit; font-weight: 500; }
-  td .badge { margin-left: 6px; }
-  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
   .hint { font-size: 12px; }
 </style>

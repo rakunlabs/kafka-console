@@ -1,68 +1,220 @@
-:root {
-  /* Palette: one neutral scale and one accent. Change these to re-theme. */
-  --bg: #f6f7f9;
-  --surface: #ffffff;
-  --surface-2: #f1f3f5;
-  --border: #e3e6ea;
-  --border-strong: #cdd2d8;
-  --text: #1f2328;
-  --text-2: #59636e;
-  --text-3: #8b949e;
-  --accent: #2f6fdb;
-  --accent-soft: #e8f0fc;
-  --danger: #c93c37;
-  --danger-soft: #fdecec;
-  --warn: #b7791f;
-  --warn-soft: #fdf4e3;
-  --ok: #2b8a57;
-  --ok-soft: #e6f4ec;
+@import 'tailwindcss';
+@import '@fontsource-variable/inter';
+@import '@fontsource-variable/geist-mono';
 
-  --radius: 6px;
-  --font: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
-  --mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
+/* Expose the palette to Tailwind utilities (bg-surface, text-ink-2, border-line …).
+   Values stay CSS variables so light/dark switching keeps working. */
+@theme inline {
+  --color-bg: var(--bg);
+  --color-sidebar: var(--sidebar);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-line: var(--border);
+  --color-line-strong: var(--border-strong);
+  --color-line-dash: var(--line-dash);
+  --color-ink: var(--text);
+  --color-ink-2: var(--text-2);
+  --color-ink-3: var(--text-3);
+  --color-link: var(--accent);
+  --color-cta: var(--cta);
+  --color-cta-hover: var(--cta-hover);
+  --color-cta-ink: var(--cta-text);
+  --color-cta-line: var(--cta-border);
+  --color-sel: var(--sel);
+  --color-hover: var(--row-hover);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-danger-line: var(--danger-border);
+  --color-warn: var(--warn);
+  --color-warn-soft: var(--warn-soft);
+  --color-ok: var(--ok);
+  --color-ok-soft: var(--ok-soft);
+  --font-sans: var(--font);
+  --font-mono: var(--mono);
+}
+
+:root {
+  /* Warm paper neutrals, one yellow highlight, ink-blue links. */
+  --bg: #f6f6f3;
+  --sidebar: #edede8;
+  --surface: #fbfbf9;
+  --surface-2: #edede8;
+  --border: #dcdcd5;
+  --border-strong: #cfcfc9;
+  --line-dash: #bebeb6;
+  --text: #222220;
+  --text-2: #50504b;
+  --text-3: #6b6b66;
+  --accent: #4f39f6;
+  --accent-soft: #ecebfd;
+  --accent-hover: #3d27e0;
+  --cta: #fbff81;
+  --cta-hover: #f2f65c;
+  --cta-text: #222220;
+  --cta-border: #b8b6a0;
+  --sel: #f6f8c2;
+  --hatch: rgb(34 34 32 / .09);
+  --danger: #c4372f;
+  --danger-soft: #fbeceb;
+  --danger-border: #ebbab6;
+  --warn: #a8650c;
+  --warn-soft: #fbf1df;
+  --ok: #2d7d4f;
+  --ok-soft: #e5f2ea;
+  --focus: #222220;
+  --stripe: #efefea;
+  --grid-line: rgb(34 34 32 / .055);
+  --cell-ink: rgb(34 34 32 / .05);
+  --cell-ink-strong: rgb(214 220 40 / .32);
+  --row-hover: #e6e6df;
+  --syn-key: #2b5c8a;
+  --syn-str: #2d7d4f;
+  --syn-num: #a8650c;
+  --syn-kw: #8a3ffc;
+  --syn-var: #4f39f6;
+
+  --radius: 3px;
+  --font: 'Inter Variable', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --mono: 'Geist Mono Variable', ui-monospace, 'SF Mono', Menlo, monospace;
 
   color-scheme: light;
-  font: 14px/1.45 var(--font);
+  font: 14px/1.5 var(--font);
+  font-feature-settings: 'cv11', 'ss01';
   color: var(--text);
   background: var(--bg);
+  caret-color: var(--accent);
   -webkit-font-smoothing: antialiased;
 }
 
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --bg: #171714;
+    --sidebar: #1e1e1b;
+    --surface: #1b1b18;
+    --surface-2: #252522;
+    --border: #2c2c29;
+    --border-strong: #3a3a36;
+    --line-dash: #3a3a35;
+    --text: #e8e8e4;
+    --text-2: #b4b4ae;
+    --text-3: #8d8d86;
+    --accent: #8f9bfa;
+    --accent-soft: #24253b;
+    --accent-hover: #a9b2fb;
+    --cta: #4c4d23;
+    --cta-hover: #5a5b29;
+    --cta-text: #f6f9a0;
+    --cta-border: #6c6d36;
+    --sel: #2e2f1c;
+    --hatch: rgb(232 232 228 / .07);
+    --danger: #f0817b;
+    --danger-soft: #361d1b;
+    --danger-border: #6b3431;
+    --warn: #e3b05c;
+    --warn-soft: #362c18;
+    --ok: #67c792;
+    --ok-soft: #1a3024;
+    --focus: #f2f65c;
+    --stripe: #23231f;
+  --grid-line: rgb(232 232 228 / .045);
+  --cell-ink: rgb(232 232 228 / .05);
+  --cell-ink-strong: rgb(228 232 106 / .2);
+    --grid-line: rgb(232 232 228 / .045);
+    --cell-ink: rgb(232 232 228 / .05);
+    --cell-ink-strong: rgb(228 232 106 / .2);
+    --row-hover: #2c2c28;
+    --syn-key: #8cc4f0;
+    --syn-str: #67c792;
+    --syn-num: #e3b05c;
+    --syn-kw: #c49bff;
+    --syn-var: #8f9bfa;
+    color-scheme: dark;
+  }
+}
+:root[data-theme='dark'] {
+  --bg: #171714;
+  --sidebar: #1e1e1b;
+  --surface: #1b1b18;
+  --surface-2: #252522;
+  --border: #2c2c29;
+  --border-strong: #3a3a36;
+  --line-dash: #3a3a35;
+  --text: #e8e8e4;
+  --text-2: #b4b4ae;
+  --text-3: #8d8d86;
+  --accent: #8f9bfa;
+  --accent-soft: #24253b;
+  --accent-hover: #a9b2fb;
+  --cta: #4c4d23;
+  --cta-hover: #5a5b29;
+  --cta-text: #f6f9a0;
+  --cta-border: #6c6d36;
+  --sel: #2e2f1c;
+  --hatch: rgb(232 232 228 / .07);
+  --danger: #f0817b;
+  --danger-soft: #361d1b;
+  --danger-border: #6b3431;
+  --warn: #e3b05c;
+  --warn-soft: #362c18;
+  --ok: #67c792;
+  --ok-soft: #1a3024;
+  --focus: #f2f65c;
+  --stripe: #23231f;
+  --grid-line: rgb(232 232 228 / .045);
+  --cell-ink: rgb(232 232 228 / .05);
+  --cell-ink-strong: rgb(228 232 106 / .2);
+  --row-hover: #2c2c28;
+  --syn-key: #8cc4f0;
+  --syn-str: #67c792;
+  --syn-num: #e3b05c;
+  --syn-kw: #c49bff;
+  --syn-var: #8f9bfa;
+  color-scheme: dark;
+}
+
+@layer base {
 * { box-sizing: border-box; }
 body { margin: 0; }
 h1, h2, h3, p { margin: 0; }
-h1 { font-size: 20px; font-weight: 600; }
-h2 { font-size: 15px; font-weight: 600; }
-a { color: var(--accent); text-decoration: none; }
+h1 { font-size: 26px; font-weight: 500; letter-spacing: -.015em; line-height: 1.2; text-wrap: balance; }
+h2 { font-size: 15px; font-weight: 600; letter-spacing: -.005em; }
+a { color: var(--accent); text-decoration: none; text-underline-offset: 3px; }
 a:hover { text-decoration: underline; }
-code, .mono { font-family: var(--mono); font-size: 13px; }
-h1.mono { font-size: 18px; }
+code, .mono { font-family: var(--mono); font-size: 12.5px; }
+h1.mono, h1 .mono { font-size: 22px; letter-spacing: -.01em; }
 h2.mono, h2 .mono { font-size: 14px; }
 .num { font-variant-numeric: tabular-nums; text-align: right; }
 .muted { color: var(--text-2); }
 .faint { color: var(--text-3); }
 
+::selection { background: var(--cta); color: var(--cta-text); }
+* { scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
+
 button, .btn {
   font: inherit;
   font-weight: 500;
   font-size: 13px;
+  line-height: 1.4;
   border: 1px solid var(--border-strong);
   background: var(--surface);
   color: var(--text);
   border-radius: var(--radius);
-  padding: 6px 12px;
+  padding: 5px 11px;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
   gap: 6px;
   white-space: nowrap;
+  transition: background-color .12s, border-color .12s;
 }
 button:hover:not(:disabled) { background: var(--surface-2); }
-button:disabled { opacity: .5; cursor: not-allowed; }
-button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-button.primary:hover:not(:disabled) { background: #2760c2; }
-button.danger { color: var(--danger); border-color: #eab8b6; }
-button.danger.solid { background: var(--danger); border-color: var(--danger); color: #fff; }
+button:disabled { opacity: .45; cursor: not-allowed; }
+button.primary { background: var(--cta); border-color: var(--cta-border); color: var(--cta-text); }
+button.primary:hover:not(:disabled) { background: var(--cta-hover); }
+button.danger { color: var(--danger); border-color: var(--danger-border); }
+button.ghost.danger { border-color: transparent; }
+button.danger.solid { background: var(--danger); border-color: var(--danger); color: var(--surface); }
+button.danger.solid:hover:not(:disabled) { background: var(--danger); filter: brightness(1.08); }
 button.ghost { border-color: transparent; background: transparent; }
 
 input, select, textarea {
@@ -72,20 +224,91 @@ input, select, textarea {
   background: var(--surface);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius);
-  padding: 6px 10px;
+  padding: 5px 9px;
   min-width: 0;
 }
-textarea { font-family: var(--mono); resize: vertical; }
-input:focus, select:focus, textarea:focus, button:focus-visible {
-  outline: 2px solid var(--accent);
+input::placeholder, textarea::placeholder { color: var(--text-3); }
+/* Customizable select where supported: the option list is drawn in the app's
+   style instead of the OS menu, with the check mark at the right edge.
+   Other browsers keep the native control. */
+select.noicon { appearance: none; }
+@supports (appearance: base-select) {
+  select, select.noicon, ::picker(select) { appearance: base-select; }
+  select { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+  select::picker-icon {
+    content: '';
+    width: 7px;
+    height: 7px;
+    margin: -3px 2px 0 auto;
+    border-right: 1.5px solid currentColor;
+    border-bottom: 1.5px solid currentColor;
+    color: var(--text-3);
+    transform: rotate(45deg);
+    transition: transform .12s ease-out;
+  }
+  select:open::picker-icon { transform: translateY(3px) rotate(225deg); }
+  select.noicon::picker-icon { display: none; }
+  ::picker(select) {
+    margin-block: 3px;
+    padding: 3px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius);
+    background: var(--surface);
+    color: var(--text);
+    box-shadow: 0 6px 20px -8px rgb(0 0 0 / .25);
+    max-height: min(320px, 60vh);
+  }
+  option {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 5px 8px;
+    border-radius: 2px;
+    font-size: 13px;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+  option:hover, option:focus-visible { background: var(--row-hover); outline: none; }
+  option:checked { font-weight: 500; }
+  option::checkmark { order: 1; margin-left: auto; padding-left: 12px; content: '✓'; font-size: 12px; }
+  option:disabled { color: var(--text-3); cursor: default; }
+}
+textarea { font-family: var(--mono); font-size: 12.5px; resize: vertical; }
+input:not([type='checkbox']):not([type='radio']):focus, select:focus, textarea:focus, button:focus-visible, a:focus-visible {
+  outline: 2px solid var(--focus);
   outline-offset: -1px;
 }
 label { display: grid; gap: 4px; font-size: 12px; font-weight: 500; color: var(--text-2); }
 
+}
+
+@layer components {
 .panel {
   background: var(--surface);
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-strong);
   border-radius: var(--radius);
+}
+
+/* Langfuse-style corner ticks drawn on a box's four corners. */
+.corners {
+  --c: var(--text-3);
+  --k: 7px;
+  background-image:
+    linear-gradient(var(--c), var(--c)), linear-gradient(var(--c), var(--c)),
+    linear-gradient(var(--c), var(--c)), linear-gradient(var(--c), var(--c)),
+    linear-gradient(var(--c), var(--c)), linear-gradient(var(--c), var(--c)),
+    linear-gradient(var(--c), var(--c)), linear-gradient(var(--c), var(--c));
+  background-size:
+    var(--k) 1px, 1px var(--k), var(--k) 1px, 1px var(--k),
+    var(--k) 1px, 1px var(--k), var(--k) 1px, 1px var(--k);
+  background-position:
+    top left, top left, top right, top right,
+    bottom left, bottom left, bottom right, bottom right;
+  background-repeat: no-repeat;
+}
+.hatched {
+  background-color: transparent;
+  background-image: repeating-linear-gradient(-45deg, var(--hatch) 0 1px, transparent 1px 6px);
 }
 
 table { width: 100%; border-collapse: collapse; }
@@ -93,36 +316,56 @@ th {
   text-align: left;
   font-size: 12px;
   font-weight: 500;
-  color: var(--text-2);
+  color: var(--text-3);
   padding: 8px 12px;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--border-strong);
   background: var(--surface-2);
   white-space: nowrap;
   position: sticky;
   top: 0;
 }
 th.num { text-align: right; }
-td { padding: 8px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+td { padding: 8px 12px; border-bottom: 1px solid var(--border); vertical-align: top; font-variant-numeric: tabular-nums; }
 tr:last-child td { border-bottom: 0; }
-tbody tr:hover td { background: #fafbfc; }
+/* Zebra rows. :where() keeps this at zero specificity so hover, selection and
+   any page's own row colours win. Tables whose rows are not one-per-record
+   (expandable rows) opt out with .manual and mark their own .alt rows. */
+:where(table:not(.manual) > tbody > tr:nth-child(even)) > td,
+:where(table.manual > tbody > tr.alt) > td { background: var(--stripe); }
+tbody tr:hover td { background: var(--row-hover); }
 
 .badge {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
   font-size: 11px;
-  font-weight: 600;
-  padding: 1px 7px;
-  border-radius: 10px;
-  background: var(--surface-2);
+  font-weight: 500;
+  line-height: 1.5;
+  padding: 0 6px;
+  border-radius: 2px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
   color: var(--text-2);
 }
-.badge.ok { background: var(--ok-soft); color: var(--ok); }
-.badge.warn { background: var(--warn-soft); color: var(--warn); }
-.badge.danger { background: var(--danger-soft); color: var(--danger); }
-.badge.accent { background: var(--accent-soft); color: var(--accent); }
+.badge.ok { background: var(--ok-soft); color: var(--ok); border-color: transparent; }
+.badge.warn { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
+.badge.danger { background: var(--danger-soft); color: var(--danger); border-color: transparent; }
+.badge.accent { background: var(--sel); color: var(--text); border-color: var(--cta-border); }
+
+/* Status marker: a small square, matching the grid language. Colour comes
+   from the text colour unless a tone class sets it. */
+.sq { display: inline-block; flex: none; width: 7px; height: 7px; background: currentColor; }
+.sq.ok { background: var(--ok); }
+.sq.warn { background: var(--warn); }
+.sq.danger { background: var(--danger); }
+.sq.idle { background: var(--text-3); }
+.badge .sq { width: 6px; height: 6px; margin-right: 5px; }
+.sq.live { animation: sq-pulse 1.4s ease-in-out infinite; }
+@keyframes sq-pulse { 50% { opacity: .3; } }
+@media (prefers-reduced-motion: reduce) { .sq.live { animation: none; } }
 
 .error {
   padding: 10px 12px;
-  border: 1px solid #eab8b6;
+  border: 1px solid var(--danger-border);
   background: var(--danger-soft);
   color: var(--danger);
   border-radius: var(--radius);
@@ -132,3 +375,135 @@ tbody tr:hover td { background: #fafbfc; }
 .empty { padding: 32px; text-align: center; color: var(--text-2); }
 .row { display: flex; gap: 8px; align-items: center; }
 .spacer { flex: 1; }
+
+/* Page scaffolding shared by every route. */
+/* Detail pages: "Parent / name" as one heading line. The parent stays a
+   quieter link; a long name wraps under itself, not under the parent. */
+h1.crumbed { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0 10px; min-width: 0; }
+h1.crumbed .parent { color: var(--text-3); font-weight: 400; }
+h1.crumbed .parent:hover { color: var(--text); text-decoration: none; }
+h1.crumbed .sep { color: var(--border-strong); font-weight: 300; }
+h1.crumbed .mono { overflow-wrap: anywhere; }
+.head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 10px;
+  margin-bottom: 16px;
+}
+.head h1 { overflow-wrap: anywhere; margin-right: 4px; }
+.head > .faint { font-size: 14px; }
+.summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 20px;
+  font-size: 13px;
+  color: var(--text-2);
+  padding-bottom: 16px;
+  margin-bottom: 20px;
+  border-bottom: 1px dashed var(--line-dash);
+}
+.summary b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+.section-title { display: flex; align-items: baseline; gap: 8px; margin: 28px 0 10px; }
+
+.tabs {
+  display: flex;
+  gap: 2px;
+  border-bottom: 1px solid var(--border-strong);
+  margin-bottom: 18px;
+  overflow-x: auto;
+}
+.tabs a {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  white-space: nowrap;
+  padding: 8px 12px;
+  color: var(--text-2);
+  font-weight: 500;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+.tabs a:hover { color: var(--text); text-decoration: none; background: var(--row-hover); }
+.tabs a.active { color: var(--text); border-bottom-color: var(--text); }
+.tabs a.active svg { color: var(--text); }
+.tabs a svg { color: var(--text-3); }
+.tabs .count { font-size: 11px; font-weight: 600; line-height: 1.5; padding: 0 5px; border-radius: 2px; background: var(--surface-2); color: var(--text-2); font-variant-numeric: tabular-nums; }
+.tabs a.active .count { background: var(--sel); color: var(--text); }
+
+.filters { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; margin-bottom: 12px; }
+.filters input[type='search'] { width: 320px; max-width: 100%; }
+.check { display: flex; flex-direction: row; align-items: center; gap: 6px; font-weight: 400; font-size: 13px; color: var(--text-2); }
+/* Square checkboxes and radios, drawn to match the grid language: ticked
+   fills with the highlight colour and an ink check. */
+input[type='checkbox'], input[type='radio'] {
+  appearance: none;
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 0;
+  background: var(--surface);
+  display: inline-grid;
+  place-content: center;
+  cursor: pointer;
+  vertical-align: -2px;
+  transition: background-color .12s, border-color .12s;
+}
+input[type='checkbox']:hover:not(:disabled), input[type='radio']:hover:not(:disabled) { border-color: var(--text-2); }
+input[type='checkbox']:checked, input[type='checkbox']:indeterminate, input[type='radio']:checked {
+  background: var(--cta);
+  border-color: var(--cta-text);
+}
+input[type='checkbox']::after, input[type='radio']::after { content: ''; display: block; }
+input[type='checkbox']:checked::after {
+  width: 8px;
+  height: 4px;
+  margin-top: -2px;
+  border-left: 2px solid var(--cta-text);
+  border-bottom: 2px solid var(--cta-text);
+  transform: rotate(-45deg);
+}
+input[type='checkbox']:indeterminate::after { width: 8px; height: 2px; background: var(--cta-text); }
+input[type='radio']:checked::after { width: 6px; height: 6px; background: var(--cta-text); }
+input[type='checkbox']:disabled, input[type='radio']:disabled { opacity: .45; cursor: not-allowed; }
+input[type='checkbox']:focus-visible, input[type='radio']:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+
+/* Segmented choice: radio inputs inside labels, joined edge to edge. */
+.modes { display: flex; flex-wrap: wrap; margin: 0; padding: 0; border: 0; }
+.mode {
+  position: relative;
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 11px;
+  margin-right: -1px;
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  color: var(--text-2);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  cursor: pointer;
+}
+.mode:hover { color: var(--text); background: var(--row-hover); }
+.mode.on { z-index: 1; color: var(--cta-text); background: var(--cta); border-color: var(--cta-text); }
+.mode.off { opacity: .5; cursor: not-allowed; }
+.mode input { position: absolute; opacity: 0; pointer-events: none; }
+.mode:has(input:focus-visible) { outline: 2px solid var(--focus); outline-offset: 1px; z-index: 2; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.ok { color: var(--ok); font-size: 13px; }
+.small { font-size: 12px; }
+button.small { padding: 2px 8px; }
+th button.ghost { padding: 0; font-size: 12px; color: inherit; font-weight: 500; gap: 4px; }
+th button.ghost:hover:not(:disabled) { background: transparent; color: var(--text); }
+td .badge { margin-left: 6px; }
+
+/* Thin progress track used for lag and share bars. */
+.track { display: block; height: 6px; background: var(--surface-2); border-radius: 1px; overflow: hidden; }
+.track > span { display: block; height: 100%; background: var(--text-2); }
+}

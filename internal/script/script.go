@@ -43,16 +43,7 @@ type Script struct {
 // Compiling here rather than per evaluation reports a malformed script before
 // any data is read.
 func Compile(source string, parameters ...string) (*Script, error) {
-	wrapped := "(function ("
-	for index, parameter := range parameters {
-		if index > 0 {
-			wrapped += ", "
-		}
-
-		wrapped += parameter
-	}
-
-	wrapped += ") {\n" + source + "\n})"
+	wrapped := wrap(source, parameters)
 
 	// The source is pasted into a wrapper, so a script containing `})` could
 	// close it early and put statements at the top level. Those run when the

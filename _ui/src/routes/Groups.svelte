@@ -2,6 +2,9 @@
   import { api, type Cluster, type GroupSummary } from '../lib/api'
   import { fmt, stateBadge } from '../lib/format'
   import { href } from '../lib/router.svelte'
+  import { RefreshCw, Plus } from '@lucide/svelte'
+  import GroupTopicDialog from '../lib/GroupTopicDialog.svelte'
+  import MoreRows from '../lib/MoreRows.svelte'
 
   let { cluster }: { cluster: Cluster } = $props()
 
@@ -24,10 +27,19 @@
   }
   load()
 
+  let creating = $state(false)
+
   const rows = $derived.by(() => {
     const q = search.trim().toLowerCase()
     const list = groups.filter((g) => !q || g.name.toLowerCase().includes(q) || g.topics.some((t) => t.toLowerCase().includes(q)))
     return sortByLag ? list.sort((a, b) => b.lag - a.lag) : list
+  })
+
+  const page = 200
+  let shown = $state(page)
+  $effect(() => {
+    void search, sortByLag
+    shown = page
   })
 </script>
 
@@ -35,12 +47,15 @@
   <h1>Consumer groups</h1>
   <span class="faint">{rows.length}</span>
   <span class="spacer"></span>
-  <button onclick={load} disabled={loading}>Yenile</button>
+  <button onclick={load} disabled={loading}><RefreshCw size={14} class={loading ? 'animate-spin' : ''} />Refresh</button>
+  <button class="primary" disabled={cluster.read_only} title={cluster.read_only ? 'This cluster is read-only' : ''} onclick={() => (creating = true)}><Plus size={14} />New group</button>
 </div>
 
-<div class="row filters">
-  <input type="search" placeholder="Group ya da topic ara…" bind:value={search} />
-  <label class="check"><input type="checkbox" bind:checked={sortByLag} /> Lag'e göre sırala</label>
+<GroupTopicDialog {cluster} bind:open={creating} ondone={load} />
+
+<div class="filters">
+  <input type="search" placeholder="Search groups or topics…" bind:value={search} />
+  <label class="check"><input type="checkbox" bind:checked={sortByLag} /> Sort by lag</label>
 </div>
 
 {#if error}
@@ -48,32 +63,31 @@
 {:else}
   <div class="panel">
     <table>
-      <thead><tr><th>Group</th><th>Durum</th><th class="num">Üye</th><th>Topic'ler</th><th class="num">Lag</th></tr></thead>
+      <thead><tr><th>Group</th><th>State</th><th class="num">Members</th><th>Topics</th><th class="num">Lag</th></tr></thead>
       <tbody>
-        {#each rows as g (g.name)}
+        {#each rows.slice(0, shown) as g (g.name)}
           <tr>
             <td><a class="mono" href={href(cluster.name, 'groups', g.name)}>{g.name}</a></td>
-            <td><span class="badge {stateBadge(g.state)}">{g.state || '—'}</span></td>
+            <td><span class="badge {stateBadge(g.state)}"><span class="sq {stateBadge(g.state) || 'idle'}"></span>{g.state || '—'}</span></td>
             <td class="num">{g.members}</td>
-            <td class="topics">
-              {#each g.topics as t (t)}<a class="mono" href={href(cluster.name, 'topics', t)}>{t}</a>{/each}
-              {#if !g.topics.length}<span class="faint">—</span>{/if}
+            <td>
+              <div class="topics">
+                {#each g.topics as t (t)}<a class="mono" href={href(cluster.name, 'topics', t)}>{t}</a>{/each}
+                {#if !g.topics.length}<span class="faint">—</span>{/if}
+              </div>
             </td>
-            <td class="num mono" class:lag={g.lag > 0}>{fmt(g.lag)}</td>
+            <td class="num mono" class:lag={g.lag > 0}>{#if g.lag > 0}<span class="lagpill">{fmt(g.lag)}</span>{:else}<span class="faint">0</span>{/if}</td>
           </tr>
         {:else}
-          <tr><td colspan="5" class="empty">{loading ? 'Yükleniyor…' : 'Consumer group bulunamadı.'}</td></tr>
+          <tr><td colspan="5" class="empty">{loading ? 'Loading…' : 'No consumer groups found.'}</td></tr>
         {/each}
       </tbody>
     </table>
+    <MoreRows total={rows.length} bind:shown step={page} />
   </div>
 {/if}
 
 <style>
-  .head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
-  .filters { margin-bottom: 12px; }
-  .filters input[type='search'] { width: 320px; }
-  .check { display: flex; flex-direction: row; align-items: center; gap: 6px; font-weight: 400; }
   .topics { display: flex; flex-wrap: wrap; gap: 4px 10px; }
-  .lag { font-weight: 600; }
+  .lagpill { display: inline-block; padding: 0 6px; background: var(--sel); border: 1px solid var(--cta-border); border-radius: 2px; font-weight: 600; }
 </style>

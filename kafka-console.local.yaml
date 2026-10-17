@@ -1,12 +1,17 @@
 log_level: info
 
+# info: PreProd   # short label shown beside the app name in the sidebar
+
 server:
   port: "8080"
   # base_path: /kafka   # serve under a prefix behind a reverse proxy
+  # user_header: X-User # header your auth proxy sets; logged on every write as "user"
 
 clusters:
   local:
     brokers: ["localhost:19092"]
+    schema_registry:
+      urls: ["http://localhost:18081"]
 
   # staging:
   #   brokers: ["kafka-1.staging:9093", "kafka-2.staging:9093"]
@@ -17,6 +22,10 @@ clusters:
   #     mechanism: scram-sha-512   # plain | scram-sha-256 | scram-sha-512 | oauthbearer
   #     user: console
   #     password_file: /run/secrets/kafka-password
+  #   schema_registry:
+  #     urls: ["https://registry.staging:8081"]
+  #     user: console              # basic auth; or token: <bearer>
+  #     password_file: /run/secrets/registry-password
   #
   # prod:
   #   brokers: ["kafka.prod:9093"]
@@ -29,4 +38,4 @@ clusters:
   #     oauth:
   #       token_url: https://idp.example.com/oauth2/token
   #       client_id: kafka-console
-  #       client_secret: ""   # or KAFKA_CONSOLE_CLUSTERS_PROD_SASL_OAUTH_CLIENT_SECRET
+  #       client_secret: ""

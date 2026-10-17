@@ -1,12 +1,14 @@
 services:
   redpanda:
-    image: docker.redpanda.com/redpandadata/redpanda:v25.3.1
+    image: redpandadata/redpanda:v25.3.1
     command:
       - redpanda start
       - --smp 1
       - --overprovisioned
       - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092
       - --advertise-kafka-addr internal://redpanda:9092,external://localhost:19092
+      - --schema-registry-addr internal://0.0.0.0:8081,external://0.0.0.0:18081
       - --mode dev-container
     ports:
       - "19092:19092"
+      - "18081:18081"

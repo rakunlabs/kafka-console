@@ -2,8 +2,13 @@
   import { api, type Cluster, type GroupDetail, type ResetPlan } from '../lib/api'
   import { fmt, stateBadge } from '../lib/format'
   import { href, go } from '../lib/router.svelte'
-  import LagBar from '../lib/LagBar.svelte'
+  import PartitionOffsets from '../lib/PartitionOffsets.svelte'
   import Modal from '../lib/Modal.svelte'
+  import { forgetNames } from '../lib/names'
+  import { RefreshCw, Trash2, RotateCcw, Plus } from '@lucide/svelte'
+  import GroupTopicDialog from '../lib/GroupTopicDialog.svelte'
+  import LagEta from '../lib/LagEta.svelte'
+  import MoreRows from '../lib/MoreRows.svelte'
 
   let { cluster, name }: { cluster: Cluster; name: string } = $props()
 
@@ -25,7 +30,31 @@
   load()
 
   const topics = $derived([...new Set((data?.partitions ?? []).map((p) => p.topic))])
-  const byTopic = $derived(topics.map((t) => ({ topic: t, rows: data!.partitions.filter((p) => p.topic === t) })))
+  // Grouped in one pass; a group can read hundreds of topics.
+  const byTopic = $derived.by(() => {
+    const m = new Map<string, NonNullable<typeof data>['partitions']>()
+    for (const p of data?.partitions ?? []) {
+      const rows = m.get(p.topic)
+      if (rows) rows.push(p)
+      else m.set(p.topic, [p])
+    }
+    return topics.map((t) => ({ topic: t, rows: m.get(t)! }))
+  })
+  const topicPage = 20
+  let shownTopics = $state(topicPage)
+
+  let addingTopic = $state(false)
+
+  // Fresh readings for the catch-up estimate; the page's own data is left alone.
+  async function reading(topic?: string) {
+    const g = await api.group(cluster.name, name)
+    const rows = g.partitions.filter((p) => !topic || p.topic === topic)
+    return {
+      lag: rows.reduce((s, p) => s + Math.max(p.lag, 0), 0),
+      committed: rows.reduce((s, p) => s + Math.max(p.committed, 0), 0),
+      high: rows.reduce((s, p) => s + p.high, 0),
+    }
+  }
 
   // Offset reset
   let resetting = $state(false)
@@ -84,6 +113,25 @@
     }
   }
 
+  // Delete committed offsets for one topic
+  let dropTopic = $state('')
+  let dropping = $state(false)
+  let dropError = $state('')
+
+  async function dropOffsets() {
+    busy = true
+    dropError = ''
+    try {
+      await api.deleteGroupOffsets(cluster.name, name, dropTopic)
+      dropping = false
+      load()
+    } catch (e: any) {
+      dropError = e.message
+    } finally {
+      busy = false
+    }
+  }
+
   // Delete group
   let deleting = $state(false)
   let deleteError = $state('')
@@ -93,6 +141,7 @@
     deleteError = ''
     try {
       await api.deleteGroup(cluster.name, name)
+      forgetNames(cluster.name)
       deleting = false
       go(cluster.name, 'groups')
     } catch (e: any) {
@@ -103,61 +152,53 @@
   }
 </script>
 
-<div class="crumb"><a href={href(cluster.name, 'groups')}>Consumer groups</a> /</div>
 <div class="head">
-  <h1 class="mono">{name}</h1>
-  {#if data}<span class="badge {stateBadge(data.state)}">{data.state}</span>{/if}
+  <h1 class="crumbed"><a class="parent" href={href(cluster.name, 'groups')}>Consumer groups</a><span class="sep" aria-hidden="true">/</span><span class="mono">{name}</span></h1>
+  {#if data}<span class="badge {stateBadge(data.state)}"><span class="sq {stateBadge(data.state) || 'idle'}"></span>{data.state}</span>{/if}
   <span class="spacer"></span>
-  <button onclick={load} disabled={loading}>Yenile</button>
+  <button onclick={load} disabled={loading}><RefreshCw size={14} class={loading ? 'animate-spin' : ''} />Refresh</button>
+  <button disabled={cluster.read_only || !data} title={cluster.read_only ? 'This cluster is read-only' : ''} onclick={() => (addingTopic = true)}><Plus size={14} />Add topic</button>
   <button class="danger" disabled={cluster.read_only || !data || data.members.length > 0}
-    title={data && data.members.length > 0 ? 'Aktif üyesi olan group silinemez' : ''}
-    onclick={() => { deleteError = ''; deleting = true }}>Group'u sil</button>
+    title={data && data.members.length > 0 ? 'Cannot delete a group with active members' : ''}
+    onclick={() => { deleteError = ''; deleting = true }}><Trash2 size={14} />Delete group</button>
 </div>
 
 {#if error}
   <div class="error">{error}</div>
 {:else if !data}
-  <div class="empty">Yükleniyor…</div>
+  <div class="empty">Loading…</div>
 {:else}
-  <div class="summary muted">
-    <span>Toplam lag <b>{fmt(data.lag)}</b></span>
-    <span><b>{data.members.length}</b> üye</span>
-    <span>Protokol <b>{data.protocol || '—'}</b></span>
+  <div class="summary">
+    <span>Total lag <b class:lagnum={data.lag > 0}>{fmt(data.lag)}</b></span>
+    <span><b>{data.members.length}</b> members</span>
+    <span>Protocol <b>{data.protocol || '—'}</b></span>
     <span>Coordinator <b>{data.coordinator}</b></span>
+    {#if data.lag > 0}<span class="spacer"></span><LagEta read={() => reading()} />{/if}
   </div>
 
-  {#each byTopic as t (t.topic)}
+  {#each byTopic.slice(0, shownTopics) as t (t.topic)}
     <div class="thead">
       <h2><a class="mono" href={href(cluster.name, 'topics', t.topic)}>{t.topic}</a></h2>
       <span class="faint">lag {fmt(t.rows.reduce((s, r) => s + Math.max(r.lag, 0), 0))}</span>
+      {#if t.rows.some((r) => r.lag > 0) && byTopic.length > 1}<LagEta read={() => reading(t.topic)} />{/if}
       <span class="spacer"></span>
-      <button disabled={cluster.read_only} onclick={() => openReset(t.topic)}>Offset reset…</button>
+      <button disabled={cluster.read_only} onclick={() => openReset(t.topic)}><RotateCcw size={14} />Reset all partitions…</button>
+      <button class="danger" disabled={cluster.read_only || (data?.members.length ?? 0) > 0}
+        title={(data?.members.length ?? 0) > 0 ? 'Cannot delete offsets for a group with active members' : 'Deletes committed offsets for this topic'}
+        onclick={() => { dropError = ''; dropTopic = t.topic; dropping = true }}>Delete offsets</button>
     </div>
-    <div class="panel">
-      <table>
-        <thead>
-          <tr><th class="num">P</th><th class="bar">İlerleme</th><th class="num">Low</th><th class="num">Committed</th><th class="num">High</th><th class="num">Lag</th><th>Üye</th></tr>
-        </thead>
-        <tbody>
-          {#each t.rows as p (p.partition)}
-            <tr>
-              <td class="num mono">{p.partition}</td>
-              <td class="bar"><LagBar low={p.low} high={p.high} committed={p.committed} /></td>
-              <td class="num mono faint">{fmt(p.low)}</td>
-              <td class="num mono">{fmt(p.committed)}</td>
-              <td class="num mono">{fmt(p.high)}</td>
-              <td class="num mono" class:lag={p.lag > 0}>{fmt(p.lag)}</td>
-              <td class="mono small">{p.client_id ? `${p.client_id} · ${p.host}` : '—'}{#if p.error}<span class="badge danger" title={p.error}>hata</span>{/if}</td>
-            </tr>
-          {/each}
-        </tbody>
-      </table>
-    </div>
+    <PartitionOffsets {cluster} group={name} topic={t.topic} rows={t.rows} activeMembers={data.members.length} showLow onchanged={load} />
   {:else}
-    <div class="panel empty">Bu group'un commit edilmiş offset'i yok.</div>
+    <div class="panel empty">
+      This group has no committed offsets.
+      {#if !cluster.read_only}<div class="mt-3"><button onclick={() => (addingTopic = true)}><Plus size={14} />Add a topic</button></div>{/if}
+    </div>
   {/each}
+  {#if byTopic.length > shownTopics}
+    <div class="panel mt-3"><MoreRows total={byTopic.length} bind:shown={shownTopics} step={topicPage} /></div>
+  {/if}
 
-  <h2 class="mtop">Üyeler</h2>
+  <div class="section-title"><h2>Members</h2><span class="faint">{data.members.length}</span></div>
   <div class="panel">
     <table>
       <thead><tr><th>Client ID</th><th>Host</th><th>Member ID</th></tr></thead>
@@ -165,40 +206,42 @@
         {#each data.members as m (m.id)}
           <tr><td class="mono">{m.client_id}</td><td class="mono">{m.host}</td><td class="mono faint small">{m.id}</td></tr>
         {:else}
-          <tr><td colspan="3" class="faint">Aktif üye yok.</td></tr>
+          <tr><td colspan="3" class="faint">No active members.</td></tr>
         {/each}
       </tbody>
     </table>
   </div>
 {/if}
 
-<Modal title="Offset reset: {reset.topic}" bind:open={resetting} width={560}>
+<GroupTopicDialog {cluster} group={name} existingTopics={topics} activeMembers={data?.members.length ?? 0} bind:open={addingTopic} ondone={load} />
+
+<Modal title="Reset offsets: {reset.topic}" bind:open={resetting} width={560}>
   {#if data && data.members.length > 0}
-    <div class="error">Group'un {data.members.length} aktif üyesi var. Offset reset için önce consumer'ları durdur. Önizleme yine de yapılabilir.</div>
+    <div class="error">This group has {data.members.length} active members. Stop the consumers before resetting offsets. You can still preview.</div>
   {/if}
   <div class="grid2">
-    <label>Hedef
+    <label>Target
       <select bind:value={reset.strategy} onchange={() => (plan = undefined)}>
-        <option value="earliest">En eski (earliest)</option>
-        <option value="latest">En yeni (latest)</option>
-        <option value="offset">Belirli offset</option>
-        <option value="timestamp">Zaman</option>
+        <option value="earliest">Earliest</option>
+        <option value="latest">Latest</option>
+        <option value="offset">Specific offset</option>
+        <option value="timestamp">Timestamp</option>
       </select>
     </label>
     {#if reset.strategy === 'offset'}
       <label>Offset <input type="number" min="0" bind:value={reset.offset} oninput={() => (plan = undefined)} /></label>
     {:else if reset.strategy === 'timestamp'}
-      <label>Zaman <input type="datetime-local" step="1" bind:value={reset.timestamp} oninput={() => (plan = undefined)} /></label>
+      <label>Time <input type="datetime-local" step="1" bind:value={reset.timestamp} oninput={() => (plan = undefined)} /></label>
     {:else}
       <div></div>
     {/if}
   </div>
-  <label>Partition'lar (boş = hepsi) <input placeholder="0, 1, 2" bind:value={reset.partitions} oninput={() => (plan = undefined)} /></label>
+  <label>Partitions (empty = all) <input placeholder="0, 1, 2" bind:value={reset.partitions} oninput={() => (plan = undefined)} /></label>
 
   {#if plan}
     <div class="panel plan">
       <table>
-        <thead><tr><th class="num">P</th><th class="num">Şu an</th><th class="num">Yeni</th><th class="num">Fark</th></tr></thead>
+        <thead><tr><th class="num">P</th><th class="num">Current</th><th class="num">New</th><th class="num">Diff</th></tr></thead>
         <tbody>
           {#each plan as p (p.partition)}
             <tr>
@@ -212,39 +255,39 @@
       </table>
     </div>
   {/if}
-  {#if done}<div class="ok">Offset'ler commit edildi.</div>{/if}
+  {#if done}<div class="ok">Offsets committed.</div>{/if}
   {#if resetError}<div class="error">{resetError}</div>{/if}
 
   {#snippet footer()}
-    <button onclick={() => (resetting = false)}>{done ? 'Kapat' : 'Vazgeç'}</button>
+    <button onclick={() => (resetting = false)}>{done ? 'Close' : 'Cancel'}</button>
     {#if !done}
-      <button onclick={preview} disabled={busy}>Önizle</button>
-      <button class="danger solid" disabled={busy || !plan || (data?.members.length ?? 0) > 0} onclick={apply}>Uygula</button>
+      <button onclick={preview} disabled={busy}>Preview</button>
+      <button class="danger solid" disabled={busy || !plan || (data?.members.length ?? 0) > 0} onclick={apply}>Apply</button>
     {/if}
   {/snippet}
 </Modal>
 
-<Modal title="Group'u sil" bind:open={deleting}>
-  <p><b class="mono">{name}</b> group'u ve commit edilmiş tüm offset'leri silinecek.</p>
+<Modal title="Delete offsets: {dropTopic}" bind:open={dropping}>
+  <p>All offsets committed by group <b class="mono">{name}</b> for topic <b class="mono">{dropTopic}</b> will be deleted. When the consumer restarts, it will start according to <code>auto.offset.reset</code>.</p>
+  {#if dropError}<div class="error">{dropError}</div>{/if}
+  {#snippet footer()}
+    <button onclick={() => (dropping = false)}>Cancel</button>
+    <button class="danger solid" disabled={busy} onclick={dropOffsets}>Delete</button>
+  {/snippet}
+</Modal>
+
+<Modal title="Delete group" bind:open={deleting}>
+  <p>Group <b class="mono">{name}</b> and all its committed offsets will be deleted.</p>
   {#if deleteError}<div class="error">{deleteError}</div>{/if}
   {#snippet footer()}
-    <button onclick={() => (deleting = false)}>Vazgeç</button>
-    <button class="danger solid" disabled={busy} onclick={remove}>Sil</button>
+    <button onclick={() => (deleting = false)}>Cancel</button>
+    <button class="danger solid" disabled={busy} onclick={remove}>Delete</button>
   {/snippet}
 </Modal>
 
 <style>
-  .crumb { font-size: 12px; color: var(--text-3); }
-  .head { display: flex; align-items: center; gap: 10px; margin: 2px 0 10px; }
-  h1 { overflow-wrap: anywhere; }
-  .summary { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 13px; margin-bottom: 18px; }
-  .summary b { color: var(--text); font-weight: 600; }
   .thead { display: flex; align-items: center; gap: 10px; margin: 18px 0 8px; }
   .mtop { margin: 24px 0 8px; }
-  th.bar, td.bar { width: 30%; }
-  .lag { font-weight: 600; color: var(--accent); }
-  .small { font-size: 12px; }
-  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .lagnum { background: var(--sel); padding: 0 4px; }
   .plan { max-height: 260px; overflow: auto; }
-  .ok { color: var(--ok); font-size: 13px; }
 </style>

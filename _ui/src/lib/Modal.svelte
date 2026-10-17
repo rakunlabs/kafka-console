@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Snippet } from 'svelte'
+  import { X } from '@lucide/svelte'
 
   let {
     title,
@@ -21,7 +22,7 @@
   {#if open}
     <header>
       <h2>{title}</h2>
-      <button class="ghost" aria-label="Kapat" onclick={() => (open = false)}>✕</button>
+      <button class="ghost px-1.5" aria-label="Close" onclick={() => (open = false)}><X size={16} /></button>
     </header>
     <div class="body">{@render children()}</div>
     {#if footer}<footer>{@render footer()}</footer>{/if}
@@ -30,14 +31,25 @@
 
 <style>
   dialog {
-    border: 1px solid var(--border);
-    border-radius: 8px;
+    /* Anchored near the top and centred only horizontally, so content that
+       appears after opening (a preview, a second step) grows the dialog
+       downward instead of shifting it up. */
+    margin: min(10vh, 96px) auto auto;
+    max-height: calc(100vh - min(10vh, 96px) - 24px);
+    overflow: hidden;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius);
     padding: 0;
     max-width: calc(100vw - 32px);
     color: var(--text);
-    box-shadow: 0 12px 40px rgb(0 0 0 / .12);
+    background: var(--surface);
+    box-shadow: 0 16px 48px -12px rgb(20 20 16 / .22);
   }
-  dialog::backdrop { background: rgb(15 20 25 / .35); }
+  /* Header and footer stay put; only the body scrolls when the dialog hits
+     the bottom of the screen, so the action buttons never scroll away. */
+  dialog[open] { display: flex; flex-direction: column; }
+  dialog::backdrop { background: rgb(23 23 20 / .32); }
+  header, footer { flex: none; }
   header {
     display: flex;
     align-items: center;
@@ -45,7 +57,11 @@
     padding: 12px 16px;
     border-bottom: 1px solid var(--border);
   }
-  .body { padding: 16px; display: grid; gap: 12px; }
+  .body { padding: 16px; display: grid; gap: 12px; min-height: 0; overflow: auto; }
+
+  @media (max-height: 640px) {
+    dialog { margin-top: 12px; max-height: calc(100vh - 24px); }
+  }
   footer {
     display: flex;
     justify-content: flex-end;

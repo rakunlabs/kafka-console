@@ -27,12 +27,14 @@ A self-hosted Kafka console that answers "what is in this topic, who is consumin
 
 ## Capabilities and Constraints
 
-- Cluster overview: brokers, controller, topic/partition counts.
-- Topics: list, detail (partitions, leader, replicas, ISR, offsets, config), create, delete.
-- Messages: browse by partition, offset, timestamp, newest/oldest; key/value/headers; JSON pretty print.
-- Produce: key, value, headers, target partition.
-- Consumer groups: list, state, members, per-partition lag; offset reset (earliest/latest/specific/timestamp).
-- Destructive operations (delete topic, offset reset) need explicit confirmation.
+- Cluster overview: brokers (leader/replica counts, version guess), controller, topic/partition counts, disk usage. Broker detail: log dirs, editable broker configs.
+- Topics: list (size, cleanup policy), detail (partitions, leader, replicas, ISR, offsets, size, config), create, delete, edit/reset configs, add partitions, delete records (truncate).
+- Messages: browse by partition, offset, timestamp, newest/oldest; key/value/headers; JSON pretty print; JS filter; live tail over SSE; JSON/CSV export.
+- Schema Registry (optional per cluster): automatic Avro/Protobuf/JSON Schema decoding of Confluent-framed keys and values; subjects, versions, diff, create with compatibility check, compatibility levels, soft/hard delete.
+- Produce: key, value, headers, target partition, compression, base64 binary, or JSON encoded through a registry schema.
+- Consumer groups: list, state, members, per-partition lag; offset reset (earliest/latest/specific/timestamp); delete offsets per topic.
+- Security: ACLs (list/create/delete with presets), SCRAM users, client quotas.
+- Destructive operations (delete topic, delete records, offset reset/delete, hard delete schema) need explicit confirmation.
 - Open decision: authentication / per-cluster read-only mode.
 
 ## Product Principles

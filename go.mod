@@ -1,8 +1,9 @@
 module github.com/rakunlabs/kafka-console
 
-go 1.27.0
+go 1.27.2
 
 require (
+	github.com/bufbuild/protocompile v0.14.1
 	github.com/dop251/goja v0.0.0-20260917113740-793a2a65c13b
 	github.com/rakunlabs/ada v0.5.3
 	github.com/rakunlabs/ada/handler/folder v0.5.3
@@ -13,10 +14,15 @@ require (
 	github.com/rakunlabs/chu v0.5.0
 	github.com/rakunlabs/into v0.6.0
 	github.com/rakunlabs/logi v0.4.6
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
+	github.com/twmb/avro v1.9.0
 	github.com/twmb/franz-go v1.22.0
 	github.com/twmb/franz-go/pkg/kadm v1.19.0
+	github.com/twmb/franz-go/pkg/kmsg v1.14.0
+	github.com/twmb/franz-go/pkg/sr v1.8.0
 	github.com/twmb/tlscfg v1.3.0
 	golang.org/x/oauth2 v0.36.0
+	google.golang.org/protobuf v1.36.12
 )
 
 require (
@@ -35,8 +41,8 @@ require (
 	github.com/rakunlabs/gofret v0.2.1 // indirect
 	github.com/rakunlabs/ok v0.1.0 // indirect
 	github.com/spf13/cast v1.10.0 // indirect
-	github.com/twmb/franz-go/pkg/kmsg v1.14.0 // indirect
 	github.com/xhit/go-str2duration/v2 v2.1.0 // indirect
+	golang.org/x/sync v0.19.0 // indirect
 	golang.org/x/sys v0.35.0 // indirect
-	golang.org/x/text v0.3.8 // indirect
+	golang.org/x/text v0.14.0 // indirect
 )

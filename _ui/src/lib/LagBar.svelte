@@ -1,6 +1,6 @@
 <script lang="ts">
   // Committed position between low and high watermark. The filled part has
-  // been consumed; the remainder is lag.
+  // been consumed; the striped remainder is lag.
   let { low, high, committed }: { low: number; high: number; committed: number } = $props()
 
   const span = $derived(Math.max(high - low, 0))
@@ -8,21 +8,26 @@
   const behind = $derived(committed >= 0 && high - committed > 0)
 </script>
 
-<div class="bar" title="low {low} · committed {committed} · high {high}">
-  <div class="fill" class:behind style:width="{pos * 100}%"></div>
+<div class="bar" class:behind title="low {low} · committed {committed} · high {high}">
+  <div class="fill" style:width="{pos * 100}%"></div>
 </div>
 
 <style>
   .bar {
     width: 100%;
     min-width: 120px;
-    height: 6px;
-    border-radius: 3px;
+    height: 8px;
+    border-radius: 1px;
     background: var(--surface-2);
     box-shadow: inset 0 0 0 1px var(--border);
     overflow: hidden;
-    margin-top: 6px;
+    margin-top: 5px;
+    display: flex;
+  }
+  .bar.behind {
+    background: repeating-linear-gradient(-45deg, var(--cta) 0 3px, var(--sel) 3px 6px);
+    box-shadow: inset 0 0 0 1px var(--cta-border);
   }
   .fill { height: 100%; background: var(--ok); }
-  .fill.behind { background: var(--accent); }
+  .behind .fill { background: var(--text-2); }
 </style>

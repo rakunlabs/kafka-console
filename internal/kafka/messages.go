@@ -43,12 +43,17 @@ type Message struct {
 	Timestamp     time.Time `json:"timestamp"`
 	Key           *string   `json:"key"`
 	KeyEncoding   string    `json:"key_encoding,omitempty"`
+	KeyFormat     string    `json:"key_format,omitempty"`
+	KeySchemaID   int       `json:"key_schema_id,omitempty"`
 	Value         *string   `json:"value"`
 	ValueEncoding string    `json:"value_encoding,omitempty"`
 	ValueFormat   string    `json:"value_format,omitempty"`
+	ValueSchemaID int       `json:"value_schema_id,omitempty"`
 	ValueBytes    int       `json:"value_bytes"`
+	KeyBytes      int       `json:"key_bytes"`
 	Truncated     bool      `json:"truncated"`
 	Headers       []Header  `json:"headers"`
+	DecodeError   string    `json:"decode_error,omitempty"`
 }
 
 type ConsumeRequest struct {
@@ -61,7 +66,12 @@ type ConsumeRequest struct {
 	Limit     int
 	MaxScan   int
 	Filter    string
-	Timeout   time.Duration
+	// Search keeps messages whose key, value or headers contain this text,
+	// case-insensitively. Applied before Filter, which is far more costly.
+	Search  string
+	Timeout time.Duration
+	// Raw skips schema registry decoding.
+	Raw bool
 }
 
 type ConsumeResult struct {
@@ -126,8 +136,14 @@ func (c *Client) Consume(ctx context.Context, topic string, req ConsumeRequest) 
 	visit := func(rec *kgo.Record) bool {
 		result.Scanned++
 
+		d := c.decodeRecord(ctx, rec, req.Raw)
+
+		if !textMatch(req.Search, rec, d) {
+			return result.Scanned < req.MaxScan
+		}
+
 		if filter != nil {
-			ok, err := filter.Call(filterArguments(filter, rec)...)
+			ok, err := filter.Call(filterArguments(filter, rec, d)...)
 			if err != nil {
 				if ctx.Err() != nil {
 					result.StoppedBy = "timeout"
@@ -148,7 +164,7 @@ func (c *Client) Consume(ctx context.Context, topic string, req ConsumeRequest) 
 			}
 		}
 
-		result.Messages = append(result.Messages, render(rec, defaultValueCutoff))
+		result.Messages = append(result.Messages, render(rec, d, defaultValueCutoff))
 
 		if len(result.Messages) >= req.Limit {
 			result.StoppedBy = "limit"
@@ -418,11 +434,55 @@ func scan(ctx context.Context, client *kgo.Client, topic string, round []window,
 	return nil
 }
 
+// ─── Decoding ─────────────────────────────────────────────
+
+// recordView is a record with key and value decoded once, shared by the JS
+// filter and the renderer.
+type recordView struct {
+	key, value *decoded
+	err        string
+}
+
+func (c *Client) decodeRecord(ctx context.Context, rec *kgo.Record, raw bool) recordView {
+	var v recordView
+	if raw {
+		return v
+	}
+
+	var errs []string
+
+	if d, ok, err := c.decodeRegistry(ctx, rec.Key); ok {
+		if err != nil {
+			errs = append(errs, "key: "+err.Error())
+		} else {
+			v.key = d
+		}
+	}
+
+	if d, ok, err := c.decodeRegistry(ctx, rec.Value); ok {
+		if err != nil {
+			errs = append(errs, "value: "+err.Error())
+		} else {
+			v.value = d
+		}
+	}
+
+	v.err = strings.Join(errs, "; ")
+
+	return v
+}
+
 // ─── JS filter ────────────────────────────────────────────
 
 var filterParameters = []string{"value", "key", "headers", "partition", "offset", "timestamp", "raw"}
 
-func filterArguments(s *script.Script, rec *kgo.Record) []goja.Value {
+// CheckFilter reports the problems the message filter would be rejected for,
+// without reading any data.
+func CheckFilter(source string) []script.Problem {
+	return script.Check(source, filterParameters...)
+}
+
+func filterArguments(s *script.Script, rec *kgo.Record, d recordView) []goja.Value {
 	rt := s.Runtime()
 
 	headers := make(map[string]any, len(rec.Headers))
@@ -437,9 +497,22 @@ func filterArguments(s *script.Script, rec *kgo.Record) []goja.Value {
 		tsValue = ts
 	}
 
+	var value, key any
+	if d.value != nil {
+		value = d.value.Doc
+	} else {
+		value = decodeValue(rec.Value)
+	}
+
+	if d.key != nil {
+		key = d.key.Doc
+	} else {
+		key = decodeText(rec.Key)
+	}
+
 	return []goja.Value{
-		s.Value(decodeValue(rec.Value)),
-		s.Value(decodeText(rec.Key)),
+		s.Value(value),
+		s.Value(key),
 		s.Value(headers),
 		s.Value(rec.Partition),
 		s.Value(rec.Offset),
@@ -476,21 +549,36 @@ func decodeText(b []byte) any {
 
 // ─── Rendering ────────────────────────────────────────────
 
-func render(rec *kgo.Record, cutoff int) Message {
+func render(rec *kgo.Record, d recordView, cutoff int) Message {
 	m := Message{
-		Partition:  rec.Partition,
-		Offset:     rec.Offset,
-		Timestamp:  rec.Timestamp,
-		ValueBytes: len(rec.Value),
-		Headers:    make([]Header, 0, len(rec.Headers)),
+		Partition:   rec.Partition,
+		Offset:      rec.Offset,
+		Timestamp:   rec.Timestamp,
+		ValueBytes:  len(rec.Value),
+		KeyBytes:    len(rec.Key),
+		Headers:     make([]Header, 0, len(rec.Headers)),
+		DecodeError: d.err,
 	}
 
-	if rec.Key != nil {
+	switch {
+	case d.key != nil:
+		k := d.key.Text
+		m.Key, m.KeyEncoding, m.KeyFormat, m.KeySchemaID = &k, "utf8", d.key.Format, d.key.SchemaID
+	case rec.Key != nil:
 		k, enc := encode(rec.Key)
 		m.Key, m.KeyEncoding = &k, enc
 	}
 
-	if rec.Value != nil {
+	switch {
+	case d.value != nil:
+		text := d.value.Text
+		if len(text) > cutoff {
+			text = text[:cutoff]
+			m.Truncated = true
+		}
+
+		m.Value, m.ValueEncoding, m.ValueFormat, m.ValueSchemaID = &text, "utf8", d.value.Format, d.value.SchemaID
+	case rec.Value != nil:
 		value := rec.Value
 		if len(value) > cutoff {
 			value = value[:cutoff]
@@ -533,12 +621,46 @@ type ProduceRequest struct {
 	Value     *string  `json:"value"`
 	Headers   []Header `json:"headers"`
 	Partition *int32   `json:"partition"`
+	// KeySchema / ValueSchema serialize the JSON text through the registry.
+	KeySchema   *EncodeRequest `json:"key_schema"`
+	ValueSchema *EncodeRequest `json:"value_schema"`
+	// Encoding of value: utf8 (default) or base64 for binary payloads.
+	ValueEncoding string `json:"value_encoding"`
+	KeyEncoding   string `json:"key_encoding"`
+	// Compression for the produced batch: none, gzip, snappy, lz4, zstd.
+	Compression string `json:"compression"`
 }
 
 type ProduceResult struct {
 	Partition int32     `json:"partition"`
 	Offset    int64     `json:"offset"`
 	Timestamp time.Time `json:"timestamp"`
+}
+
+func payload(ctx context.Context, c *Client, text *string, encoding string, schema *EncodeRequest, what string) ([]byte, error) {
+	if text == nil {
+		return nil, nil
+	}
+
+	if schema != nil && (schema.Subject != "" || schema.ID > 0) {
+		b, err := c.encodeRegistry(ctx, schema, []byte(*text))
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", what, err)
+		}
+
+		return b, nil
+	}
+
+	if encoding == "base64" {
+		b, err := base64.StdEncoding.DecodeString(strings.TrimSpace(*text))
+		if err != nil {
+			return nil, fmt.Errorf("%s: invalid base64; %w", what, err)
+		}
+
+		return b, nil
+	}
+
+	return []byte(*text), nil
 }
 
 func (c *Client) Produce(ctx context.Context, topic string, req ProduceRequest) (*ProduceResult, error) {
@@ -548,12 +670,14 @@ func (c *Client) Produce(ctx context.Context, topic string, req ProduceRequest) 
 
 	rec := &kgo.Record{Topic: topic}
 
-	if req.Key != nil {
-		rec.Key = []byte(*req.Key)
+	var err error
+
+	if rec.Key, err = payload(ctx, c, req.Key, req.KeyEncoding, req.KeySchema, "key"); err != nil {
+		return nil, ErrInvalid{err}
 	}
 
-	if req.Value != nil {
-		rec.Value = []byte(*req.Value)
+	if rec.Value, err = payload(ctx, c, req.Value, req.ValueEncoding, req.ValueSchema, "value"); err != nil {
+		return nil, ErrInvalid{err}
 	}
 
 	for _, h := range req.Headers {
@@ -561,19 +685,28 @@ func (c *Client) Produce(ctx context.Context, topic string, req ProduceRequest) 
 			continue
 		}
 
-		rec.Headers = append(rec.Headers, kgo.RecordHeader{Key: h.Key, Value: []byte(h.Value)})
+		value := []byte(h.Value)
+		if h.Encoding == "base64" {
+			if value, err = base64.StdEncoding.DecodeString(h.Value); err != nil {
+				return nil, ErrInvalid{fmt.Errorf("header %s: invalid base64; %w", h.Key, err)}
+			}
+		}
+
+		rec.Headers = append(rec.Headers, kgo.RecordHeader{Key: h.Key, Value: value})
 	}
 
-	producer := c.client
+	codec, err := compression(req.Compression)
+	if err != nil {
+		return nil, ErrInvalid{err}
+	}
+
+	producer, err := c.producer(req.Partition != nil, codec)
+	if err != nil {
+		return nil, fmt.Errorf("producer; %w", err)
+	}
+
 	if req.Partition != nil {
 		rec.Partition = *req.Partition
-
-		var err error
-
-		producer, err = c.manual()
-		if err != nil {
-			return nil, fmt.Errorf("manual producer; %w", err)
-		}
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
@@ -586,6 +719,23 @@ func (c *Client) Produce(ctx context.Context, topic string, req ProduceRequest) 
 
 	return &ProduceResult{Partition: out.Partition, Offset: out.Offset, Timestamp: out.Timestamp}, nil
 }
+
+func compression(name string) (string, error) {
+	switch strings.ToLower(name) {
+	case "", "none":
+		return "", nil
+	case "gzip", "snappy", "lz4", "zstd":
+		return strings.ToLower(name), nil
+	}
+
+	return "", fmt.Errorf("unknown compression %q", name)
+}
+
+// ErrInvalid marks a request the caller can fix.
+type ErrInvalid struct{ Err error }
+
+func (e ErrInvalid) Error() string { return e.Err.Error() }
+func (e ErrInvalid) Unwrap() error { return e.Err }
 
 func clamp(v, def, maxV int) int {
 	if v <= 0 {

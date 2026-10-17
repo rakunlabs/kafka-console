@@ -1,22 +1,20 @@
 package kafka
 
 import (
-	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"net/http"
 	"sync"
 	"time"
 
 	"github.com/twmb/franz-go/pkg/kadm"
 	"github.com/twmb/franz-go/pkg/kgo"
 	"github.com/twmb/franz-go/pkg/sasl"
-	"github.com/twmb/franz-go/pkg/sasl/oauth"
 	"github.com/twmb/franz-go/pkg/sasl/plain"
 	"github.com/twmb/franz-go/pkg/sasl/scram"
+	"github.com/twmb/franz-go/pkg/sr"
 	"github.com/twmb/tlscfg"
-	"golang.org/x/oauth2"
-	"golang.org/x/oauth2/clientcredentials"
 
 	"github.com/rakunlabs/kafka-console/internal/config"
 )
@@ -32,9 +30,11 @@ type Client struct {
 	client  *kgo.Client
 	admin   *kadm.Client
 
-	manualOnce   sync.Once
-	manualClient *kgo.Client
-	manualErr    error
+	producersMu sync.Mutex
+	producers   map[string]*kgo.Client
+
+	registry *sr.Client
+	codecs   *codecCache
 }
 
 func New(name string, cfg *config.Cluster) (*Client, error) {
@@ -63,26 +63,85 @@ func New(name string, cfg *config.Cluster) (*Client, error) {
 		return nil, fmt.Errorf("connect to %v; %w", cfg.Brokers, err)
 	}
 
-	return &Client{
+	c := &Client{
 		Name:    name,
 		cfg:     cfg,
 		options: options,
 		client:  client,
 		admin:   kadm.NewClient(client),
-	}, nil
+	}
+
+	if cfg.SchemaRegistry != nil {
+		registry, err := registryClient(cfg.SchemaRegistry)
+		if err != nil {
+			client.Close()
+
+			return nil, err
+		}
+
+		c.registry = registry
+		c.codecs = newCodecCache(registry)
+	}
+
+	return c, nil
+}
+
+func registryClient(s *config.SchemaRegistry) (*sr.Client, error) {
+	opts := []sr.ClientOpt{sr.URLs(s.URLs...), sr.UserAgent(config.ServiceName)}
+
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if s.TLS != nil && s.TLS.Enabled {
+		t, err := tlsConfig(s.TLS)
+		if err != nil {
+			return nil, fmt.Errorf("schema registry; %w", err)
+		}
+
+		transport.TLSClientConfig = t
+	}
+
+	opts = append(opts, sr.HTTPClient(&http.Client{Timeout: 10 * time.Second, Transport: transport}))
+
+	switch {
+	case s.Token != "":
+		opts = append(opts, sr.BearerToken(s.Token))
+	case s.User != "":
+		opts = append(opts, sr.BasicAuth(s.User, s.Password))
+	}
+
+	cl, err := sr.NewClient(opts...)
+	if err != nil {
+		return nil, fmt.Errorf("schema registry; %w", err)
+	}
+
+	return cl, nil
 }
 
 func (c *Client) Close() {
 	c.client.Close()
 
-	if c.manualClient != nil {
-		c.manualClient.Close()
+	c.producersMu.Lock()
+	defer c.producersMu.Unlock()
+
+	for _, p := range c.producers {
+		p.Close()
 	}
 }
 
 func (c *Client) ReadOnly() bool    { return c.cfg.ReadOnly }
 func (c *Client) Production() bool  { return c.cfg.Production }
 func (c *Client) Brokers() []string { return c.cfg.Brokers }
+func (c *Client) HasRegistry() bool { return c.registry != nil }
+
+// ErrNoRegistry means the cluster has no schema registry configured.
+var ErrNoRegistry = errors.New("schema registry is not configured for this cluster")
+
+func (c *Client) requireRegistry() error {
+	if c.registry == nil {
+		return ErrNoRegistry
+	}
+
+	return nil
+}
 
 func (c *Client) requireWritable() error {
 	if c.cfg.ReadOnly {
@@ -92,16 +151,60 @@ func (c *Client) requireWritable() error {
 	return nil
 }
 
-// manual returns a producer that honours Record.Partition. The shared client
-// keeps the default partitioner, since an unset Partition would otherwise
-// send everything to partition 0.
-func (c *Client) manual() (*kgo.Client, error) {
-	c.manualOnce.Do(func() {
-		opts := append(append([]kgo.Opt(nil), c.options...), kgo.RecordPartitioner(kgo.ManualPartitioner()))
-		c.manualClient, c.manualErr = kgo.NewClient(opts...)
-	})
+// producer returns a client for the given partitioning and compression.
+// Manual partitioning needs its own client: the shared one keeps the default
+// partitioner, since an unset Partition would otherwise send everything to
+// partition 0. Clients are cached because each holds broker connections.
+func (c *Client) producer(manual bool, codec string) (*kgo.Client, error) {
+	if !manual && codec == "" {
+		return c.client, nil
+	}
 
-	return c.manualClient, c.manualErr
+	key := fmt.Sprintf("%t/%s", manual, codec)
+
+	c.producersMu.Lock()
+	defer c.producersMu.Unlock()
+
+	if p, ok := c.producers[key]; ok {
+		return p, nil
+	}
+
+	opts := append([]kgo.Opt(nil), c.options...)
+	if manual {
+		opts = append(opts, kgo.RecordPartitioner(kgo.ManualPartitioner()))
+	}
+
+	if codec != "" {
+		opts = append(opts, kgo.ProducerBatchCompression(compressionCodec(codec)))
+	}
+
+	p, err := kgo.NewClient(opts...)
+	if err != nil {
+		return nil, err
+	}
+
+	if c.producers == nil {
+		c.producers = map[string]*kgo.Client{}
+	}
+
+	c.producers[key] = p
+
+	return p, nil
+}
+
+func compressionCodec(name string) kgo.CompressionCodec {
+	switch name {
+	case "gzip":
+		return kgo.GzipCompression()
+	case "snappy":
+		return kgo.SnappyCompression()
+	case "lz4":
+		return kgo.Lz4Compression()
+	case "zstd":
+		return kgo.ZstdCompression()
+	}
+
+	return kgo.NoCompression()
 }
 
 // newReader opens a short-lived consumer for reading a topic by offset ranges.
@@ -138,51 +241,8 @@ func saslMechanism(s *config.SASL) (sasl.Mechanism, error) {
 	case config.MechanismScramSHA512:
 		return scram.Auth{User: s.User, Pass: s.Password, IsToken: s.IsToken}.AsSha512Mechanism(), nil
 	case config.MechanismOAuth:
-		return oauthMechanism(&s.OAuth), nil
+		return oauthMechanism(s.OAuth)
 	}
 
 	return nil, fmt.Errorf("unsupported sasl mechanism %q", s.Mechanism)
-}
-
-func oauthMechanism(s *config.OAuth) sasl.Mechanism {
-	if s.Token != "" {
-		return oauth.Auth{Token: s.Token}.AsMechanism()
-	}
-
-	credentials := clientcredentials.Config{
-		TokenURL:     s.TokenURL,
-		ClientID:     s.ClientID,
-		ClientSecret: s.ClientSecret,
-		Scopes:       s.Scopes,
-	}
-
-	var (
-		mu     sync.Mutex
-		cached *oauth2.Token
-	)
-
-	return oauth.Oauth(func(ctx context.Context) (oauth.Auth, error) {
-		mu.Lock()
-		defer mu.Unlock()
-
-		if !cached.Valid() {
-			ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-			defer cancel()
-
-			token, err := credentials.Token(ctx)
-			if err != nil {
-				// Token endpoint bodies can echo secrets; report only the status.
-				var response *oauth2.RetrieveError
-				if errors.As(err, &response) && response.Response != nil {
-					return oauth.Auth{}, fmt.Errorf("oauth: token endpoint returned HTTP %d", response.Response.StatusCode)
-				}
-
-				return oauth.Auth{}, errors.New("oauth: token request failed")
-			}
-
-			cached = token
-		}
-
-		return oauth.Auth{Token: cached.AccessToken}, nil
-	})
 }

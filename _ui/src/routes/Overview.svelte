@@ -1,51 +1,188 @@
 <script lang="ts">
   import { api, type Cluster, type Overview } from '../lib/api'
-  import { fmt } from '../lib/format'
+  import { fmt, bytes } from '../lib/format'
   import { href } from '../lib/router.svelte'
+  import { ArrowRight, RefreshCw, Check } from '@lucide/svelte'
 
   let { cluster }: { cluster: Cluster } = $props()
 
   let data = $state<Overview>()
   let error = $state('')
+  let loading = $state(false)
 
   function load() {
+    loading = true
     api
       .overview(cluster.name)
-      .then((o) => (data = o))
+      .then((o) => {
+        data = o
+        error = ''
+      })
       .catch((e) => (error = e.message))
+      .finally(() => (loading = false))
   }
   load()
+
+  const health = $derived.by(() => {
+    if (!data) return undefined
+    if (data.offline_partitions > 0)
+      return { cls: 'bg-danger-soft text-danger', text: `${fmt(data.offline_partitions)} partitions offline` }
+    if (data.under_replicated > 0)
+      return { cls: 'bg-warn-soft text-warn', text: `${fmt(data.under_replicated)} partitions under-replicated` }
+    return { cls: 'bg-ok-soft text-ok', text: 'All partitions in sync' }
+  })
+  // Only topics with a problem come from the server, so this stays small on
+  // clusters with thousands of topics. Worst first, then by name.
+  const problems = $derived.by(() =>
+    (data?.problems ?? [])
+      .map((t) => {
+        const offline: number[] = []
+        const under: number[] = []
+        for (let i = 0; i < t.partitions.length; i++) {
+          if (t.partitions[i] === 'x') offline.push(i)
+          else if (t.partitions[i] === 'u') under.push(i)
+        }
+        return { topic: t.topic, total: t.partitions.length, offline, under }
+      })
+      .sort((a, b) => b.offline.length - a.offline.length || b.under.length - a.under.length || a.topic.localeCompare(b.topic)),
+  )
+  const problemLimit = 50
+  let showAllProblems = $state(false)
+  const shownProblems = $derived(showAllProblems ? problems : problems.slice(0, problemLimit))
+  const ids = (xs: number[]) => (xs.length > 8 ? `${xs.slice(0, 8).join(', ')} +${xs.length - 8}` : xs.join(', '))
+
+  const maxLeaders = $derived(Math.max(1, ...(data?.brokers.map((b) => b.leaders) ?? [1])))
 </script>
 
-<div class="head">
-  <h1>{cluster.name}</h1>
-  {#if data?.cluster_id}<span class="faint mono">{data.cluster_id}</span>{/if}
-</div>
+{#snippet stat(label: string, value: string, note: string, link?: string, tone = '')}
+  <svelte:element
+    this={link ? 'a' : 'div'}
+    href={link}
+    class="group -mr-px grid gap-0.5 border-r border-line px-[18px] pt-4 pb-3.5 text-ink {link ? 'hover:bg-hover hover:no-underline' : ''}"
+  >
+    <span class="flex items-center gap-1.5 text-[12.5px] text-ink-2">
+      {label}
+      {#if link}<ArrowRight size={13} class="text-ink-3 transition-transform duration-150 ease-out group-hover:translate-x-0.5 group-hover:text-ink" />{/if}
+    </span>
+    <b class="text-3xl leading-tight font-[450] tracking-tight tabular-nums {tone}">{value}</b>
+    <small class="text-xs {tone || 'text-ink-3'}">{note}</small>
+  </svelte:element>
+{/snippet}
+
+<header class="mb-6 grid gap-1.5 border-b border-dashed border-line-dash pb-[18px]">
+  <div class="flex flex-wrap items-center gap-3.5">
+    <h1>{cluster.name}</h1>
+    {#if health}
+      <span class="inline-flex items-center gap-[7px] rounded-[2px] px-2.5 py-0.5 text-[12.5px] font-medium {health.cls}">
+        <span class="sq"></span>{health.text}
+      </span>
+    {/if}
+  </div>
+  <div class="flex flex-wrap items-center gap-4 text-[13px]">
+    {#if data?.cluster_id}<span class="mono faint min-w-0 break-all">cluster-id {data.cluster_id}</span>{/if}
+    {#if data}<span class="faint">{data.brokers.length} {data.brokers.length === 1 ? 'broker' : 'brokers'} · controller #{data.controller}</span>{/if}
+    <span class="spacer"></span>
+    <button onclick={load} disabled={loading}>
+      <RefreshCw size={14} class={loading ? 'animate-spin' : ''} />{loading ? 'Refreshing…' : 'Refresh'}
+    </button>
+  </div>
+</header>
 
 {#if error}
   <div class="error">{error}</div>
 {:else if !data}
-  <div class="empty">Yükleniyor…</div>
+  <div class="empty">Loading…</div>
 {:else}
-  <div class="stats">
-    <a class="panel stat" href={href(cluster.name, 'topics')}><span class="muted">Topics</span><b>{fmt(data.topics)}</b><small class="faint">+{data.internal_topics} internal</small></a>
-    <div class="panel stat"><span class="muted">Partitions</span><b>{fmt(data.partitions)}</b></div>
-    <div class="panel stat"><span class="muted">Under-replicated</span><b class:warn={data.under_replicated > 0}>{fmt(data.under_replicated)}</b></div>
-    <div class="panel stat"><span class="muted">Offline</span><b class:bad={data.offline_partitions > 0}>{fmt(data.offline_partitions)}</b></div>
-    <a class="panel stat" href={href(cluster.name, 'groups')}><span class="muted">Consumer groups</span><b>{fmt(data.groups)}</b></a>
-  </div>
+  <section class="corners mb-3.5 grid grid-cols-[repeat(auto-fit,minmax(160px,1fr))] overflow-hidden border border-line-strong bg-surface [--c:var(--text-2)] [--k:8px]">
+    {@render stat('Topics', fmt(data.topics), `+${fmt(data.internal_topics)} internal`, href(cluster.name, 'topics'))}
+    {@render stat('Partitions', fmt(data.partitions), data.brokers.length ? `~${fmt(Math.round(data.partitions / data.brokers.length))} per broker` : '—')}
+    {@render stat('Under-replicated', fmt(data.under_replicated), data.under_replicated > 0 ? 'replicas out of ISR' : 'healthy', undefined, data.under_replicated > 0 ? 'text-warn' : '')}
+    {@render stat('Offline', fmt(data.offline_partitions), data.offline_partitions > 0 ? 'no leader' : 'healthy', undefined, data.offline_partitions > 0 ? 'text-danger' : '')}
+    {@render stat('Consumer groups', fmt(data.groups), 'view lag', href(cluster.name, 'groups'))}
+    {#if data.size >= 0}{@render stat('Disk usage', bytes(data.size), 'all replicas')}{/if}
+  </section>
 
-  <h2 class="section">Brokers</h2>
-  <div class="panel">
+  {#if data.has_registry}
+    <a
+      href={href(cluster.name, 'schemas')}
+      class="mb-8 flex flex-wrap items-center gap-2.5 border border-line-strong bg-surface px-3.5 py-2.5 text-[13px] text-ink hover:border-cta-line hover:bg-sel hover:no-underline"
+    >
+      <span class="sq ok"></span>
+      <span>Schema Registry connected</span>
+      <span class="faint">Avro, Protobuf and JSON Schema payloads are decoded automatically</span>
+      <span class="spacer"></span>
+      <span class="inline-flex items-center gap-1.5 font-medium">Browse subjects <ArrowRight size={14} /></span>
+    </a>
+  {:else}
+    <div class="mb-8"></div>
+  {/if}
+
+  <div class="mb-2.5 flex items-baseline gap-2">
+    <h2>Partition health</h2>
+    {#if problems.length}<span class="faint">{fmt(problems.length)} {problems.length === 1 ? 'topic needs' : 'topics need'} attention</span>{/if}
+  </div>
+  {#if !problems.length}
+    <div class="panel mb-8 flex items-center gap-2.5 px-4 py-3 text-[13px]">
+      <span class="sq ok"></span>
+      <span>All {fmt(data.partitions)} partitions across {fmt(data.topics + data.internal_topics)} topics have a leader and a full ISR.</span>
+      <Check size={14} class="text-ok" />
+    </div>
+  {:else}
+    <div class="panel mb-8 overflow-x-auto">
+      <table>
+        <thead><tr><th>Topic</th><th class="num">Partitions</th><th class="num">Offline</th><th class="num">Under-replicated</th><th>Affected partitions</th></tr></thead>
+        <tbody>
+          {#each shownProblems as t (t.topic)}
+            <tr>
+              <td><a class="mono" href={href(cluster.name, 'topics', t.topic, { tab: 'partitions' })}>{t.topic}</a></td>
+              <td class="num">{fmt(t.total)}</td>
+              <td class="num">{#if t.offline.length}<span class="badge danger">{fmt(t.offline.length)}</span>{:else}<span class="faint">0</span>{/if}</td>
+              <td class="num">{#if t.under.length}<span class="badge warn">{fmt(t.under.length)}</span>{:else}<span class="faint">0</span>{/if}</td>
+              <td class="mono text-xs text-ink-2">
+                {#if t.offline.length}<span class="text-danger">{ids(t.offline)}</span>{/if}
+                {#if t.offline.length && t.under.length}<span class="faint"> · </span>{/if}
+                {#if t.under.length}<span>{ids(t.under)}</span>{/if}
+              </td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+      {#if problems.length > problemLimit}
+        <div class="border-t border-line px-4 py-2 text-[12.5px]">
+          <button class="ghost" onclick={() => (showAllProblems = !showAllProblems)}>
+            {showAllProblems ? `Show the first ${problemLimit}` : `Show all ${fmt(problems.length)} topics`}
+          </button>
+        </div>
+      {/if}
+    </div>
+  {/if}
+
+  <div class="mb-2.5 flex items-baseline gap-2">
+    <h2>Brokers</h2>
+    <span class="faint">{data.brokers.length}</span>
+  </div>
+  <div class="panel overflow-x-auto">
     <table>
-      <thead><tr><th>ID</th><th>Host</th><th class="num">Port</th><th>Rack</th><th></th></tr></thead>
+      <thead>
+        <tr>
+          <th>ID</th><th>Host</th><th>Rack</th><th class="w-[22%] max-lg:hidden">Leader share</th>
+          <th class="num">Leaders</th><th class="num">Replicas</th><th>Version</th><th></th>
+        </tr>
+      </thead>
       <tbody>
         {#each data.brokers as b (b.id)}
           <tr>
-            <td class="mono">{b.id}</td>
-            <td class="mono">{b.host}</td>
-            <td class="num mono">{b.port}</td>
+            <td class="mono"><a href={href(cluster.name, 'brokers', String(b.id))}>#{b.id}</a></td>
+            <td class="mono">{b.host}<span class="faint">:{b.port}</span></td>
             <td class="muted">{b.rack ?? '—'}</td>
+            <td class="max-lg:hidden">
+              <span class="mt-[7px] block h-1.5 overflow-hidden rounded-[1px] bg-surface-2">
+                <span class="block h-full bg-ink-2" style:width="{(b.leaders / maxLeaders) * 100}%"></span>
+              </span>
+            </td>
+            <td class="num mono">{fmt(b.leaders)}</td>
+            <td class="num mono">{fmt(b.replicas)}</td>
+            <td class="faint text-xs" title="Guessed from supported API versions">{b.version ?? '—'}</td>
             <td>{#if b.controller}<span class="badge accent">controller</span>{/if}</td>
           </tr>
         {/each}
@@ -54,15 +191,3 @@
   </div>
 {/if}
 
-<style>
-  .head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 16px; }
-  .stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 12px; margin-bottom: 24px; }
-  .stat { display: grid; gap: 2px; padding: 12px 14px; color: var(--text); }
-  a.stat:hover { border-color: var(--border-strong); text-decoration: none; }
-  .stat span { font-size: 12px; }
-  .stat b { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
-  .stat small { font-size: 11px; }
-  .warn { color: var(--warn); }
-  .bad { color: var(--danger); }
-  .section { margin-bottom: 8px; }
-</style>

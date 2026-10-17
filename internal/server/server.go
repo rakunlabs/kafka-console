@@ -23,10 +23,11 @@ import (
 
 type Server struct {
 	registry *kafka.Registry
+	info     string
 }
 
 func Start(ctx context.Context, cfg *config.Config, registry *kafka.Registry, ui fs.FS) error {
-	s := &Server{registry: registry}
+	s := &Server{registry: registry, info: cfg.Info}
 
 	server := ada.New()
 	server.Use(
@@ -44,21 +45,55 @@ func Start(ctx context.Context, cfg *config.Config, registry *kafka.Registry, ui
 
 	root := server.Group(base)
 
-	api := root.Group("/api/v1")
+	api := root.Group("/api/v1", auditWrites(cfg.Server.UserHeader))
+	api.GET("/info", s.appInfo)
 	api.GET("/clusters", s.clusters)
+	api.POST("/filter/check", s.checkFilter)
 
 	c := api.Group("/clusters/{cluster}")
 	c.GET("/overview", s.overview)
+	c.GET("/names", s.names)
+	c.GET("/brokers/{broker}", s.broker)
+	c.PATCH("/brokers/{broker}/configs", s.alterBrokerConfigs)
+
 	c.GET("/topics", s.topics)
 	c.POST("/topics", s.createTopic)
 	c.GET("/topics/{topic}", s.topic)
 	c.DELETE("/topics/{topic}", s.deleteTopic)
+	c.PATCH("/topics/{topic}/configs", s.alterTopicConfigs)
+	c.POST("/topics/{topic}/partitions", s.addPartitions)
+	c.POST("/topics/{topic}/delete-records", s.deleteRecords)
+	c.GET("/topics/{topic}/consumers", s.topicConsumers)
 	c.GET("/topics/{topic}/messages", s.messages)
+	c.GET("/topics/{topic}/tail", s.tail)
 	c.POST("/topics/{topic}/messages", s.produce)
+	c.POST("/topics/{topic}/resend", s.resend)
+
 	c.GET("/groups", s.groups)
+	c.POST("/groups", s.createGroup)
 	c.GET("/groups/{group}", s.group)
 	c.DELETE("/groups/{group}", s.deleteGroup)
 	c.POST("/groups/{group}/reset", s.resetOffsets)
+	c.POST("/groups/{group}/topics", s.addGroupTopic)
+	c.POST("/groups/{group}/delete-offsets", s.deleteGroupOffsets)
+
+	c.GET("/acls", s.acls)
+	c.POST("/acls", s.createACLs)
+	c.POST("/acls/delete", s.deleteACL)
+	c.GET("/users", s.users)
+	c.POST("/users", s.upsertUser)
+	c.DELETE("/users/{user}", s.deleteUser)
+	c.GET("/quotas", s.quotas)
+	c.POST("/quotas", s.alterQuota)
+
+	c.GET("/schemas", s.schemaRegistry)
+	c.POST("/schemas", s.createSchema)
+	c.POST("/schemas/check", s.checkCompatibility)
+	c.PUT("/schemas/compatibility", s.setGlobalCompatibility)
+	c.GET("/schemas/subjects/{subject}", s.subject)
+	c.DELETE("/schemas/subjects/{subject}", s.deleteSubject)
+	c.PUT("/schemas/subjects/{subject}/compatibility", s.setCompatibility)
+	c.DELETE("/schemas/subjects/{subject}/versions/{version}", s.deleteSchemaVersion)
 
 	// Unknown API paths must not fall through to the SPA index.
 	api.HandleFuncWildcard("/", func(w http.ResponseWriter, _ *http.Request) {
@@ -90,10 +125,15 @@ func Start(ctx context.Context, cfg *config.Config, registry *kafka.Registry, ui
 }
 
 type clusterInfo struct {
-	Name       string   `json:"name"`
-	Brokers    []string `json:"brokers"`
-	ReadOnly   bool     `json:"read_only"`
-	Production bool     `json:"production"`
+	Name           string   `json:"name"`
+	Brokers        []string `json:"brokers"`
+	ReadOnly       bool     `json:"read_only"`
+	Production     bool     `json:"production"`
+	SchemaRegistry bool     `json:"schema_registry"`
+}
+
+func (s *Server) appInfo(c *ada.Context) error {
+	return c.SendJSON(map[string]string{"info": s.info})
 }
 
 func (s *Server) clusters(c *ada.Context) error {
@@ -102,6 +142,7 @@ func (s *Server) clusters(c *ada.Context) error {
 		cl, _ := s.registry.Get(name)
 		out = append(out, clusterInfo{
 			Name: name, Brokers: cl.Brokers(), ReadOnly: cl.ReadOnly(), Production: cl.Production(),
+			SchemaRegistry: cl.HasRegistry(),
 		})
 	}
 
@@ -121,11 +162,17 @@ func (s *Server) client(c *ada.Context) (*kafka.Client, error) {
 
 // fail maps domain errors to HTTP errors whose text is safe to show.
 func fail(err error) error {
+	var invalid kafka.ErrInvalid
+
 	switch {
 	case errors.Is(err, kafka.ErrReadOnly):
 		return ada.WrapHTTPError(http.StatusForbidden, err)
 	case errors.Is(err, kafka.ErrNotFound):
 		return ada.WrapHTTPError(http.StatusNotFound, err)
+	case errors.As(err, &invalid):
+		return ada.WrapHTTPError(http.StatusBadRequest, err)
+	case errors.Is(err, kafka.ErrNoRegistry), errors.Is(err, kafka.ErrUnsupported):
+		return ada.WrapHTTPError(http.StatusNotImplemented, err)
 	default:
 		// Kafka errors carry no secrets and the operator needs them.
 		return ada.WrapHTTPError(http.StatusBadGateway, err)
@@ -146,6 +193,20 @@ func (s *Server) overview(c *ada.Context) error {
 	return c.SendJSON(o)
 }
 
+func (s *Server) names(c *ada.Context) error {
+	cl, err := s.client(c)
+	if err != nil {
+		return err
+	}
+
+	n, err := cl.Names(c.Request.Context())
+	if err != nil {
+		return fail(err)
+	}
+
+	return c.SendJSON(n)
+}
+
 func (s *Server) topics(c *ada.Context) error {
 	cl, err := s.client(c)
 	if err != nil {
@@ -158,6 +219,12 @@ func (s *Server) topics(c *ada.Context) error {
 	}
 
 	return c.SendJSON(t)
+}
+
+func (s *Server) topicConsumers(c *ada.Context) error {
+	return s.handle(c, func(cl *kafka.Client) (any, error) {
+		return cl.TopicConsumers(c.Request.Context(), c.Request.PathValue("topic"))
+	})
 }
 
 func (s *Server) topic(c *ada.Context) error {
@@ -224,18 +291,13 @@ func (s *Server) messages(c *ada.Context) error {
 		Limit:     int(queryInt(q.Get("limit"))),
 		MaxScan:   int(queryInt(q.Get("max_scan"))),
 		Filter:    q.Get("filter"),
+		Search:    q.Get("q"),
 		Timeout:   time.Duration(queryInt(q.Get("timeout"))) * time.Second,
+		Raw:       q.Get("raw") == "true",
 	}
 
-	if p := q.Get("partitions"); p != "" {
-		for _, v := range strings.Split(p, ",") {
-			n, err := strconv.ParseInt(strings.TrimSpace(v), 10, 32)
-			if err != nil {
-				return ada.NewHTTPError(http.StatusBadRequest, "partitions must be comma separated numbers")
-			}
-
-			req.Partitions = append(req.Partitions, int32(n))
-		}
+	if req.Partitions, err = partitions(q.Get("partitions")); err != nil {
+		return err
 	}
 
 	res, err := cl.Consume(c.Request.Context(), c.Request.PathValue("topic"), req)
@@ -267,6 +329,17 @@ func (s *Server) produce(c *ada.Context) error {
 	}
 
 	return c.SendJSON(res)
+}
+
+func (s *Server) resend(c *ada.Context) error {
+	req, err := bind[kafka.ResendRequest](c)
+	if err != nil {
+		return err
+	}
+
+	return s.handle(c, func(cl *kafka.Client) (any, error) {
+		return cl.Resend(c.Request.Context(), c.Request.PathValue("topic"), req)
+	})
 }
 
 func (s *Server) groups(c *ada.Context) error {
@@ -308,6 +381,30 @@ func (s *Server) deleteGroup(c *ada.Context) error {
 	}
 
 	return c.SendNoContent()
+}
+
+func (s *Server) createGroup(c *ada.Context) error {
+	req, err := bind[kafka.CreateGroupRequest](c)
+	if err != nil {
+		return err
+	}
+
+	return s.handle(c, func(cl *kafka.Client) (any, error) {
+		return cl.CreateGroup(c.Request.Context(), req)
+	})
+}
+
+func (s *Server) addGroupTopic(c *ada.Context) error {
+	req, err := bind[kafka.CreateGroupRequest](c)
+	if err != nil {
+		return err
+	}
+
+	req.Group = c.Request.PathValue("group")
+
+	return s.handle(c, func(cl *kafka.Client) (any, error) {
+		return cl.AddGroupTopic(c.Request.Context(), req)
+	})
 }
 
 func (s *Server) resetOffsets(c *ada.Context) error {
