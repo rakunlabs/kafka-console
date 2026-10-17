@@ -194,12 +194,17 @@ and its target. Request bodies are not stored, and secrets are redacted.
 Requires Go and pnpm 11 or newer. The UI's `package.json` pins pnpm and Node.js, and pnpm downloads that Node.js version itself.
 
 ```sh
-make env-up     # local Redpanda broker with Schema Registry
-make run        # backend on :8080 with kafka-console.local.yaml
-make dev-ui     # UI dev server with hot reload (proxies /api to :8080)
-make test       # Go tests
-make lint       # go vet and UI type-check
-make build      # bin/kafka-console with the UI embedded
+make env              # local Redpanda broker with Schema Registry
+make run              # backend on :8080 with kafka-console.local.yaml
+make run-ui           # UI dev server with hot reload (proxies /api to :8080)
+make test             # Go tests
+make lint             # golangci-lint and UI type-check
+make build            # snapshot binary with goreleaser, linux/amd64 by default
+make build-container  # kafka-console:test image from that binary
+make snapshot         # every archive and both images, nothing published
 ```
 
-Releases are built by GoReleaser when a `v*` tag is pushed.
+Build for another platform with `make build GOOS=darwin GOARCH=arm64`.
+
+Pushing a `v*` tag runs GoReleaser in CI. It publishes the archives and a
+multi-arch image (linux/amd64 and linux/arm64) to `ghcr.io`.
