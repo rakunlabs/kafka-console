@@ -1,0 +1,32 @@
+log_level: info
+
+server:
+  port: "8080"
+  # base_path: /kafka   # serve under a prefix behind a reverse proxy
+
+clusters:
+  local:
+    brokers: ["localhost:19092"]
+
+  # staging:
+  #   brokers: ["kafka-1.staging:9093", "kafka-2.staging:9093"]
+  #   tls:
+  #     enabled: true
+  #     ca_file: /etc/kafka/ca.pem
+  #   sasl:
+  #     mechanism: scram-sha-512   # plain | scram-sha-256 | scram-sha-512 | oauthbearer
+  #     user: console
+  #     password_file: /run/secrets/kafka-password
+  #
+  # prod:
+  #   brokers: ["kafka.prod:9093"]
+  #   production: true   # red banner in the UI
+  #   read_only: true    # refuses produce, topic create/delete, offset reset
+  #   tls:
+  #     enabled: true
+  #   sasl:
+  #     mechanism: oauthbearer
+  #     oauth:
+  #       token_url: https://idp.example.com/oauth2/token
+  #       client_id: kafka-console
+  #       client_secret: ""   # or KAFKA_CONSOLE_CLUSTERS_PROD_SASL_OAUTH_CLIENT_SECRET
