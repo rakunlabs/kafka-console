@@ -315,12 +315,100 @@ export type ResendResult = {
 
 export type FilterProblem = { line: number; column: number; message: string }
 
+export type RangeBound = { type: string; offset?: number; timestamp?: number }
+
+export type ReplayBody = {
+  partitions?: number[]
+  from: RangeBound
+  to: RangeBound
+  search?: string
+  filter?: string
+  target: string
+  keep_partition: boolean
+  keep_timestamp: boolean
+  mark_source: boolean
+  limit?: number
+  dry_run: boolean
+}
+
+export type ReplayRange = { partition: number; start: number; end: number }
+
+export type ReplayEvent = {
+  type: 'plan' | 'progress' | 'done'
+  plan?: ReplayRange[]
+  total: number
+  scanned: number
+  matched: number
+  written: number
+  failed: number
+  script_errors: number
+  first_error?: string
+  stopped_by?: string
+  elapsed_ms: number
+}
+
+export type ImportRecord = {
+  key: string | null
+  value: string | null
+  headers: Header[]
+  partition?: number | null
+  key_schema?: EncodeSchema | null
+  value_schema?: EncodeSchema | null
+  key_encoding?: string
+  value_encoding?: string
+  timestamp?: number | null
+}
+
+export type ImportBody = {
+  records: ImportRecord[]
+  keep_partition: boolean
+  keep_timestamp: boolean
+  compression?: string
+  dry_run: boolean
+}
+
+export type ImportResult = { partition: number; offset: number; error?: string }
+
+// replay streams newline-delimited events until the replay ends or signal
+// aborts, which also stops it on the server.
+export async function replay(c: string, t: string, body: ReplayBody, onevent: (e: ReplayEvent) => void, signal?: AbortSignal) {
+  const res = await fetch(`api/v1/clusters/${enc(c)}/topics/${enc(t)}/replay`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+    signal,
+  })
+  if (!res.ok || !res.body) {
+    const text = await res.text()
+    let message = text || res.statusText
+    try {
+      message = JSON.parse(text).message ?? message
+    } catch {}
+    throw new Error(message)
+  }
+  const reader = res.body.pipeThrough(new TextDecoderStream()).getReader()
+  let buf = ''
+  for (;;) {
+    const { value, done } = await reader.read()
+    if (done) break
+    buf += value
+    let nl
+    while ((nl = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, nl).trim()
+      buf = buf.slice(nl + 1)
+      if (line) onevent(JSON.parse(line))
+    }
+  }
+}
+
 export const api = {
   resend: (
     c: string,
     t: string,
     body: { records: { partition: number; offset: number }[]; target: string; keep_partition: boolean; mark_source: boolean },
   ) => request<ResendResult[]>('POST', `/clusters/${enc(c)}/topics/${enc(t)}/resend`, body),
+  importRecords: (c: string, t: string, body: ImportBody) =>
+    request<ImportResult[]>('POST', `/clusters/${enc(c)}/topics/${enc(t)}/import`, body),
   checkFilter: (source: string) => request<{ problems: FilterProblem[] }>('POST', '/filter/check', { source }),
   info: () => request<{ info: string }>('GET', '/info'),
   clusters: () => request<Cluster[]>('GET', '/clusters'),

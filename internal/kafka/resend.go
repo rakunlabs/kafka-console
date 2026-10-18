@@ -89,22 +89,13 @@ func (c *Client) Resend(ctx context.Context, topic string, req ResendRequest) ([
 		target = topic
 	}
 
-	details, err := c.admin.ListTopics(ctx, target)
-	if err != nil {
-		return nil, fmt.Errorf("describe topic; %w", err)
+	partitions := make([]int32, 0, len(req.Records))
+	for _, r := range req.Records {
+		partitions = append(partitions, r.Partition)
 	}
 
-	td, ok := details[target]
-	if !ok || td.Err != nil {
-		return nil, ErrInvalid{fmt.Errorf("target topic %q does not exist", target)}
-	}
-
-	if req.KeepPartition {
-		for _, r := range req.Records {
-			if _, ok := td.Partitions[r.Partition]; !ok {
-				return nil, ErrInvalid{fmt.Errorf("target %q has no partition %d; turn off \"keep partition\"", target, r.Partition)}
-			}
-		}
+	if err := c.checkTarget(ctx, target, req.KeepPartition, partitions); err != nil {
+		return nil, err
 	}
 
 	records, err := c.fetchExact(ctx, topic, req.Records)
@@ -134,25 +125,10 @@ func (c *Client) Resend(ctx context.Context, topic string, req ResendRequest) ([
 			continue
 		}
 
-		rec := &kgo.Record{Topic: target, Key: src.Key, Value: src.Value}
-		rec.Headers = append(rec.Headers, src.Headers...)
-
-		for _, h := range req.ExtraHeaders {
-			if h.Key != "" {
-				rec.Headers = append(rec.Headers, kgo.RecordHeader{Key: h.Key, Value: []byte(h.Value)})
-			}
-		}
-
-		if req.MarkSource {
-			rec.Headers = append(rec.Headers, kgo.RecordHeader{
-				Key:   "x-resent-from",
-				Value: fmt.Appendf(nil, "%s/%d/%d", topic, src.Partition, src.Offset),
-			})
-		}
-
-		if req.KeepPartition {
-			rec.Partition = src.Partition
-		}
+		rec := copyRecord(src, replayOptions{
+			source: topic, target: target, keepPartition: req.KeepPartition,
+			markSource: req.MarkSource, extraHeaders: req.ExtraHeaders,
+		})
 
 		batch = append(batch, rec)
 		index = append(index, i)
@@ -160,10 +136,14 @@ func (c *Client) Resend(ctx context.Context, topic string, req ResendRequest) ([
 
 	// Produced in the order given, which is the order the user saw them in,
 	// so per-key order is preserved within the batch.
-	results := producer.ProduceSync(pctx, batch...)
+	// Results arrive in completion order, not the order produced.
+	at := make(map[*kgo.Record]int, len(batch))
+	for j, rec := range batch {
+		at[rec] = index[j]
+	}
 
-	for j, r := range results {
-		i := index[j]
+	for _, r := range producer.ProduceSync(pctx, batch...) {
+		i := at[r.Record]
 		if r.Err != nil {
 			out[i].Error = r.Err.Error()
 

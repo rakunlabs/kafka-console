@@ -242,6 +242,63 @@ func (s *Server) tail(c *ada.Context) error {
 	return nil
 }
 
+// replay streams newline-delimited JSON events: a plan, progress and a final
+// done. Closing the connection stops the replay; records already handed to
+// the producer are still written.
+func (s *Server) replay(c *ada.Context) error {
+	cl, err := s.client(c)
+	if err != nil {
+		return err
+	}
+
+	req, err := bind[kafka.ReplayRequest](c)
+	if err != nil {
+		return err
+	}
+
+	w := c.Response
+	rc := http.NewResponseController(w)
+	enc := json.NewEncoder(w)
+	started := false
+
+	err = cl.Replay(c.Request.Context(), c.Request.PathValue("topic"), req, func(e kafka.ReplayEvent) bool {
+		if !started {
+			started = true
+
+			w.Header().Set("Content-Type", "application/x-ndjson")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.Header().Set("X-Accel-Buffering", "no")
+			w.WriteHeader(http.StatusOK)
+		}
+
+		if enc.Encode(e) != nil {
+			return false
+		}
+
+		return rc.Flush() == nil
+	})
+	if err != nil {
+		if !started {
+			return fail(err)
+		}
+
+		_ = enc.Encode(kafka.ReplayEvent{Type: "done", StoppedBy: "error", FirstError: err.Error()})
+	}
+
+	return nil
+}
+
+func (s *Server) importRecords(c *ada.Context) error {
+	req, err := bind[kafka.ImportRequest](c)
+	if err != nil {
+		return err
+	}
+
+	return s.handle(c, func(cl *kafka.Client) (any, error) {
+		return cl.Import(c.Request.Context(), c.Request.PathValue("topic"), req)
+	})
+}
+
 // ─── Groups ───────────────────────────────────────────────
 
 func (s *Server) deleteGroupOffsets(c *ada.Context) error {

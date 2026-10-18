@@ -188,7 +188,8 @@ func isPreview(r *http.Request, body []byte) bool {
 		return true
 	}
 
-	if strings.HasSuffix(r.URL.Path, "/reset") && len(body) > 0 {
+	dryRunnable := strings.HasSuffix(r.URL.Path, "/reset") || strings.HasSuffix(r.URL.Path, "/replay") || strings.HasSuffix(r.URL.Path, "/import")
+	if dryRunnable && len(body) > 0 {
 		var req struct {
 			DryRun bool `json:"dry_run"`
 		}

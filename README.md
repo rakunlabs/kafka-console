@@ -34,6 +34,8 @@ far behind they are.
   - Text search, JavaScript filters, live tail, JSON tree view.
   - Resend messages to another topic.
   - Open a message in Produce to edit its key, value or headers, review changes, and send a new record to the same or another topic.
+  - Replay a range by offset or time, with the same search and JS filter, to another topic or back into the same one. Shows a count before writing and progress while it runs.
+  - Import records from a file: a JSON or CSV export from this console, JSON lines, or one value per line. Can keep partitions, timestamps and schema IDs. The file is read as a stream, so any size works. Every record is checked before any is written, and a stopped or failed import can resume from the first unwritten record.
 - **Produce:** key, headers, partition, compression, base64, or JSON encoded with a registry schema.
 - **Consumer groups:**
   - Per-partition lag and catch-up estimate.

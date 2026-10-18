@@ -31,6 +31,8 @@ func TestAuditWrites(t *testing.T) {
 	}
 	c.POST("/groups/{group}/reset", handler)
 	c.POST("/users", handler)
+	c.POST("/topics/{topic}/replay", handler)
+	c.POST("/topics/{topic}/import", handler)
 	c.GET("/topics", handler)
 
 	do := func(method, path, body string, header map[string]string) map[string]any {
@@ -67,6 +69,22 @@ func TestAuditWrites(t *testing.T) {
 	t.Run("dry run is not logged", func(t *testing.T) {
 		if line := do("POST", "/api/v1/clusters/prod/groups/billing/reset", `{"topic":"orders","dry_run":true}`, nil); line != nil {
 			t.Fatalf("dry run logged: %v", line)
+		}
+	})
+
+	t.Run("replay and import dry runs are not logged, real ones are", func(t *testing.T) {
+		for _, op := range []string{"replay", "import"} {
+			path := "/api/v1/clusters/prod/topics/orders/" + op
+			if line := do("POST", path, `{"dry_run":true}`, nil); line != nil {
+				t.Fatalf("%s dry run logged: %v", op, line)
+			}
+			line := do("POST", path, `{"records":[{"key":"k","value":"secret"}],"dry_run":false}`, nil)
+			if line == nil || line["action"] != "topics."+op || line["target_topic"] != "orders" {
+				t.Fatalf("%s not logged: %v", op, line)
+			}
+			if strings.Contains(buf.String(), "secret") {
+				t.Fatalf("%s payload logged: %s", op, buf.String())
+			}
 		}
 	})
 

@@ -72,6 +72,8 @@ func Start(ctx context.Context, cfg *config.Config, registry *kafka.Registry, ui
 	c.GET("/topics/{topic}/tail", s.tail)
 	c.POST("/topics/{topic}/messages", s.produce)
 	c.POST("/topics/{topic}/resend", s.resend)
+	c.POST("/topics/{topic}/replay", s.replay)
+	c.POST("/topics/{topic}/import", s.importRecords)
 
 	c.GET("/groups", s.groups)
 	c.POST("/groups", s.createGroup)

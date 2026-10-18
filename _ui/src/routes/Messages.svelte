@@ -4,9 +4,11 @@
   import { fmt, time } from '../lib/format'
   import ValueView from '../lib/ValueView.svelte'
   import ResendDialog from '../lib/ResendDialog.svelte'
+  import ReplayDialog from '../lib/ReplayDialog.svelte'
+  import ImportDialog from '../lib/ImportDialog.svelte'
   import { messageDraft } from '../lib/produce'
   import { Pencil } from '@lucide/svelte'
-  import { Play, Pause, Square, Radio, Download, Copy, Check, ChevronUp, ChevronDown, Plus, Minus, ChevronsUpDown, ChevronsDownUp, Repeat, X, Code, Binary, Search } from '@lucide/svelte'
+  import { Play, Pause, Square, Radio, Download, Copy, Check, ChevronUp, ChevronDown, Plus, Minus, ChevronsUpDown, ChevronsDownUp, Repeat, X, Code, Binary, Search, Upload, History } from '@lucide/svelte'
 
   let { cluster, topic, partitions, onedit }: { cluster: Cluster; topic: string; partitions: number[]; onedit: (message: Message) => void } = $props()
 
@@ -141,7 +143,13 @@
     let body: string
     let type: string
     if (kind === 'json') {
-      body = JSON.stringify(result.messages.map((m) => ({ ...m, value: parsed(m) })), null, 2)
+      // JSON values are spliced in as their text: parsing them would round
+      // large integers, and Import reads this file back.
+      body = '[\n' + result.messages.map((m) => {
+        const raw = rawJSON(m)
+        const rest = JSON.stringify({ ...m, value: raw === undefined ? m.value : null }, null, 2)
+        return '  ' + (raw === undefined ? rest : rest.replace(/"value": null/, () => `"value": ${raw}`)).replaceAll('\n', '\n  ')
+      }).join(',\n') + '\n]\n'
       type = 'application/json'
     } else {
       const esc = (v: unknown) => {
@@ -162,14 +170,15 @@
     URL.revokeObjectURL(a.href)
   }
 
-  function parsed(m: Message) {
-    if (m.value === null) return null
-    if (m.value_format && m.value_format !== 'text' && m.value_format !== 'binary') {
-      try {
-        return JSON.parse(m.value)
-      } catch {}
+  // The value's own JSON text when it is a JSON document, else undefined.
+  function rawJSON(m: Message) {
+    if (m.value === null || m.truncated || !m.value_format || m.value_format === 'text' || m.value_format === 'binary') return undefined
+    try {
+      JSON.parse(m.value)
+      return m.value.trim()
+    } catch {
+      return undefined
     }
-    return m.value
   }
 
 
@@ -223,6 +232,8 @@
   const pickAll = () => (picked = allPicked ? new Set() : new Set(result?.messages.map((m) => `${m.partition}:${m.offset}`)))
 
   let resending = $state(false)
+  let replaying = $state(false)
+  let importing = $state(false)
   let resendList = $state<Message[]>([])
   function resend(list: Message[]) {
     // Oldest first, so per-key order survives the copy.
@@ -264,7 +275,7 @@
   }
   function onkey(e: KeyboardEvent) {
     const t = e.target as HTMLElement
-    if (resending || t.closest('input, textarea, select, [contenteditable], dialog') || e.metaKey || e.ctrlKey || e.altKey) return
+    if (resending || replaying || importing || t.closest('input, textarea, select, [contenteditable], dialog') || e.metaKey || e.ctrlKey || e.altKey) return
     if (e.key === 'j' || e.key === 'ArrowDown') { e.preventDefault(); step(1) }
     else if (e.key === 'k' || e.key === 'ArrowUp') { e.preventDefault(); step(-1) }
     else if (e.key === 'Escape') selected = undefined
@@ -274,6 +285,9 @@
 <svelte:window onkeydown={onkey} />
 
 <ResendDialog {cluster} {topic} messages={resendList} bind:open={resending} />
+<ReplayDialog {cluster} {topic} {partitions} bind:open={replaying}
+  seed={{ partition, start, offset, timestamp, search: search.trim(), filter: showFilter ? filter : '' }} />
+<ImportDialog {cluster} {topic} {partitions} bind:open={importing} />
 {#if editError}<div class="error" role="alert">{editError}</div>{/if}
 
 <form class="controls" onsubmit={(e) => { e.preventDefault(); load() }}>
@@ -373,6 +387,10 @@
         <button class="ghost small" onclick={() => (picked = new Set())}><X size={12} />Clear</button>
         <button class="primary small" disabled={cluster.read_only} onclick={() => resend(pickedMessages)}><Repeat size={13} />Resend…</button>
       </span>
+    {/if}
+    {#if !cluster.read_only}
+      <button class="ghost small" onclick={() => (replaying = true)} title="Copy a range of this topic to another topic or back into it"><History size={13} />Replay range…</button>
+      <button class="ghost small" onclick={() => (importing = true)} title="Write records from a JSON, CSV or text file"><Upload size={13} />Import…</button>
     {/if}
     {#if result.messages.length}
       <button class="ghost small" onclick={() => exportMessages('json')}><Download size={13} />JSON</button>
