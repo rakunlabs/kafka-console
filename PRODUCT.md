@@ -32,6 +32,7 @@ A self-hosted Kafka console that answers "what is in this topic, who is consumin
 - Messages: browse by partition, offset, timestamp, newest/oldest; key/value/headers; JSON pretty print; JS filter; live tail over SSE; JSON/CSV export.
 - Schema Registry (optional per cluster): automatic Avro/Protobuf/JSON Schema decoding of Confluent-framed keys and values; subjects, versions, diff, create with compatibility check, compatibility levels, soft/hard delete.
 - Produce: key, value, headers, target partition, compression, base64 binary, or JSON encoded through a registry schema.
+- Edit & resend: load a full record into Produce; edit key/value/headers and target topic/partition, preserving binary/null data and original schema IDs/message types by default. Review changes before sending a new record; the original stays unchanged. Production requires typing the target topic; read-only clusters block writes. Byte-for-byte Resend remains separate.
 - Consumer groups: list, state, members, per-partition lag; offset reset (earliest/latest/specific/timestamp); delete offsets per topic.
 - Security: ACLs (list/create/delete with presets), SCRAM users, client quotas.
 - Destructive operations (delete topic, delete records, offset reset/delete, hard delete schema) need explicit confirmation.

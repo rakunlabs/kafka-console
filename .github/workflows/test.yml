@@ -55,4 +55,5 @@ jobs:
         working-directory: _ui
         run: |
           pnpm check
+          pnpm test
           pnpm build

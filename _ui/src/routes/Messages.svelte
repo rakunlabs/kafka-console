@@ -4,9 +4,31 @@
   import { fmt, time } from '../lib/format'
   import ValueView from '../lib/ValueView.svelte'
   import ResendDialog from '../lib/ResendDialog.svelte'
+  import { messageDraft } from '../lib/produce'
+  import { Pencil } from '@lucide/svelte'
   import { Play, Pause, Square, Radio, Download, Copy, Check, ChevronUp, ChevronDown, Plus, Minus, ChevronsUpDown, ChevronsDownUp, Repeat, X, Code, Binary, Search } from '@lucide/svelte'
 
-  let { cluster, topic, partitions }: { cluster: Cluster; topic: string; partitions: number[] } = $props()
+  let { cluster, topic, partitions, onedit }: { cluster: Cluster; topic: string; partitions: number[]; onedit: (message: Message) => void } = $props()
+
+  let editing = $state(false)
+  let editError = $state('')
+  let disposed = false
+  onDestroy(() => (disposed = true))
+
+  async function edit(message: Message) {
+    if (editing || cluster.read_only) return
+    editing = true
+    editError = ''
+    try {
+      const full = await api.message(cluster.name, topic, message.partition, message.offset)
+      messageDraft(full)
+      if (!disposed) onedit(full)
+    } catch (e: any) {
+      if (!disposed) editError = e.message
+    } finally {
+      editing = false
+    }
+  }
 
   let start = $state('newest')
   let partition = $state('')
@@ -252,6 +274,7 @@
 <svelte:window onkeydown={onkey} />
 
 <ResendDialog {cluster} {topic} messages={resendList} bind:open={resending} />
+{#if editError}<div class="error" role="alert">{editError}</div>{/if}
 
 <form class="controls" onsubmit={(e) => { e.preventDefault(); load() }}>
   <!-- One strip of joined cells: label inside on the left, control on the
@@ -417,7 +440,10 @@
                       {#if m.key !== null}<span class="faint">key</span><code>{m.key}</code>{/if}
                       {#each m.headers as h, i (i)}<span class="hdr"><span class="faint">{h.key}</span>{h.value}</span>{/each}
                       <span class="spacer"></span>
-                      {#if !cluster.read_only}<button type="button" class="ghost small" onclick={() => resend([m])}><Repeat size={12} />Resend…</button>{/if}
+                       {#if !cluster.read_only}
+                         <button type="button" class="ghost small" disabled={editing} onclick={() => edit(m)}><Pencil size={12} />{editing ? 'Loading…' : 'Edit & resend'}</button>
+                         <button type="button" class="ghost small" onclick={() => resend([m])}><Repeat size={12} />Resend…</button>
+                       {/if}
                       <button type="button" class="ghost small" onclick={() => copy(m.value ?? '')}><Copy size={12} />Copy</button>
                     </div>
                     {#if m.decode_error}<div class="error small-err">Schema decoding failed: {m.decode_error}</div>{/if}
@@ -443,7 +469,10 @@
           <span class="spacer"></span>
           <button class="ghost small" title="Previous (k)" aria-label="Previous message" onclick={() => step(-1)}><ChevronUp size={15} /></button>
           <button class="ghost small" title="Next (j)" aria-label="Next message" onclick={() => step(1)}><ChevronDown size={15} /></button>
-          {#if !cluster.read_only}<button class="ghost small" title="Resend this message" onclick={() => selected && resend([selected])}><Repeat size={13} />Resend…</button>{/if}
+           {#if !cluster.read_only}
+             <button class="ghost small" disabled={editing} title="Open this message in Produce" onclick={() => selected && edit(selected)}><Pencil size={13} />{editing ? 'Loading…' : 'Edit & resend'}</button>
+             <button class="ghost small" title="Resend this message" onclick={() => selected && resend([selected])}><Repeat size={13} />Resend…</button>
+           {/if}
           <button class="ghost small" title="Close (Esc)" onclick={() => (selected = undefined)}>Close</button>
         </div>
 
@@ -591,7 +620,7 @@
   .key, .val { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .val { color: var(--text-2); }
   .detail { position: sticky; top: 12px; max-height: calc(100vh - 300px); overflow: auto; }
-  .dhead { display: flex; align-items: center; gap: 4px; padding: 10px 12px; border-bottom: 1px solid var(--border-strong); background: var(--surface-2); position: sticky; top: 0; z-index: 1; }
+  .dhead { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 10px 12px; border-bottom: 1px solid var(--border-strong); background: var(--surface-2); position: sticky; top: 0; z-index: 1; }
   section { padding: 12px; border-bottom: 1px solid var(--border); }
   section:last-child { border-bottom: 0; }
   .label { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 500; color: var(--text-2); margin-bottom: 6px; }

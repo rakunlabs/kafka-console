@@ -8,6 +8,7 @@
     "dev": "vite",
     "build": "vite build && touch ../internal/server/dist/.gitkeep",
     "preview": "vite preview",
+    "test": "node --test tests/*.test.mjs",
     "check": "svelte-check --tsconfig ./tsconfig.app.json && tsc -p tsconfig.node.json"
   },
   "devDependencies": {

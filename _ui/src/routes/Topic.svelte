@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { api, type Cluster, type TopicDetail } from '../lib/api'
+  import { api, type Cluster, type TopicDetail, type Message } from '../lib/api'
   import { fmt, bytes, duration, sizeIEC } from '../lib/format'
   import { Mail, Columns3, SlidersHorizontal, Send, Users, ArrowRight, Plus, Eraser, Trash2, RefreshCw } from '@lucide/svelte'
   import { href, go, router } from '../lib/router.svelte'
@@ -39,6 +39,13 @@
     { id: 'produce', label: 'Produce', icon: Send },
   ]
   const tab = $derived(router.route.query.get('tab') ?? 'messages')
+  let editMessage = $state<Message>()
+
+  function edit(message: Message) {
+    if (cluster.read_only) return
+    editMessage = message
+    go(cluster.name, 'topics', name, { tab: 'produce' })
+  }
 
   const totals = $derived.by(() => {
     if (!data) return { messages: 0, urp: 0 }
@@ -319,9 +326,11 @@
   {:else if tab === 'config'}
     <ConfigTable configs={data.configs ?? []} readOnly={cluster.read_only} save={saveConfigs} />
   {:else if tab === 'produce'}
-    <Produce {cluster} topic={name} partitions={data.partitions.map((p) => p.id)} />
+    {#key editMessage}
+      <Produce {cluster} topic={name} partitions={data.partitions.map((p) => p.id)} source={editMessage} onclear={() => (editMessage = undefined)} />
+    {/key}
   {:else}
-    <Messages {cluster} topic={name} partitions={data.partitions.map((p) => p.id)} />
+    <Messages {cluster} topic={name} partitions={data.partitions.map((p) => p.id)} onedit={edit} />
   {/if}
 {/if}
 

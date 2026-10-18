@@ -41,6 +41,33 @@ type ResendResult struct {
 	ProducedAt time.Time `json:"produced_at,omitzero"`
 }
 
+// Message reads one exact record without the browse view's payload cutoff.
+// A compacted or expired offset must not silently resolve to the next record.
+func (c *Client) Message(ctx context.Context, topic string, ref RecordRef) (*Message, error) {
+	if ref.Partition < 0 || ref.Offset < 0 {
+		return nil, ErrInvalid{errors.New("partition and offset must be non-negative")}
+	}
+
+	records, err := c.fetchExact(ctx, topic, []RecordRef{ref})
+	if err != nil {
+		return nil, err
+	}
+
+	rec, ok := records[ref]
+	if !ok {
+		return nil, fmt.Errorf("message no longer exists (deleted by retention or compaction): %w", ErrNotFound)
+	}
+
+	d := c.decodeRecord(ctx, rec, false)
+	cutoff := len(rec.Value)
+	if d.value != nil {
+		cutoff = max(cutoff, len(d.value.Text))
+	}
+	m := render(rec, d, cutoff)
+
+	return &m, nil
+}
+
 // Resend copies records byte for byte, key, value and headers included, to a
 // topic. Bytes never pass through the browser, so registry-encoded and binary
 // payloads arrive exactly as they were written.

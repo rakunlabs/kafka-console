@@ -286,6 +286,7 @@ type decoded struct {
 	Doc      any    // parsed JSON document
 	Format   string // avro, protobuf, json-schema
 	SchemaID int
+	Message  string // full protobuf message name, needed to re-encode the same type
 }
 
 // decodeRegistry decodes a Confluent wire-format payload. It returns
@@ -309,6 +310,7 @@ func (c *Client) decodeRegistry(ctx context.Context, b []byte) (*decoded, bool, 
 	payload := b[5:]
 
 	var doc any
+	var message string
 
 	switch cd.kind {
 	case sr.TypeAvro:
@@ -323,6 +325,7 @@ func (c *Client) decodeRegistry(ctx context.Context, b []byte) (*decoded, bool, 
 		if err != nil {
 			return nil, true, err
 		}
+		message = string(md.FullName())
 
 		msg := dynamicpb.NewMessage(md)
 		if err := proto.Unmarshal(rest, msg); err != nil {
@@ -347,8 +350,14 @@ func (c *Client) decodeRegistry(ctx context.Context, b []byte) (*decoded, bool, 
 	if err != nil {
 		return nil, true, err
 	}
+	if cd.kind == sr.TypeJSON {
+		// Doc uses JavaScript-compatible numbers for filters, but reserializing
+		// it would round large integers in the editable payload. Keep the
+		// original validated JSON text, including its numeric spelling.
+		text = payload
+	}
 
-	return &decoded{Text: string(text), Doc: doc, Format: formatName(cd.kind), SchemaID: id}, true, nil
+	return &decoded{Text: string(text), Doc: doc, Format: formatName(cd.kind), SchemaID: id, Message: message}, true, nil
 }
 
 func formatName(t sr.SchemaType) string {

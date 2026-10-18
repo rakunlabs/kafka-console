@@ -33,6 +33,7 @@ far behind they are.
   - Browse by offset, timestamp, newest or oldest.
   - Text search, JavaScript filters, live tail, JSON tree view.
   - Resend messages to another topic.
+  - Open a message in Produce to edit its key, value or headers, review changes, and send a new record to the same or another topic.
 - **Produce:** key, headers, partition, compression, base64, or JSON encoded with a registry schema.
 - **Consumer groups:**
   - Per-partition lag and catch-up estimate.

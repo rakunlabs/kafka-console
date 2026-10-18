@@ -87,7 +87,7 @@ export type TopicDetail = {
   replicated_size: number
 }
 
-export type Header = { key: string; value: string; encoding: string }
+export type Header = { key: string; value: string; encoding: string; null?: boolean }
 
 export type Message = {
   partition: number
@@ -97,10 +97,12 @@ export type Message = {
   key_encoding?: string
   key_format?: string
   key_schema_id?: number
+  key_schema_message?: string
   value: string | null
   value_encoding?: string
   value_format?: string
   value_schema_id?: number
+  value_schema_message?: string
   value_bytes: number
   key_bytes: number
   truncated: boolean
@@ -161,12 +163,12 @@ export type SubjectDetail = {
   referred_by: string[]
 }
 
-export type EncodeSchema = { subject: string; version?: number; id?: number; message?: string }
+export type EncodeSchema = { subject?: string; version?: number; id?: number; message?: string }
 
 export type ProduceBody = {
   key: string | null
   value: string | null
-  headers: { key: string; value: string }[]
+  headers: { key: string; value: string; encoding?: string; null?: boolean }[]
   partition: number | null
   key_schema?: EncodeSchema | null
   value_schema?: EncodeSchema | null
@@ -338,6 +340,8 @@ export const api = {
     request<{ partition: number; low_watermark: number; error?: string }[]>('POST', `/clusters/${enc(c)}/topics/${enc(t)}/delete-records`, body),
   messages: (c: string, t: string, params: Record<string, string | number | boolean | undefined>) =>
     request<ConsumeResult>('GET', `/clusters/${enc(c)}/topics/${enc(t)}/messages?${query(params)}`),
+  message: (c: string, t: string, partition: number, offset: number) =>
+    request<Message>('GET', `/clusters/${enc(c)}/topics/${enc(t)}/messages/${partition}/${offset}`),
   produce: (c: string, t: string, body: ProduceBody) =>
     request<{ partition: number; offset: number; timestamp: string }>('POST', `/clusters/${enc(c)}/topics/${enc(t)}/messages`, body),
   broker: (c: string, id: number) => request<BrokerDetail>('GET', `/clusters/${enc(c)}/brokers/${id}`),

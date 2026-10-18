@@ -35,25 +35,28 @@ type Header struct {
 	Key      string `json:"key"`
 	Value    string `json:"value"`
 	Encoding string `json:"encoding"`
+	Null     bool   `json:"null,omitempty"`
 }
 
 type Message struct {
-	Partition     int32     `json:"partition"`
-	Offset        int64     `json:"offset"`
-	Timestamp     time.Time `json:"timestamp"`
-	Key           *string   `json:"key"`
-	KeyEncoding   string    `json:"key_encoding,omitempty"`
-	KeyFormat     string    `json:"key_format,omitempty"`
-	KeySchemaID   int       `json:"key_schema_id,omitempty"`
-	Value         *string   `json:"value"`
-	ValueEncoding string    `json:"value_encoding,omitempty"`
-	ValueFormat   string    `json:"value_format,omitempty"`
-	ValueSchemaID int       `json:"value_schema_id,omitempty"`
-	ValueBytes    int       `json:"value_bytes"`
-	KeyBytes      int       `json:"key_bytes"`
-	Truncated     bool      `json:"truncated"`
-	Headers       []Header  `json:"headers"`
-	DecodeError   string    `json:"decode_error,omitempty"`
+	Partition          int32     `json:"partition"`
+	Offset             int64     `json:"offset"`
+	Timestamp          time.Time `json:"timestamp"`
+	Key                *string   `json:"key"`
+	KeyEncoding        string    `json:"key_encoding,omitempty"`
+	KeyFormat          string    `json:"key_format,omitempty"`
+	KeySchemaID        int       `json:"key_schema_id,omitempty"`
+	KeySchemaMessage   string    `json:"key_schema_message,omitempty"`
+	Value              *string   `json:"value"`
+	ValueEncoding      string    `json:"value_encoding,omitempty"`
+	ValueFormat        string    `json:"value_format,omitempty"`
+	ValueSchemaID      int       `json:"value_schema_id,omitempty"`
+	ValueSchemaMessage string    `json:"value_schema_message,omitempty"`
+	ValueBytes         int       `json:"value_bytes"`
+	KeyBytes           int       `json:"key_bytes"`
+	Truncated          bool      `json:"truncated"`
+	Headers            []Header  `json:"headers"`
+	DecodeError        string    `json:"decode_error,omitempty"`
 }
 
 type ConsumeRequest struct {
@@ -564,6 +567,7 @@ func render(rec *kgo.Record, d recordView, cutoff int) Message {
 	case d.key != nil:
 		k := d.key.Text
 		m.Key, m.KeyEncoding, m.KeyFormat, m.KeySchemaID = &k, "utf8", d.key.Format, d.key.SchemaID
+		m.KeySchemaMessage = d.key.Message
 	case rec.Key != nil:
 		k, enc := encode(rec.Key)
 		m.Key, m.KeyEncoding = &k, enc
@@ -578,6 +582,7 @@ func render(rec *kgo.Record, d recordView, cutoff int) Message {
 		}
 
 		m.Value, m.ValueEncoding, m.ValueFormat, m.ValueSchemaID = &text, "utf8", d.value.Format, d.value.SchemaID
+		m.ValueSchemaMessage = d.value.Message
 	case rec.Value != nil:
 		value := rec.Value
 		if len(value) > cutoff {
@@ -600,7 +605,7 @@ func render(rec *kgo.Record, d recordView, cutoff int) Message {
 
 	for _, h := range rec.Headers {
 		v, enc := encode(h.Value)
-		m.Headers = append(m.Headers, Header{Key: h.Key, Value: v, Encoding: enc})
+		m.Headers = append(m.Headers, Header{Key: h.Key, Value: v, Encoding: enc, Null: h.Value == nil})
 	}
 
 	return m
@@ -668,6 +673,34 @@ func (c *Client) Produce(ctx context.Context, topic string, req ProduceRequest) 
 		return nil, err
 	}
 
+	rec, err := c.produceRecord(ctx, topic, req)
+	if err != nil {
+		return nil, err
+	}
+
+	codec, err := compression(req.Compression)
+	if err != nil {
+		return nil, ErrInvalid{err}
+	}
+
+	producer, err := c.producer(req.Partition != nil, codec)
+	if err != nil {
+		return nil, fmt.Errorf("producer; %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
+	out, err := producer.ProduceSync(ctx, rec).First()
+	if err != nil {
+		return nil, fmt.Errorf("produce; %w", err)
+	}
+
+	return &ProduceResult{Partition: out.Partition, Offset: out.Offset, Timestamp: out.Timestamp}, nil
+}
+
+// produceRecord is shared by ordinary produce and drafts seeded from a message.
+func (c *Client) produceRecord(ctx context.Context, topic string, req ProduceRequest) (*kgo.Record, error) {
 	rec := &kgo.Record{Topic: topic}
 
 	var err error
@@ -681,12 +714,10 @@ func (c *Client) Produce(ctx context.Context, topic string, req ProduceRequest) 
 	}
 
 	for _, h := range req.Headers {
-		if h.Key == "" {
-			continue
-		}
-
 		value := []byte(h.Value)
-		if h.Encoding == "base64" {
+		if h.Null {
+			value = nil
+		} else if h.Encoding == "base64" {
 			if value, err = base64.StdEncoding.DecodeString(h.Value); err != nil {
 				return nil, ErrInvalid{fmt.Errorf("header %s: invalid base64; %w", h.Key, err)}
 			}
@@ -695,29 +726,11 @@ func (c *Client) Produce(ctx context.Context, topic string, req ProduceRequest) 
 		rec.Headers = append(rec.Headers, kgo.RecordHeader{Key: h.Key, Value: value})
 	}
 
-	codec, err := compression(req.Compression)
-	if err != nil {
-		return nil, ErrInvalid{err}
-	}
-
-	producer, err := c.producer(req.Partition != nil, codec)
-	if err != nil {
-		return nil, fmt.Errorf("producer; %w", err)
-	}
-
 	if req.Partition != nil {
 		rec.Partition = *req.Partition
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-
-	out, err := producer.ProduceSync(ctx, rec).First()
-	if err != nil {
-		return nil, fmt.Errorf("produce; %w", err)
-	}
-
-	return &ProduceResult{Partition: out.Partition, Offset: out.Offset, Timestamp: out.Timestamp}, nil
+	return rec, nil
 }
 
 func compression(name string) (string, error) {

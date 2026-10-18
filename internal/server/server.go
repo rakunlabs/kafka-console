@@ -65,6 +65,7 @@ func Start(ctx context.Context, cfg *config.Config, registry *kafka.Registry, ui
 	c.POST("/topics/{topic}/delete-records", s.deleteRecords)
 	c.GET("/topics/{topic}/consumers", s.topicConsumers)
 	c.GET("/topics/{topic}/messages", s.messages)
+	c.GET("/topics/{topic}/messages/{partition}/{offset}", s.message)
 	c.GET("/topics/{topic}/tail", s.tail)
 	c.POST("/topics/{topic}/messages", s.produce)
 	c.POST("/topics/{topic}/resend", s.resend)
@@ -329,6 +330,21 @@ func (s *Server) produce(c *ada.Context) error {
 	}
 
 	return c.SendJSON(res)
+}
+
+func (s *Server) message(c *ada.Context) error {
+	partition, err := strconv.ParseInt(c.Request.PathValue("partition"), 10, 32)
+	if err != nil || partition < 0 {
+		return ada.NewHTTPError(http.StatusBadRequest, "partition must be a non-negative integer")
+	}
+	offset, err := strconv.ParseInt(c.Request.PathValue("offset"), 10, 64)
+	if err != nil || offset < 0 {
+		return ada.NewHTTPError(http.StatusBadRequest, "offset must be a non-negative integer")
+	}
+
+	return s.handle(c, func(cl *kafka.Client) (any, error) {
+		return cl.Message(c.Request.Context(), c.Request.PathValue("topic"), kafka.RecordRef{Partition: int32(partition), Offset: offset})
+	})
 }
 
 func (s *Server) resend(c *ada.Context) error {
