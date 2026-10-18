@@ -47,6 +47,7 @@ far behind they are.
   - Per-cluster `read_only` and `production` flags.
   - An audit log line for every write.
   - Confirmation before destructive actions.
+- **MCP (optional):** expose the shared [kafka-mcp](https://github.com/denizgursoy/kafka-mcp) tools on the same HTTP server, read-only by default.
 - **Large clusters:** works with thousands of topics and groups. Lists page, pickers load names only, and Overview reports only unhealthy topics.
 
 ## Quick start
@@ -190,7 +191,91 @@ and its target. Request bodies are not stored, and secrets are redacted.
 {"level":"INFO","msg":"audit","user":"ada@example.com","cluster":"prod","action":"groups.reset","method":"POST","status":200,"target_group":"billing"}
 ```
 
+## MCP endpoint
+
+MCP is off by default. Enable it in the same console configuration:
+
+```yaml
+mcp:
+  enabled: true
+  auth_token: "replace-with-a-secret" # or KAFKA_CONSOLE_MCP_AUTH_TOKEN
+  # allow_writes: false             # default; separate from the UI's permissions
+  # output_dir: /var/lib/kafka-console/exports
+```
+
+Each configured cluster gets a Streamable HTTP endpoint at `/mcp/<cluster>`
+on the console's existing port. `server.base_path` prefixes these paths too:
+`base_path: /kafka` makes the local URL `/kafka/mcp/local`. Unknown MCP paths
+return 404, not the UI. Connect an MCP client, for example:
+
+```json
+{
+  "mcp": {
+    "kafka-local": {
+      "type": "remote",
+      "url": "http://localhost:8080/mcp/local",
+      "headers": {"Authorization": "Bearer {env:KAFKA_CONSOLE_MCP_AUTH_TOKEN}"}
+    }
+  }
+}
+```
+
+For separate endpoint policies, configure an explicit map. Every console
+cluster is visible to `list_clusters` and `compare_clusters`:
+
+```yaml
+mcp:
+  enabled: true
+  allow_writes: true
+  endpoints:
+    prod-read:
+      cluster: prod
+      path: /mcp/prod
+      read_only: true
+      destinations: [stage] # explicit cross-cluster write grant; default none
+    stage:
+      cluster: stage
+      path: /mcp/stage
+      tools:
+        delete_topic: false
+```
+
+An endpoint `path` can be anything, for example `/abc/mcp/xyz` or `agents`. It
+is relative to `server.base_path` and cleaned, so `/team//kafka/` becomes
+`/team/kafka`. Only the paths the console itself needs are refused: `/`, the
+`/api` tree, `/healthz`, and router patterns containing `{`, `}` or `*`. Only
+the exact configured path is served; anything next to it still goes to the UI.
+Everything under `/mcp/` that is not an endpoint returns 404. With `allow_writes: false`, **no MCP
+endpoint may write to any cluster**, including named destinations. With it
+enabled, a cluster's `read_only: true` still cannot be widened by an endpoint.
+MCP writes use kafka-mcp's `confirm` previews, not the UI's typed confirmation;
+`production` is a UI warning, not an MCP permission. Call `server_config` to
+verify the endpoint, cluster and effective tool policy before acting.
+
+Tool definitions, batch results, mutation guards and audit logging come directly
+from `kafka-mcp/pkg/kafkamcp`, the only kafka-mcp package the console imports;
+they are not reimplemented here. The console builds one MCP server per
+endpoint and serves it on its own router, with its own bearer-token and origin
+checks. MCP borrows the
+console's existing Kafka, admin and Schema Registry clients, and its cached
+manual-partition producer. No broker/TLS/SASL/OAuth configuration is converted
+or reloaded. Message scans use the console's reader factory to create isolated
+short-lived consumers, since consuming state cannot safely be shared between
+concurrent calls. MCP never closes the console's clients.
+`server_config` reports authentication as `host-managed`, with the console's
+configured brokers and SASL user; credentials are never passed on.
+Its tool audit records identify the endpoint, configured principal when supplied, and MCP client;
+the console's `server.user_header` does not add a person to these records.
+
+The bearer token is optional only when a trusted authenticating proxy or network
+boundary already protects MCP. Proxy protection must cover `/mcp` as well as
+`/api`. Browser origins are rejected by default; allow a trusted browser MCP
+client with `mcp.allow_origins: ["https://trusted-client.example"]`. An allowed
+origin may drive all tools exposed to it. The UI's existing auth behavior is unchanged.
+
 ## Development
+
+### Build and run
 
 Requires Go and pnpm 11 or newer. The UI's `package.json` pins pnpm and Node.js, and pnpm downloads that Node.js version itself.
 

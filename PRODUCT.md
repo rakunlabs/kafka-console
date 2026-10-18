@@ -35,6 +35,7 @@ A self-hosted Kafka console that answers "what is in this topic, who is consumin
 - Edit & resend: load a full record into Produce; edit key/value/headers and target topic/partition, preserving binary/null data and original schema IDs/message types by default. Review changes before sending a new record; the original stays unchanged. Production requires typing the target topic; read-only clusters block writes. Byte-for-byte Resend remains separate.
 - Consumer groups: list, state, members, per-partition lag; offset reset (earliest/latest/specific/timestamp); delete offsets per topic.
 - Security: ACLs (list/create/delete with presets), SCRAM users, client quotas.
+- Optional MCP: shared kafka-mcp tools on the console HTTP server at `/mcp/<cluster>` by default or any configured path (under `server.base_path` when set), borrowing the console's live Kafka/admin/registry clients and reader/producer factories without translating connection config; off by default, read-only unless explicitly enabled for writes, with cluster read-only as a lower bound and explicit cross-cluster destinations.
 - Destructive operations (delete topic, delete records, offset reset/delete, hard delete schema) need explicit confirmation.
 - Open decision: authentication / per-cluster read-only mode.
 

@@ -36,6 +36,9 @@ func Start(ctx context.Context, cfg *config.Config, registry *kafka.Registry, ui
 		mrequestid.Middleware(),
 		mlog.Middleware(),
 	)
+	if err := mountMCP(server, cfg, registry); err != nil {
+		return err
+	}
 
 	base := cfg.Server.BasePath
 

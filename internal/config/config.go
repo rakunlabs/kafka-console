@@ -27,6 +27,31 @@ type Config struct {
 
 	Server   Server              `cfg:"server"`
 	Clusters map[string]*Cluster `cfg:"clusters"`
+	MCP      MCP                 `cfg:"mcp"`
+}
+
+// MCP is opt-in and read-only unless AllowWrites is explicitly enabled.
+// Cluster read_only remains a lower bound regardless of endpoint policy.
+type MCP struct {
+	Enabled      bool                    `cfg:"enabled"`
+	AllowWrites  bool                    `cfg:"allow_writes"`
+	AuthToken    string                  `cfg:"auth_token" log:"-"`
+	AllowOrigins []string                `cfg:"allow_origins"`
+	OutputDir    string                  `cfg:"output_dir"`
+	Endpoints    map[string]*MCPEndpoint `cfg:"endpoints"`
+}
+
+// MCPEndpoint is one MCP server over a cluster. Without explicit endpoints,
+// every cluster gets one at /mcp/<cluster>.
+type MCPEndpoint struct {
+	Cluster  string `cfg:"cluster"`
+	Path     string `cfg:"path"`
+	ReadOnly bool   `cfg:"read_only"`
+	// Destinations are other clusters copy_message and produce_message may
+	// write to from this endpoint. Default none.
+	Destinations []string `cfg:"destinations"`
+	// Tools switches individual tools off with false.
+	Tools map[string]bool `cfg:"tools"`
 }
 
 type Server struct {
