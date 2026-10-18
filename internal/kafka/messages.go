@@ -495,7 +495,7 @@ func filterArguments(s *script.Script, rec *kgo.Record, d recordView) []goja.Val
 
 	ts, err := rt.New(rt.Get("Date"), rt.ToValue(rec.Timestamp.UnixMilli()))
 
-	var tsValue goja.Value = goja.Null()
+	tsValue := goja.Null()
 	if err == nil {
 		tsValue = ts
 	}

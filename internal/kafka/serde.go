@@ -22,12 +22,11 @@ import (
 
 // codec decodes and encodes payloads for one registered schema.
 type codec struct {
-	id      int
-	kind    sr.SchemaType
-	avro    *avroCodec
-	proto   protoreflect.FileDescriptor
-	json    *jsonschema.Schema
-	subject string
+	id    int
+	kind  sr.SchemaType
+	avro  *avroCodec
+	proto protoreflect.FileDescriptor
+	json  *jsonschema.Schema
 }
 
 // codecCache resolves schema IDs once; registered schemas are immutable.

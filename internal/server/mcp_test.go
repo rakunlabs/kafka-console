@@ -57,7 +57,7 @@ func TestMCPPolicyAndProtocol(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer session.Close()
+	defer session.Close() //nolint:errcheck // test cleanup
 	listed, err := session.ListTools(t.Context(), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -203,7 +203,7 @@ func TestMCPCrossClusterToolsAreServed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer session.Close()
+	defer session.Close() //nolint:errcheck // test cleanup
 	listed, err := session.ListTools(t.Context(), nil)
 	if err != nil {
 		t.Fatal(err)

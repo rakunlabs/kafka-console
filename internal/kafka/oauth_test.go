@@ -98,7 +98,7 @@ func TestOAuthClientCredentials(t *testing.T) {
 
 				n := calls.Add(1)
 				w.Header().Set("Content-Type", "application/json")
-				fmt.Fprintf(w, `{"access_token":"token-%d","token_type":"Bearer","expires_in":%d}`, n, expires)
+				fmt.Fprintf(w, `{"access_token":"token-%d","token_type":"Bearer","expires_in":%d}`, n, expires) //nolint:errcheck // test response writer
 			}))
 			defer server.Close()
 
@@ -157,7 +157,7 @@ func TestOAuthClientCredentialsProxy(t *testing.T) {
 
 		proxied.Add(1)
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"access_token":"via-proxy","token_type":"Bearer","expires_in":3600}`)
+		fmt.Fprint(w, `{"access_token":"via-proxy","token_type":"Bearer","expires_in":3600}`) //nolint:errcheck // test response writer
 	}))
 	defer proxy.Close()
 
@@ -245,7 +245,7 @@ func newMTLSTokenServer(t *testing.T, client *x509.Certificate, wantSecret strin
 
 		n := s.calls.Add(1)
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"access_token":"mtls-%d","token_type":"Bearer","expires_in":3600}`, n)
+		fmt.Fprintf(w, `{"access_token":"mtls-%d","token_type":"Bearer","expires_in":3600}`, n) //nolint:errcheck // test response writer
 	}))
 	s.srv.TLS = &tls.Config{ClientAuth: tls.RequireAndVerifyClientCert, ClientCAs: pool}
 	s.srv.StartTLS()
@@ -299,7 +299,7 @@ func TestOAuthClientCredentialsMTLSRequiresCert(t *testing.T) {
 func TestOAuthTLSInsecureSkipVerify(t *testing.T) {
 	s := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"access_token":"test-token","token_type":"Bearer","expires_in":3600}`)
+		fmt.Fprint(w, `{"access_token":"test-token","token_type":"Bearer","expires_in":3600}`) //nolint:errcheck // test response writer
 	}))
 	t.Cleanup(s.Close)
 
@@ -652,7 +652,7 @@ func TestOAuthGCPProxy(t *testing.T) {
 
 		conn, _, err := w.(http.Hijacker).Hijack()
 		if err != nil {
-			upstream.Close()
+			upstream.Close() //nolint:errcheck // best-effort cleanup on hijack failure
 
 			return
 		}
@@ -661,11 +661,11 @@ func TestOAuthGCPProxy(t *testing.T) {
 
 		go func() {
 			_, _ = io.Copy(upstream, conn)
-			upstream.Close()
+			upstream.Close() //nolint:errcheck // best-effort cleanup
 		}()
 
 		_, _ = io.Copy(conn, upstream)
-		conn.Close()
+		conn.Close() //nolint:errcheck // best-effort cleanup
 	}))
 	t.Cleanup(proxy.Close)
 
