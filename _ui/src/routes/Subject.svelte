@@ -139,7 +139,7 @@
   {#if error}<div class="error mb-3">{error}</div>{/if}
   <div class="summary">
     <span>Compatibility
-      <select class="inline" value={data.override ? data.compatibility : 'DEFAULT'} disabled={cluster.read_only || busy}
+      <select class="compat" value={data.override ? data.compatibility : 'DEFAULT'} disabled={cluster.read_only || busy}
         onchange={(e) => setCompat(e.currentTarget.value)}>
         {#each levels as l (l)}<option value={l}>{l === 'DEFAULT' ? `Global (${data.override ? 'default' : data.compatibility})` : l}</option>{/each}
       </select>
@@ -241,16 +241,16 @@
 </Modal>
 
 <style>
-  .inline { padding: 2px 6px; margin-left: 4px; }
+  .compat { padding: 2px 6px; margin-left: 4px; }
   .error { margin-bottom: 12px; }
   .layout { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 12px; align-items: start; }
   .versions { max-height: calc(100vh - 220px); overflow: auto; }
   .versions tr.sel td { background: var(--sel); }
   .versions tr.deleted a { color: var(--text-3); }
   .versions .badge { margin-left: 4px; }
-  .dhead { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-bottom: 1px solid var(--border); }
+  .dhead { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 8px 12px; border-bottom: 1px solid var(--border); white-space: nowrap; }
   .cmp { display: flex; flex-direction: row; align-items: center; gap: 6px; font-weight: 400; }
-  .cmp select { padding: 2px 6px; }
+  .cmp select { padding: 2px 6px; min-width: 52px; }
   .refs { display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 8px 12px; border-bottom: 1px solid var(--border); font-size: 12px; }
   .code { margin: 0; padding: 12px; font: 12.5px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; max-height: calc(100vh - 280px); overflow: auto; }
   .diff .line { display: block; }

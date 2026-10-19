@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -433,6 +434,10 @@ func (s *Server) messages(c *ada.Context) error {
 		return err
 	}
 
+	if q.Get("stream") == "true" {
+		return s.messageStream(c, cl, req)
+	}
+
 	res, err := cl.Consume(c.Request.Context(), c.Request.PathValue("topic"), req)
 	if err != nil {
 		if strings.HasPrefix(err.Error(), "script ") {
@@ -443,6 +448,69 @@ func (s *Server) messages(c *ada.Context) error {
 	}
 
 	return c.SendJSON(res)
+}
+
+// messageStreamEvent is one line of a streamed read: "message", "progress"
+// (scanned so far and where a stopped read would continue) or a final "done"
+// carrying the result without its messages.
+type messageStreamEvent struct {
+	Type    string               `json:"type"`
+	Message *kafka.Message       `json:"message,omitempty"`
+	Scanned int                  `json:"scanned"`
+	Next    map[int32]int64      `json:"next,omitempty"`
+	Result  *kafka.ConsumeResult `json:"result,omitempty"`
+	Error   string               `json:"error,omitempty"`
+}
+
+// messageStream sends each match as a newline-delimited JSON event as soon
+// as it is found. Closing the connection stops the read on the server.
+func (s *Server) messageStream(c *ada.Context, cl *kafka.Client, req kafka.ConsumeRequest) error {
+	w := c.Response
+	rc := http.NewResponseController(w)
+	enc := json.NewEncoder(w)
+	started := false
+
+	send := func(e messageStreamEvent) bool {
+		if !started {
+			started = true
+
+			w.Header().Set("Content-Type", "application/x-ndjson")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.Header().Set("X-Accel-Buffering", "no")
+			w.WriteHeader(http.StatusOK)
+		}
+
+		if enc.Encode(e) != nil {
+			return false
+		}
+
+		return rc.Flush() == nil
+	}
+
+	res, err := cl.ConsumeStream(c.Request.Context(), c.Request.PathValue("topic"), req, func(e kafka.ConsumeEvent) bool {
+		if e.Message != nil {
+			return send(messageStreamEvent{Type: "message", Message: e.Message, Scanned: e.Scanned})
+		}
+
+		return send(messageStreamEvent{Type: "progress", Scanned: e.Scanned, Next: e.Next})
+	})
+	if err != nil {
+		if !started {
+			if strings.HasPrefix(err.Error(), "script ") {
+				return ada.WrapHTTPError(http.StatusBadRequest, err)
+			}
+
+			return fail(err)
+		}
+
+		send(messageStreamEvent{Type: "error", Error: err.Error()})
+
+		return nil
+	}
+
+	send(messageStreamEvent{Type: "done", Scanned: res.Scanned, Result: res})
+
+	return nil
 }
 
 func (s *Server) produce(c *ada.Context) error {

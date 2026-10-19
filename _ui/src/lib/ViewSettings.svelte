@@ -77,26 +77,26 @@
     right: 0;
     top: calc(100% + 4px);
     z-index: 20;
-    width: 300px;
-    padding: 10px;
+    width: 320px;
+    padding: 14px;
     display: grid;
-    gap: 12px;
+    gap: 16px;
     background: var(--surface);
     border: 1px solid var(--border-strong);
     border-radius: var(--radius);
     box-shadow: 0 8px 24px rgb(0 0 0 / 0.12);
     color: var(--text);
   }
-  .sec { display: grid; gap: 6px; }
+  .sec { display: grid; gap: 8px; }
   .lbl { font-size: 12px; font-weight: 600; }
   .hint { margin: 0; font-size: 12px; color: var(--text-3); }
   .seg { display: grid; grid-template-columns: repeat(4, 1fr); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
-  .seg button { border: 0; border-radius: 0; padding: 4px 0; font-size: 12px; background: transparent; }
+  .seg button { justify-content: center; border: 0; border-radius: 0; padding: 5px 8px; font-size: 12px; background: transparent; }
   .seg button + button { border-left: 1px solid var(--border); }
   .seg button.on { background: var(--surface-2); font-weight: 600; }
-  .col { display: flex; align-items: center; gap: 2px; font-size: 12.5px; }
+  .col { display: flex; align-items: center; gap: 2px; padding: 3px 4px 3px 10px; font-size: 12.5px; border: 1px solid var(--border); border-radius: var(--radius); }
   .col .mono { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .icon { padding: 2px 4px; }
+  .icon { padding: 3px 5px; }
   .add { display: flex; gap: 6px; }
-  .add input { flex: 1; min-width: 0; }
+  .add input { flex: 1; min-width: 0; padding-inline: 10px; }
 </style>

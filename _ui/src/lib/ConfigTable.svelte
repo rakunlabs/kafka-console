@@ -115,5 +115,5 @@
   .val { overflow-wrap: anywhere; }
   .hint { margin-left: 8px; font-family: var(--font); font-size: 12px; }
   .grow { flex: 1; }
-  .actions { white-space: nowrap; text-align: right; width: 1%; }
+  .actions { white-space: nowrap; text-align: right; width: 1%; padding-block: 5px; }
 </style>

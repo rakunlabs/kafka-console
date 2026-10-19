@@ -497,6 +497,33 @@ export async function replay(c: string, t: string, body: ReplayBody, onevent: (e
     body: JSON.stringify(body),
     signal,
   })
+  await readLines(res, onevent)
+}
+
+export type MessageStreamEvent =
+  | { type: 'message'; message: Message; scanned: number }
+  | { type: 'progress'; scanned: number; next?: Record<string, number> }
+  | { type: 'done'; scanned: number; result: ConsumeResult }
+  | { type: 'error'; scanned: number; error: string }
+
+// messageStream reads messages like api.messages, but hands each match over
+// as soon as the server finds it. Aborting signal stops the read on the
+// server too. Like other reads, it stops when its page is left.
+export async function messageStream(
+  c: string,
+  t: string,
+  params: Record<string, string | number | boolean | undefined>,
+  onevent: (e: MessageStreamEvent) => void,
+  signal: AbortSignal,
+) {
+  const res = await fetch(`api/v1/clusters/${enc(c)}/topics/${enc(t)}/messages?${query({ ...params, stream: true })}`, {
+    signal: AbortSignal.any([signal, pageScope.signal]),
+  })
+  await readLines(res, onevent)
+}
+
+// readLines parses a newline-delimited JSON response, or throws its error.
+async function readLines<T>(res: Response, onevent: (e: T) => void) {
   if (!res.ok || !res.body) {
     const text = await res.text()
     let message = text || res.statusText

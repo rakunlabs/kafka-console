@@ -102,7 +102,31 @@ type window struct {
 	start, end int64 // [start, end)
 }
 
+// ConsumeEvent is one step of a streamed read: a matched message, or a
+// progress report (Message nil) with where a read stopped now would continue.
+// Next is only on progress reports; a client stopping later advances it past
+// the messages it got since.
+type ConsumeEvent struct {
+	Message *Message
+	Scanned int
+	Next    map[int32]int64
+}
+
+// consumeProgressEvery spaces the progress events of a streamed read.
+const consumeProgressEvery = 500 * time.Millisecond
+
 func (c *Client) Consume(ctx context.Context, topic string, req ConsumeRequest) (*ConsumeResult, error) {
+	return c.consume(ctx, topic, req, nil)
+}
+
+// ConsumeStream is Consume that hands each match to emit as soon as it is
+// found, in scan order, instead of collecting them; the result holds no
+// messages. emit returning false stops the read.
+func (c *Client) ConsumeStream(ctx context.Context, topic string, req ConsumeRequest, emit func(ConsumeEvent) bool) (*ConsumeResult, error) {
+	return c.consume(ctx, topic, req, emit)
+}
+
+func (c *Client) consume(ctx context.Context, topic string, req ConsumeRequest, emit func(ConsumeEvent) bool) (*ConsumeResult, error) {
 	begin := time.Now()
 
 	if err := req.As.validate(); err != nil {
@@ -161,7 +185,29 @@ func (c *Client) Consume(ctx context.Context, topic string, req ConsumeRequest) 
 	// the window's edge and this point was visited.
 	seen := map[int32]int64{}
 
+	matched := 0
+	lastProgress := time.Now()
+
+	// progress reports how far a streamed read got, so a client that stops
+	// it can still continue from there.
+	progress := func() bool {
+		lastProgress = time.Now()
+		if emit(ConsumeEvent{Scanned: result.Scanned, Next: resumeFrom(windows, seen, newestFirst)}) {
+			return true
+		}
+
+		result.StoppedBy = "cancelled"
+
+		return false
+	}
+
 	visit := func(rec *kgo.Record) bool {
+		// Before this record counts as seen: a read stopped right after the
+		// report continues with it.
+		if emit != nil && time.Since(lastProgress) >= consumeProgressEvery && !progress() {
+			return false
+		}
+
 		result.Scanned++
 
 		if newestFirst {
@@ -198,9 +244,20 @@ func (c *Client) Consume(ctx context.Context, topic string, req ConsumeRequest) 
 			}
 		}
 
-		result.Messages = append(result.Messages, render(rec, d, defaultValueCutoff))
+		m := render(rec, d, defaultValueCutoff)
+		matched++
 
-		if len(result.Messages) >= req.Limit {
+		if emit != nil {
+			if !emit(ConsumeEvent{Message: &m, Scanned: result.Scanned}) {
+				result.StoppedBy = "cancelled"
+
+				return false
+			}
+		} else {
+			result.Messages = append(result.Messages, m)
+		}
+
+		if matched >= req.Limit {
 			result.StoppedBy = "limit"
 
 			return false
@@ -221,13 +278,17 @@ func (c *Client) Consume(ctx context.Context, topic string, req ConsumeRequest) 
 		}
 
 		if matchAll {
-			return int64(req.Limit - len(result.Messages))
+			return int64(req.Limit - matched)
 		}
 
 		return (left + live - 1) / live
 	}
 
 	cur := newCursor(windows, newestFirst)
+
+	if emit != nil && !progress() {
+		return result, nil
+	}
 
 	for round := cur.next(need); len(round) > 0; round = cur.next(need) {
 		if err := scan(ctx, reader, topic, round, newestFirst, visit); err != nil {

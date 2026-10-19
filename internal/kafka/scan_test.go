@@ -217,4 +217,58 @@ func TestConsumeContinues(t *testing.T) {
 			t.Fatalf("last 2 returned offset %d", m.Offset)
 		}
 	}
+
+	for _, start := range []string{"newest", "oldest"} {
+		req := ConsumeRequest{Start: start, Limit: 1000, Search: "FAILED"}
+
+		full, err := c.Consume(t.Context(), "pages", req)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		var (
+			streamed []Message
+			progress int
+		)
+
+		res, err := c.ConsumeStream(t.Context(), "pages", req, func(e ConsumeEvent) bool {
+			if e.Message != nil {
+				streamed = append(streamed, *e.Message)
+			} else {
+				progress++
+			}
+
+			return true
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if len(res.Messages) != 0 || res.StoppedBy != "end" || progress == 0 {
+			t.Fatalf("%s: stream result %+v after %d progress events", start, res, progress)
+		}
+
+		if len(streamed) != len(full.Messages) {
+			t.Fatalf("%s: streamed %d, one read %d", start, len(streamed), len(full.Messages))
+		}
+
+		// Stopping the stream ends the read there.
+		got := 0
+		res, err = c.ConsumeStream(t.Context(), "pages", req, func(e ConsumeEvent) bool {
+			if e.Message == nil {
+				return true
+			}
+
+			got++
+
+			return got < 3
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if got != 3 || res.StoppedBy != "cancelled" {
+			t.Fatalf("%s: stopped after %d, stopped_by %q", start, got, res.StoppedBy)
+		}
+	}
 }

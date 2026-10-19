@@ -411,10 +411,10 @@
   .form { padding: 14px; display: grid; gap: 12px; }
   .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
   .lbl { font-size: 12px; font-weight: 500; color: var(--text-2); }
-  .field { display: grid; gap: 4px; }
+  .field { display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; }
   .keybox { display: flex; border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--surface); }
   .keybox:focus-within { outline: 2px solid var(--focus); outline-offset: -1px; }
-  .keybox > input { flex: 1; border: 0; background: transparent; }
+  .keybox > input { flex: 1; min-width: 0; border: 0; background: transparent; }
   .keybox > input:focus { outline: none; }
   .keybox.isnull > input { color: var(--text-3); }
   .nullsel {
@@ -433,7 +433,7 @@
   .small-hint { font-size: 12px; margin-top: -4px; }
   .ed-loading { height: 252px; border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--surface-2); }
   @media (max-width: 1000px) { .layout { grid-template-columns: minmax(0, 1fr); } }
-  @media (max-width: 560px) { .grid, .comparison { grid-template-columns: minmax(0, 1fr); } .hrow { flex-wrap: wrap; } .keybox > input { min-width: 0; } }
+  @media (max-width: 560px) { .grid, .comparison { grid-template-columns: minmax(0, 1fr); } .hrow { flex-wrap: wrap; } }
   @media (max-width: 639.98px) {
     .form { padding: 12px; }
     .field > .row { flex-wrap: wrap; row-gap: 2px; }

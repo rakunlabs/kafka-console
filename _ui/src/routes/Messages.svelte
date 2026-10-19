@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy, untrack } from 'svelte'
-  import { api, tail, isAbort, withSignal, rawURL, type Cluster, type ConsumeResult, type Message } from '../lib/api'
+  import { api, tail, messageStream, isAbort, rawURL, type Cluster, type ConsumeResult, type Message } from '../lib/api'
   import { fmt } from '../lib/format'
   import { prefs, loadColumns, saveColumns } from '../lib/prefs.svelte'
   import ViewSettings from '../lib/ViewSettings.svelte'
@@ -73,15 +73,22 @@
   // The query of the shown result, so "Load more" continues that read even
   // after the form was edited.
   let shownQuery = $state.raw<Record<string, string | number | boolean | undefined>>({})
+  // Bumped by whatever replaces the shown result (a fetch, a tail), so a
+  // read it cut off does not write over it.
+  let shownGen = 0
 
   // more continues the shown read from where it stopped, appending to it.
+  // Matches are shown as the server finds them; Stop keeps what arrived and
+  // the read can still be continued from where it was stopped.
   async function load(more = false) {
     // Enter in the search box or ⌘Enter in the filter can fetch while a
     // tail runs; the fetch replaces the list, so the tail must not feed it.
     if (live) stopLive()
     reading?.abort()
     const ctl = (reading = new AbortController())
-    const prev = result
+    const gen = ++shownGen
+    const current = () => gen === shownGen
+    const prev = more ? result : undefined
     if (!more) {
       searched = search.trim()
       shownQuery = {
@@ -98,27 +105,90 @@
         value_as: valueAs || undefined,
       }
     }
+    const query = shownQuery
+    const newestFirst = query.start === 'newest'
     const after = more && prev ? Object.entries(prev.next ?? {}).map(([p, o]) => `${p}:${o}`).join(',') : undefined
     loading = true
     loadingMore = more
     error = ''
-    try {
-      const res = await withSignal(ctl.signal, () => api.messages(cluster.name, topic, { ...shownQuery, after }))
-      if (more && prev) {
-        result = { ...res, messages: [...prev.messages, ...res.messages], scanned: prev.scanned + res.scanned, script_errors: prev.script_errors + res.script_errors }
-      } else {
-        result = res
-        selected = undefined
-        expanded = new Set()
-        picked = new Set()
+
+    const began = performance.now()
+    const base = prev?.messages ?? []
+    let got: Message[] = []
+    let scanned = 0
+    // Where a stopped read continues: the server's last report, moved past
+    // the matches that arrived after it.
+    let next: Record<string, number> = { ...(prev?.next ?? {}) }
+    let pending = false
+    let finished = false
+    const show = (stoppedBy: string, extra: Partial<ConsumeResult> = {}) => {
+      result = {
+        messages: got.length ? [...base, ...got] : base,
+        scanned: (prev?.scanned ?? 0) + scanned,
+        script_errors: (prev?.script_errors ?? 0) + (extra.script_errors ?? 0),
+        first_error: extra.first_error ?? prev?.first_error,
+        stopped_by: stoppedBy,
+        elapsed_ms: Math.round(performance.now() - began),
+        next,
       }
+    }
+    // Rows are added a few times a second, not per message.
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const schedule = () => {
+      if (pending) return
+      pending = true
+      timer = setTimeout(() => {
+        pending = false
+        if (current()) show('reading')
+      }, 100)
+    }
+
+    if (!more) {
+      selected = undefined
+      expanded = new Set()
+      picked = new Set()
+      show('reading')
+    }
+
+    try {
+      await messageStream(cluster.name, topic, { ...query, after }, (e) => {
+        scanned = e.scanned
+        switch (e.type) {
+          case 'message': {
+            const m = e.message
+            got.push(m)
+            const p = String(m.partition)
+            const at = newestFirst ? m.offset : m.offset + 1
+            if (next[p] === undefined || (newestFirst ? at < next[p] : at > next[p])) next[p] = at
+            schedule()
+            break
+          }
+          case 'progress':
+            if (e.next) next = e.next
+            schedule()
+            break
+          case 'done':
+            finished = true
+            next = e.result.next ?? {}
+            show(e.result.stopped_by, e.result)
+            break
+          case 'error':
+            throw new Error(e.error)
+        }
+      }, ctl.signal)
+      if (!finished && current()) show('cancelled')
     } catch (e: any) {
-      // A stopped read keeps whatever was shown before it.
-      if (!isAbort(e)) {
+      if (!current()) {
+        // Replaced by a newer read or a tail; it owns the list now.
+      } else if (isAbort(e)) {
+        // Stopped: keep what arrived, and let Load more continue from there.
+        show('cancelled')
+      } else {
         error = e.message
         if (!more) result = undefined
       }
     } finally {
+      clearTimeout(timer)
       if (reading === ctl) {
         reading = undefined
         loading = false
@@ -170,6 +240,7 @@
   function startLive() {
     stopLive()
     stopReading()
+    shownGen++
     searched = search.trim()
     error = ''
     liveError = ''
@@ -223,10 +294,7 @@
 
   onDestroy(stopLive)
 
-  const hasMore = $derived(!live && !!result && result.stopped_by !== 'live' && Object.keys(result.next ?? {}).length > 0)
-
-  // After the live state above: load() reads it.
-  load()
+  const hasMore = $derived(!live && !!result && result.stopped_by !== 'live' && (loadingMore || (!loading && Object.keys(result.next ?? {}).length > 0)))
 
   function exportMessages(kind: 'json' | 'csv') {
     if (!result) return
@@ -278,6 +346,8 @@
     limit: 'Limit reached',
     max_scan: 'Scan limit reached',
     timeout: 'Timed out',
+    cancelled: 'Stopped',
+    reading: 'Reading…',
   }
 
   const examples = [
@@ -441,6 +511,10 @@
   const other = (iso: string) => showTime(iso, prefs.time === 'local' ? 'utc' : 'local')
 
   const cols = $derived((cluster.read_only ? 0 : 1) + (narrow.matches ? 3 : 6) + (showColumns ? columns.length : 0))
+
+  // Last: load() resets state declared throughout this script before its
+  // first await.
+  load()
 </script>
 
 <svelte:window onkeydown={onkey} />
@@ -682,7 +756,7 @@
               </tr>
             {/if}
           {:else}
-            <tr><td colspan={cols} class="empty">{live ? 'Waiting for new messages…' : 'No messages found.'}</td></tr>
+            <tr><td colspan={cols} class="empty">{live ? 'Waiting for new messages…' : loading ? 'Reading…' : 'No messages found.'}</td></tr>
           {/each}
         </tbody>
       </table>
