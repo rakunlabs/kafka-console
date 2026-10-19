@@ -15,6 +15,13 @@ require (
 	github.com/rakunlabs/ada/middleware/requestid v0.5.3
 	github.com/rakunlabs/ada/middleware/server v0.5.3
 	github.com/rakunlabs/chu v0.5.0
+	github.com/rakunlabs/chu/loader/external/loaderawssecrets v0.0.0-20260831101252-0c6a77e06f7f
+	github.com/rakunlabs/chu/loader/external/loaderawsssm v0.0.0-20260831101252-0c6a77e06f7f
+	github.com/rakunlabs/chu/loader/external/loaderazurekeyvault v0.0.0-20260831101252-0c6a77e06f7f
+	github.com/rakunlabs/chu/loader/external/loaderconsul v0.0.0-20260831101252-0c6a77e06f7f
+	github.com/rakunlabs/chu/loader/external/loadergcpparameter v0.0.0-20260831101252-0c6a77e06f7f
+	github.com/rakunlabs/chu/loader/external/loadergcpsecret v0.0.0-20260831101252-0c6a77e06f7f
+	github.com/rakunlabs/chu/loader/external/loadervault v0.0.0-20260831101252-0c6a77e06f7f
 	github.com/rakunlabs/into v0.6.0
 	github.com/rakunlabs/logi v0.4.6
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
@@ -104,13 +111,6 @@ require (
 	github.com/oklog/ulid/v2 v2.1.1 // indirect
 	github.com/pierrec/lz4/v4 v4.1.33 // indirect
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c // indirect
-	github.com/rakunlabs/chu/loader/external/loaderawssecrets v0.0.0-20260831101252-0c6a77e06f7f // indirect
-	github.com/rakunlabs/chu/loader/external/loaderawsssm v0.0.0-20260831101252-0c6a77e06f7f // indirect
-	github.com/rakunlabs/chu/loader/external/loaderazurekeyvault v0.0.0-20260831101252-0c6a77e06f7f // indirect
-	github.com/rakunlabs/chu/loader/external/loaderconsul v0.0.0-20260831101252-0c6a77e06f7f // indirect
-	github.com/rakunlabs/chu/loader/external/loadergcpparameter v0.0.0-20260831101252-0c6a77e06f7f // indirect
-	github.com/rakunlabs/chu/loader/external/loadergcpsecret v0.0.0-20260831101252-0c6a77e06f7f // indirect
-	github.com/rakunlabs/chu/loader/external/loadervault v0.0.0-20260831101252-0c6a77e06f7f // indirect
 	github.com/rakunlabs/gofret v0.2.1 // indirect
 	github.com/rakunlabs/ok v0.1.0 // indirect
 	github.com/ryanuber/go-glob v1.0.0 // indirect
