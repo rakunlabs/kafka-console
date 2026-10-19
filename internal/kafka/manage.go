@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"sync"
 
 	"github.com/twmb/franz-go/pkg/kadm"
 )
@@ -243,13 +244,25 @@ func (c *Client) Broker(ctx context.Context, id int32) (*BrokerDetail, error) {
 		}
 	}
 
-	if configs, err := c.admin.DescribeBrokerConfigs(ctx, id); err == nil {
+	var (
+		configs    kadm.ResourceConfigs
+		configsErr error
+		dirs       kadm.DescribedLogDirs
+		dirsErr    error
+		wg         sync.WaitGroup
+	)
+
+	wg.Go(func() { configs, configsErr = c.admin.DescribeBrokerConfigs(ctx, id) })
+	wg.Go(func() { dirs, dirsErr = c.admin.DescribeBrokerLogDirs(ctx, id, nil) })
+	wg.Wait()
+
+	if configsErr == nil {
 		if rc, err := configs.On(strconv.Itoa(int(id)), nil); err == nil {
 			out.Configs = configEntries(rc.Configs)
 		}
 	}
 
-	if dirs, err := c.admin.DescribeBrokerLogDirs(ctx, id, nil); err == nil {
+	if dirsErr == nil {
 		for _, d := range dirs.Sorted() {
 			ld := LogDir{
 				Broker: id, Dir: d.Dir, Size: d.Size(),

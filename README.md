@@ -29,9 +29,15 @@ far behind they are.
 - **Topics:**
   - Partitions, replicas, ISR, offsets and size.
   - Create and delete topics, edit config, add partitions, delete records.
+  - Move replicas between brokers, with a balance plan that evens out replicas and leaders.
+  - The ACLs that apply to each topic and group.
+  - Optional documentation page per topic, from Markdown files; see [Topic documentation](#topic-documentation).
 - **Messages:**
-  - Browse by offset, timestamp, newest or oldest.
+  - Browse by offset, timestamp, newest, oldest, or the last N of each partition. "Load older" continues a read where it stopped.
   - Text search, JavaScript filters, live tail, JSON tree view.
+  - Read keys and values as JSON, text, MessagePack, CBOR, hex, base64 or an unsigned integer when the automatic choice is wrong. Protobuf without a registry, from local `.proto` files; see [Protobuf without a registry](#protobuf-without-a-registry).
+  - Show fields of JSON values as columns, and times as local, UTC, relative or Unix. Both are kept in the browser.
+  - Download a key or value exactly as stored, including values too large to show.
   - Resend messages to another topic.
   - Open a message in Produce to edit its key, value or headers, review changes, and send a new record to the same or another topic.
   - Replay a range by offset or time, with the same search and JS filter, to another topic or back into the same one. Shows a count before writing and progress while it runs.
@@ -44,6 +50,7 @@ far behind they are.
 - **Schema Registry:**
   - Avro, Protobuf and JSON Schema decoding.
   - Subjects, versions, compatibility, create and delete.
+  - Filter by registry context; each subject links to the topics it is named after.
 - **Security:** ACLs, SCRAM users, client quotas.
 - **Operator safety:**
   - Per-cluster `read_only` and `production` flags.
@@ -149,10 +156,52 @@ from the UI, its API routes answer 404, and its MCP tools are not offered
 | `alter_topic` | Editing topic config and adding partitions | `alter_topic_config`, `add_partitions` |
 | `delete_records` | Delete records from a topic | `delete_records` |
 | `delete_group` | Delete consumer group | `delete_consumer_group` |
+| `alter_broker` | Editing broker config and moving partition replicas | — |
 
 Features apply to every cluster. To block all writes on one cluster, use its
 `read_only` flag instead. Environment variables work too, for example
 `KAFKA_CONSOLE_FEATURES_DELETE_TOPIC=false`.
+
+### Protobuf without a registry
+
+Producers that write plain protobuf (no schema registry framing) can be read
+with local `.proto` files. Every `.proto` under `paths` is compiled at start
+up; imports resolve against `paths` too, and the Google well-known types are
+built in. Each topic rule is a regular expression matched against the whole
+topic name, and the first match picks the key and value message types.
+
+```yaml
+clusters:
+  local:
+    brokers: ["localhost:9092"]
+    protobuf:
+      paths: [./protos]
+      topics:
+        - topic: "orders\\..*"   # orders.eu, orders.us, ...
+          value: shop.v1.Order
+        - topic: payments
+          key: shop.v1.PaymentKey
+          value: shop.v1.Payment
+```
+
+Registry-framed records still use the registry. Messages decoded this way are
+read-only in Produce, since the form cannot encode them back; use Resend to
+copy them byte for byte.
+
+### Topic documentation
+
+A topic page gets a **Docs** tab when the cluster has a `docs.path`. It shows
+`<path>/<topic>.md`, rendered as Markdown. Raw HTML in the file is dropped and
+links are limited to safe schemes. Files are read on each view, so a directory
+kept current by `git pull` (from a cron job or a sidecar) shows changes at once.
+
+```yaml
+clusters:
+  local:
+    brokers: ["localhost:9092"]
+    docs:
+      path: ./topic-docs   # orders.created.md, payments.md, ...
+```
 
 ### OAUTHBEARER
 

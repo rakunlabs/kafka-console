@@ -18,23 +18,22 @@
   // Matches are capped; on a large cluster typing narrows the list faster
   // than scrolling thousands of rows would.
   const cap = 100
+  // Sorted and lowercased once per topic list; a keystroke only filters.
+  const collator = new Intl.Collator()
+  const sorted = $derived(
+    topics
+      .map((t) => ({ ...t, low: t.name.toLowerCase() }))
+      .sort((a, b) => collator.compare(a.name, b.name)),
+  )
+  const hide = $derived(new Set(exclude))
   const matches = $derived.by(() => {
     const q = query.trim().toLowerCase()
-    const hide = new Set(exclude)
-    return topics
-      .filter((t) => (showInternal || !t.internal) && !hide.has(t.name) && (!q || t.name.toLowerCase().includes(q)))
-      .sort((a, b) => {
-        // Prefix matches first, then alphabetical.
-        if (q) {
-          const ap = a.name.toLowerCase().startsWith(q) ? 0 : 1
-          const bp = b.name.toLowerCase().startsWith(q) ? 0 : 1
-          if (ap !== bp) return ap - bp
-        }
-        return a.name.localeCompare(b.name)
-      })
+    const keep = sorted.filter((t) => (showInternal || !t.internal) && !hide.has(t.name) && (!q || t.low.includes(q)))
+    // Prefix matches first; the sort is stable, so each part stays alphabetical.
+    return q ? [...keep.filter((t) => t.low.startsWith(q)), ...keep.filter((t) => !t.low.startsWith(q))] : keep
   })
   const rows = $derived(matches.slice(0, cap))
-  const hidden = $derived(exclude.filter((e) => topics.some((t) => t.name === e)).length)
+  const hidden = $derived(sorted.reduce((n, t) => n + (hide.has(t.name) ? 1 : 0), 0))
 
   $effect(() => {
     void query

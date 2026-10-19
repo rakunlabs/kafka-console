@@ -3,6 +3,7 @@
   import { fmt } from './format'
   import LagBar from './LagBar.svelte'
   import OffsetDialog from './OffsetDialog.svelte'
+  import MoreRows from './MoreRows.svelte'
   import { PencilLine, X } from '@lucide/svelte'
 
   // One group's partitions of one topic, with per-row and multi-select offset
@@ -25,6 +26,9 @@
     onchanged?: () => void
   } = $props()
 
+  // A topic with thousands of partitions renders a page of rows at a time;
+  // selecting all still covers every partition.
+  let shown = $state(100)
   let selected = $state(new Set<number>())
   let target = $state<number[]>([])
   let editing = $state(false)
@@ -84,7 +88,7 @@
       </tr>
     </thead>
     <tbody>
-      {#each rows as p (p.partition)}
+      {#each rows.slice(0, shown) as p (p.partition)}
         <tr class:picked={selected.has(p.partition)}>
           {#if editable}
             <td class="ck">
@@ -114,6 +118,7 @@
       {/each}
     </tbody>
   </table>
+  <MoreRows total={rows.length} bind:shown step={100} />
 </div>
 
 <OffsetDialog {cluster} {group} {topic} partitions={target} {activeMembers} bind:open={editing}

@@ -157,25 +157,21 @@ func (c *Client) ReplayPlan(ctx context.Context, topic string, req ReplayRequest
 		return nil, err
 	}
 
-	starts, err := c.admin.ListStartOffsets(ctx, topic)
-	if err != nil {
-		return nil, fmt.Errorf("list start offsets; %w", err)
-	}
-
 	// The last stable offset, not the high watermark: records past it belong
 	// to open transactions and a read-committed reader would wait for them.
-	ends, err := c.admin.ListCommittedOffsets(ctx, topic)
-	if err != nil {
-		return nil, fmt.Errorf("list end offsets; %w", err)
-	}
-
-	var fromTime, toTime kadm.ListedOffsets
-
+	var from *int64
 	if req.From.Type == "timestamp" {
-		if fromTime, err = c.admin.ListOffsetsAfterMilli(ctx, req.From.Timestamp, topic); err != nil {
-			return nil, fmt.Errorf("list offsets by time; %w", err)
-		}
+		from = &req.From.Timestamp
 	}
+
+	b, err := c.bounds(ctx, topic, true, from)
+	if err != nil {
+		return nil, err
+	}
+
+	starts, ends, fromTime := b.starts, b.ends, b.atTime
+
+	var toTime kadm.ListedOffsets
 
 	if req.To.Type == "timestamp" {
 		if toTime, err = c.admin.ListOffsetsAfterMilli(ctx, req.To.Timestamp+1, topic); err != nil {
@@ -321,6 +317,12 @@ func (c *Client) Replay(ctx context.Context, topic string, req ReplayRequest, em
 		}
 	}
 
+	release, err := c.stream()
+	if err != nil {
+		return err
+	}
+	defer release()
+
 	limit := int64(req.Limit)
 	if limit <= 0 || limit > maxReplay {
 		limit = maxReplay
@@ -406,6 +408,8 @@ func (c *Client) Replay(ctx context.Context, topic string, req ReplayRequest, em
 		kgo.ConsumePartitions(map[string]map[int32]kgo.Offset{topic: offsets}),
 		kgo.FetchMaxWait(500*time.Millisecond),
 		kgo.FetchIsolationLevel(kgo.ReadCommitted()),
+		// Markers reach the planned ends; see newScanReader.
+		kgo.KeepControlRecords(),
 	)
 
 	reader, err := kgo.NewClient(opts...)
@@ -419,7 +423,7 @@ func (c *Client) Replay(ctx context.Context, topic string, req ReplayRequest, em
 
 	var producer *kgo.Client
 	if !req.DryRun {
-		if producer, err = c.producer(req.KeepPartition, ""); err != nil {
+		if producer, err = c.bulkProducer(req.KeepPartition, ""); err != nil {
 			ev.FirstError = fmt.Sprintf("producer; %v", err)
 			done("error")
 
@@ -495,33 +499,40 @@ func (c *Client) Replay(ctx context.Context, topic string, req ReplayRequest, em
 			finish(rec)
 		}
 
-		ev.Scanned++
-
-		d := c.decodeRecord(rctx, rec, false)
-		if !textMatch(req.Search, rec, d) {
+		if isControl(rec) {
 			return
 		}
 
-		if filter != nil {
-			fctx, fcancel := context.WithTimeout(rctx, tailScriptBudget)
-			guard := script.Guard(fctx, filter, "filter timed out")
-			ok, err := filter.Call(filterArguments(filter, rec, d)...)
+		ev.Scanned++
 
-			guard()
-			fcancel()
-			filter.Close()
-
-			if err != nil {
-				ev.ScriptErrors++
-				if ev.FirstError == "" {
-					ev.FirstError = err.Error()
-				}
-
+		// Decoding is only for the search and filter; copies use raw bytes.
+		if req.Search != "" || filter != nil {
+			d := c.decodeRecord(rctx, rec, false, DecodeAs{})
+			if !textMatch(req.Search, rec, d) {
 				return
 			}
 
-			if !ok {
-				return
+			if filter != nil {
+				fctx, fcancel := context.WithTimeout(rctx, tailScriptBudget)
+				guard := script.Guard(fctx, filter, "filter timed out")
+				ok, err := filter.Call(filterArguments(filter, rec, d)...)
+
+				guard()
+				fcancel()
+				filter.Close()
+
+				if err != nil {
+					ev.ScriptErrors++
+					if ev.FirstError == "" {
+						ev.FirstError = err.Error()
+					}
+
+					return
+				}
+
+				if !ok {
+					return
+				}
 			}
 		}
 
@@ -737,7 +748,7 @@ func (c *Client) Import(ctx context.Context, topic string, req ImportRequest) ([
 		return out, nil
 	}
 
-	producer, err := c.producer(req.KeepPartition, codec)
+	producer, err := c.bulkProducer(req.KeepPartition, codec)
 	if err != nil {
 		return nil, fmt.Errorf("producer; %w", err)
 	}

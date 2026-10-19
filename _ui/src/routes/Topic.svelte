@@ -1,7 +1,7 @@
 <script lang="ts">
   import { api, type Cluster, type TopicDetail, type Message } from '../lib/api'
   import { fmt, bytes, duration, sizeIEC } from '../lib/format'
-  import { Mail, Columns3, SlidersHorizontal, Send, Users, ArrowRight, Plus, Eraser, Trash2, RefreshCw } from '@lucide/svelte'
+  import { Mail, Columns3, SlidersHorizontal, Send, Users, ArrowRight, Plus, Eraser, Trash2, RefreshCw, ShieldCheck, ArrowRightLeft, BookOpen } from '@lucide/svelte'
   import { href, go, router } from '../lib/router.svelte'
   import Modal from '../lib/Modal.svelte'
   import Overflow from '../lib/Overflow.svelte'
@@ -9,6 +9,10 @@
   import { app } from '../lib/features.svelte'
   import { forgetNames } from '../lib/names'
   import ConfigTable from '../lib/ConfigTable.svelte'
+  import MoreRows from '../lib/MoreRows.svelte'
+  import ResourceACLs from '../lib/ResourceACLs.svelte'
+  import ReassignDialog from '../lib/ReassignDialog.svelte'
+  import TopicDocs from '../lib/TopicDocs.svelte'
   import Messages from './Messages.svelte'
   import Produce from './Produce.svelte'
   import TopicConsumers from './TopicConsumers.svelte'
@@ -20,27 +24,36 @@
   let error = $state('')
 
   let loading = $state(false)
+  let partitionsShown = $state(200)
+  let moving = $state(false)
 
+  // Refreshes can overlap (Refresh, after growing or truncating); the last
+  // one started wins.
+  let seq = 0
   function load() {
+    const id = ++seq
     loading = true
     api
       .topic(cluster.name, name)
       .then((t) => {
+        if (id !== seq) return
         data = t
         error = ''
       })
-      .catch((e) => (error = e.message))
-      .finally(() => (loading = false))
+      .catch((e) => id === seq && (error = e.message))
+      .finally(() => id === seq && (loading = false))
   }
   load()
 
-  const tabs = [
+  const tabs = $derived([
     { id: 'messages', label: 'Messages', icon: Mail },
     { id: 'partitions', label: 'Partitions', icon: Columns3 },
     { id: 'consumers', label: 'Consumers', icon: Users },
     { id: 'config', label: 'Config', icon: SlidersHorizontal },
     { id: 'produce', label: 'Produce', icon: Send },
-  ]
+    ...(app.features.security ? [{ id: 'acl', label: 'ACL', icon: ShieldCheck }] : []),
+    ...(cluster.docs ? [{ id: 'docs', label: 'Docs', icon: BookOpen }] : []),
+  ])
   const tab = $derived(router.route.query.get('tab') ?? 'messages')
   let editMessage = $state<Message>()
 
@@ -249,11 +262,14 @@
   {/if}
 </div>
 
-{#if error}
+<!-- A failed refresh keeps what is shown (and a running live tail in
+     it); only a first load that failed has nothing else to show. -->
+{#if error && !data}
   <div class="error">{error}</div>
 {:else if !data}
   <div class="empty">Loading…</div>
 {:else}
+  {#if error}<div class="error mb-3">{error}</div>{/if}
   <!-- Compact stat strip: label left, value right. The one qualifier worth
        keeping (replication, replicated size) sits beside the label; plain
        explanations moved to tooltips. -->
@@ -316,14 +332,20 @@
         Fill = messages relative to the busiest partition.
         {#if skew}<span class="text-warn">Partition {skew.id} holds {skew.pct}% of all messages; check the key distribution.</span>{/if}
       </span>
+      {#if app.features.alter_broker}
+        <span class="flex-1"></span>
+        <button disabled={cluster.read_only} onclick={() => (moving = true)}
+          title={cluster.read_only ? 'This cluster is read-only' : 'Move replicas between brokers, or balance them'}><ArrowRightLeft size={14} />Move replicas…</button>
+      {/if}
     </div>
+    <ReassignDialog {cluster} topic={name} bind:open={moving} ondone={load} />
     <div class="panel">
       <table>
         <thead>
           <tr><th class="num">Partition</th><th class="num">Leader</th><th>Replicas</th><th>ISR</th><th class="num">Low</th><th class="num">High</th><th class="num">Messages</th><th class="num">Size</th></tr>
         </thead>
         <tbody>
-          {#each data.partitions as p (p.id)}
+          {#each data.partitions.slice(0, partitionsShown) as p (p.id)}
             <tr>
               <td class="num mono">{p.id}</td>
               <td class="num mono">{p.leader < 0 ? '—' : p.leader}</td>
@@ -340,7 +362,12 @@
           {/each}
         </tbody>
       </table>
+      <MoreRows total={data.partitions.length} bind:shown={partitionsShown} />
     </div>
+  {:else if tab === 'docs' && cluster.docs}
+    <TopicDocs {cluster} topic={name} />
+  {:else if tab === 'acl' && app.features.security}
+    <ResourceACLs {cluster} type="TOPIC" name={name} />
   {:else if tab === 'consumers'}
     <TopicConsumers {cluster} topic={name} />
   {:else if tab === 'config'}

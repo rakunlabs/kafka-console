@@ -49,10 +49,11 @@
   const allOpen = $derived(!!groups?.length && groups.every((g) => open.has(g.group)))
   const toggleAll = () => (open = allOpen ? new Set() : new Set(groups?.map((g) => g.group)))
 
+  // One group's numbers: the group endpoint computes lag for that group
+  // alone, where the topic's consumer list would redo every group's.
   async function reading(group: string) {
-    const all = await api.topicConsumers(cluster.name, topic)
-    const g = all.find((x) => x.group === group)
-    const rows = g?.partitions ?? []
+    const g = await api.group(cluster.name, group)
+    const rows = g.partitions.filter((p) => p.topic === topic)
     return {
       lag: rows.reduce((s, p) => s + Math.max(p.lag, 0), 0),
       committed: rows.reduce((s, p) => s + Math.max(p.committed, 0), 0),

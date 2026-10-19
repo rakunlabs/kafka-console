@@ -10,6 +10,7 @@ const off: Features = {
   alter_topic: false,
   delete_records: false,
   delete_group: false,
+  alter_broker: false,
 }
 
 let current = $state<Features>(off)

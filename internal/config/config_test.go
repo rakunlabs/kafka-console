@@ -22,6 +22,7 @@ func TestFeaturesDefaultOn(t *testing.T) {
 		"alter_topic":    func(b *bool) bool { return Features{AlterTopic: b}.AlterTopicEnabled() },
 		"delete_records": func(b *bool) bool { return Features{DeleteRecords: b}.DeleteRecordsEnabled() },
 		"delete_group":   func(b *bool) bool { return Features{DeleteGroup: b}.DeleteGroupEnabled() },
+		"alter_broker":   func(b *bool) bool { return Features{AlterBroker: b}.AlterBrokerEnabled() },
 	}
 
 	for feature, enabled := range checks {
@@ -31,6 +32,32 @@ func TestFeaturesDefaultOn(t *testing.T) {
 					t.Fatalf("enabled = %v, want %v", got, tt.want)
 				}
 			})
+		}
+	}
+}
+
+func TestValidateProtobufAndDocs(t *testing.T) {
+	dir := t.TempDir()
+	check := func(c *Cluster) error {
+		c.Brokers = []string{"localhost:9092"}
+
+		return (&Config{Clusters: map[string]*Cluster{"c": c}}).validate()
+	}
+
+	for name, tc := range map[string]struct {
+		c  *Cluster
+		ok bool
+	}{
+		"docs dir":            {&Cluster{Docs: &Docs{Path: dir}}, true},
+		"docs path unset":     {&Cluster{Docs: &Docs{}}, true},
+		"docs missing dir":    {&Cluster{Docs: &Docs{Path: dir + "/nope"}}, false},
+		"protobuf":            {&Cluster{Protobuf: &Protobuf{Paths: []string{dir}, Topics: []ProtobufTopic{{Topic: "t", Value: "a.B"}}}}, true},
+		"protobuf no paths":   {&Cluster{Protobuf: &Protobuf{Topics: []ProtobufTopic{{Topic: "t", Value: "a.B"}}}}, false},
+		"protobuf no message": {&Cluster{Protobuf: &Protobuf{Paths: []string{dir}, Topics: []ProtobufTopic{{Topic: "t"}}}}, false},
+		"protobuf no topic":   {&Cluster{Protobuf: &Protobuf{Paths: []string{dir}, Topics: []ProtobufTopic{{Value: "a.B"}}}}, false},
+	} {
+		if err := check(tc.c); (err == nil) != tc.ok {
+			t.Errorf("%s: err %v, want ok=%v", name, err, tc.ok)
 		}
 	}
 }

@@ -3,6 +3,7 @@
   import { bytes, fmt } from '../lib/format'
   import { href } from '../lib/router.svelte'
   import ConfigTable from '../lib/ConfigTable.svelte'
+  import { app } from '../lib/features.svelte'
 
   let { cluster, id }: { cluster: Cluster; id: number } = $props()
 
@@ -70,7 +71,7 @@
   </div>
 
   <h2 class="section mtop">Config</h2>
-  <ConfigTable configs={data.configs} readOnly={cluster.read_only} {save} />
+  <ConfigTable configs={data.configs} readOnly={cluster.read_only || !app.features.alter_broker} {save} />
 {/if}
 
 <style>

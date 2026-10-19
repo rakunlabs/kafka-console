@@ -43,6 +43,9 @@ type RegistryOverview struct {
 	Subjects      []SubjectSummary `json:"subjects"`
 	// Total counts every subject matching the search and type filter.
 	Total int `json:"total"`
+	// Contexts lists the registry contexts that hold subjects ("." is the
+	// default one), so the list can be narrowed to one.
+	Contexts []string `json:"contexts"`
 }
 
 // RegistryQuery selects one page of subjects. Versions and compatibility
@@ -52,7 +55,10 @@ type RegistryQuery struct {
 	ShowDeleted bool
 	Search      string
 	Type        string
-	Offset      int
+	// Context keeps subjects of one registry context: "." for the default,
+	// ".name" for a named one; empty keeps all.
+	Context string
+	Offset  int
 	// Limit is the page size; 0 returns every matching subject.
 	Limit int
 }
@@ -70,30 +76,71 @@ func (c *Client) Registry(ctx context.Context, q RegistryQuery) (*RegistryOvervi
 
 	out := &RegistryOverview{Subjects: []SubjectSummary{}, Types: []string{}}
 
-	if g := c.registry.Compatibility(ctx); len(g) > 0 && g[0].Err == nil {
-		out.Compatibility = g[0].Level.String()
-	}
+	// Independent registry calls, one HTTP round trip each.
+	var (
+		names  []string
+		err    error
+		active = map[string]bool{}
+		wg     sync.WaitGroup
+	)
 
-	if m := c.registry.Mode(ctx); len(m) > 0 && m[0].Err == nil {
-		out.Mode = m[0].Mode.String()
-	}
-
-	if types, err := c.registry.SupportedTypes(ctx); err == nil {
-		for _, t := range types {
-			out.Types = append(out.Types, t.String())
+	wg.Go(func() {
+		if g := c.registry.Compatibility(ctx); len(g) > 0 && g[0].Err == nil {
+			out.Compatibility = g[0].Level.String()
 		}
-	} else {
-		out.Types = []string{"AVRO", "PROTOBUF", "JSON"}
-	}
-
+	})
+	wg.Go(func() {
+		if m := c.registry.Mode(ctx); len(m) > 0 && m[0].Err == nil {
+			out.Mode = m[0].Mode.String()
+		}
+	})
+	wg.Go(func() {
+		if types, err := c.registry.SupportedTypes(ctx); err == nil {
+			for _, t := range types {
+				out.Types = append(out.Types, t.String())
+			}
+		} else {
+			out.Types = []string{"AVRO", "PROTOBUF", "JSON"}
+		}
+	})
 	// Subjects plus per-subject latest versions works on every registry;
 	// GET /schemas is missing from some (e.g. Redpanda).
-	names, err := c.registry.Subjects(ctx)
+	wg.Go(func() { names, err = c.registry.Subjects(ctx) })
+
+	// Contexts can exist before they hold subjects; registries without the
+	// endpoint (e.g. Redpanda) still show contexts found in subject names.
+	var extraContexts []string
+	wg.Go(func() { extraContexts, _ = c.registry.Contexts(ctx) })
+
+	if showDeleted {
+		wg.Go(func() {
+			if subjects, err := c.registry.Subjects(base); err == nil {
+				for _, s := range subjects {
+					active[s] = true
+				}
+			}
+		})
+	}
+
+	wg.Wait()
+
 	if err != nil {
 		return nil, srErr("list subjects", err)
 	}
 
 	sort.Strings(names)
+
+	out.Contexts = subjectContexts(names, extraContexts)
+
+	if q.Context != "" {
+		matched := names[:0]
+		for _, n := range names {
+			if subjectContext(n) == q.Context {
+				matched = append(matched, n)
+			}
+		}
+		names = matched
+	}
 
 	if search := strings.ToLower(strings.TrimSpace(q.Search)); search != "" {
 		matched := names[:0]
@@ -103,15 +150,6 @@ func (c *Client) Registry(ctx context.Context, q RegistryQuery) (*RegistryOvervi
 			}
 		}
 		names = matched
-	}
-
-	active := map[string]bool{}
-	if showDeleted {
-		if subjects, err := c.registry.Subjects(base); err == nil {
-			for _, s := range subjects {
-				active[s] = true
-			}
-		}
 	}
 
 	var bySubject map[string]*SubjectSummary
@@ -129,16 +167,24 @@ func (c *Client) Registry(ctx context.Context, q RegistryQuery) (*RegistryOvervi
 	out.Total = len(names)
 	names = pageOf(names, q.Offset, q.Limit)
 
+	compat := map[string]string{}
+
+	var compatWG sync.WaitGroup
+
+	// Compatibility per subject runs alongside the summaries.
+	compatWG.Go(func() {
+		for _, r := range c.compatibilities(sr.WithParams(ctx, sr.DefaultToGlobal), names) {
+			if r.Err == nil {
+				compat[r.Subject] = r.Level.String()
+			}
+		}
+	})
+
 	if bySubject == nil {
 		bySubject = c.subjectSummaries(ctx, names)
 	}
 
-	compat := map[string]string{}
-	for _, r := range c.compatibilities(sr.WithParams(ctx, sr.DefaultToGlobal), names) {
-		if r.Err == nil {
-			compat[r.Subject] = r.Level.String()
-		}
-	}
+	compatWG.Wait()
 
 	for _, n := range names {
 		s := bySubject[n]
@@ -152,6 +198,40 @@ func (c *Client) Registry(ctx context.Context, q RegistryQuery) (*RegistryOvervi
 	}
 
 	return out, nil
+}
+
+// subjectContext is the registry context of a subject: ".name" for a
+// qualified ":.name:subject", "." otherwise.
+func subjectContext(subject string) string {
+	if rest, ok := strings.CutPrefix(subject, ":."); ok {
+		if i := strings.Index(rest, ":"); i >= 0 {
+			return "." + rest[:i]
+		}
+	}
+
+	return "."
+}
+
+func subjectContexts(subjects, listed []string) []string {
+	set := map[string]bool{".": true}
+	for _, s := range subjects {
+		set[subjectContext(s)] = true
+	}
+
+	for _, c := range listed {
+		if c != "" {
+			set[c] = true
+		}
+	}
+
+	out := make([]string, 0, len(set))
+	for c := range set {
+		out = append(out, c)
+	}
+
+	sort.Strings(out)
+
+	return out
 }
 
 type SchemaVersion struct {
@@ -174,19 +254,43 @@ type SubjectDetail struct {
 	Mode       string          `json:"mode"`
 	Versions   []SchemaVersion `json:"versions"`
 	ReferredBy []string        `json:"referred_by"`
+	// Topics are the topics this subject belongs to by naming: "<topic>-key"
+	// and "<topic>-value" (TopicNameStrategy) and "<topic>-<record>"
+	// (TopicRecordNameStrategy) for topics that exist.
+	Topics []SubjectTopic `json:"topics"`
+}
+
+type SubjectTopic struct {
+	Topic string `json:"topic"`
+	// Role is key, value or record.
+	Role string `json:"role"`
 }
 
 // registryParallel bounds concurrent registry requests so a large registry
 // is not hit with thousands at once.
 const registryParallel = 8
 
-// subjectSummaries reads every subject's latest version and version count.
-// One GET /schemas covers the whole registry; registries without it (e.g.
-// Redpanda) fall back to two requests per subject.
+// allSchemasFrom is how many subjects make one GET /schemas cheaper than
+// two requests per subject. Below it a page (50 subjects by default) does
+// not download every schema text of the registry.
+const allSchemasFrom = 200
+
+// subjectSummaries reads the subjects' latest version and version count.
+// Many subjects (a type filter over all) are read with one GET /schemas;
+// a page, and registries without that endpoint (e.g. Redpanda), use two
+// requests per subject, in parallel.
+func (c *Client) allSchemas(ctx context.Context, subjects int) ([]sr.SubjectSchema, error) {
+	if subjects < allSchemasFrom {
+		return nil, errors.New("few subjects; read them one by one")
+	}
+
+	return c.registry.AllSchemas(ctx)
+}
+
 func (c *Client) subjectSummaries(ctx context.Context, names []string) map[string]*SubjectSummary {
 	out := make(map[string]*SubjectSummary, len(names))
 
-	if all, err := c.registry.AllSchemas(ctx); err == nil && (len(all) > 0 || len(names) == 0) {
+	if all, err := c.allSchemas(ctx, len(names)); err == nil && len(all) > 0 {
 		for _, s := range all {
 			sum := out[s.Subject]
 			if sum == nil {
@@ -282,14 +386,36 @@ func (c *Client) Subject(ctx context.Context, subject string) (*SubjectDetail, e
 		return nil, srErr("subject "+subject, err)
 	}
 
-	live := map[int]bool{}
-	if versions, err := c.registry.SubjectVersions(ctx, subject); err == nil {
-		for _, v := range versions {
-			live[v] = true
-		}
-	}
+	out := &SubjectDetail{Name: subject, Versions: []SchemaVersion{}, ReferredBy: []string{}, Topics: []SubjectTopic{}}
 
-	out := &SubjectDetail{Name: subject, Versions: []SchemaVersion{}, ReferredBy: []string{}}
+	// Independent lookups, each an HTTP round trip (or a Kafka one).
+	var (
+		live = map[int]bool{}
+		wg   sync.WaitGroup
+	)
+
+	wg.Go(func() {
+		if versions, err := c.registry.SubjectVersions(ctx, subject); err == nil {
+			for _, v := range versions {
+				live[v] = true
+			}
+		}
+	})
+	wg.Go(func() {
+		if r := c.registry.Compatibility(ctx, subject); len(r) > 0 && r[0].Err == nil {
+			out.Compatibility = r[0].Level.String()
+			out.Override = true
+		} else if g := c.registry.Compatibility(ctx); len(g) > 0 && g[0].Err == nil {
+			out.Compatibility = g[0].Level.String()
+		}
+	})
+	wg.Go(func() {
+		if m := c.registry.Mode(sr.WithParams(ctx, sr.DefaultToGlobal), subject); len(m) > 0 && m[0].Err == nil {
+			out.Mode = m[0].Mode.String()
+		}
+	})
+	wg.Go(func() { out.Topics = c.subjectTopics(ctx, subject) })
+	wg.Wait()
 
 	for _, s := range schemas {
 		v := SchemaVersion{
@@ -312,17 +438,6 @@ func (c *Client) Subject(ctx context.Context, subject string) (*SubjectDetail, e
 
 	sort.Slice(out.Versions, func(i, j int) bool { return out.Versions[i].Version > out.Versions[j].Version })
 
-	if r := c.registry.Compatibility(ctx, subject); len(r) > 0 && r[0].Err == nil {
-		out.Compatibility = r[0].Level.String()
-		out.Override = true
-	} else if g := c.registry.Compatibility(ctx); len(g) > 0 && g[0].Err == nil {
-		out.Compatibility = g[0].Level.String()
-	}
-
-	if m := c.registry.Mode(sr.WithParams(ctx, sr.DefaultToGlobal), subject); len(m) > 0 && m[0].Err == nil {
-		out.Mode = m[0].Mode.String()
-	}
-
 	if len(out.Versions) > 0 {
 		latest := out.Versions[0]
 		if refs, err := c.registry.SchemaReferences(ctx, subject, latest.Version); err == nil {
@@ -333,6 +448,62 @@ func (c *Client) Subject(ctx context.Context, subject string) (*SubjectDetail, e
 	}
 
 	return out, nil
+}
+
+// subjectTopics finds the existing topics a subject is named after. Only
+// naming is known: a producer may use any subject with any topic, so this
+// is what the default strategies imply, not a record of actual use.
+func (c *Client) subjectTopics(ctx context.Context, subject string) []SubjectTopic {
+	out := []SubjectTopic{}
+
+	// Strip a registry context prefix (":.ctx:subject") first.
+	name := subject
+	if strings.HasPrefix(name, ":.") {
+		if i := strings.Index(name[2:], ":"); i >= 0 {
+			name = name[i+3:]
+		}
+	}
+
+	candidates := map[string]string{}
+	for _, role := range []string{"key", "value"} {
+		if t, ok := strings.CutSuffix(name, "-"+role); ok && t != "" {
+			candidates[t] = role
+		}
+	}
+
+	// TopicRecordNameStrategy: "<topic>-<fully.qualified.Record>". Topic
+	// names may hold dashes too, so every split point is a candidate.
+	for i := range len(name) {
+		if name[i] == '-' && i > 0 && i < len(name)-1 {
+			if _, ok := candidates[name[:i]]; !ok {
+				candidates[name[:i]] = "record"
+			}
+		}
+	}
+
+	if len(candidates) == 0 {
+		return out
+	}
+
+	names := make([]string, 0, len(candidates))
+	for t := range candidates {
+		names = append(names, t)
+	}
+
+	details, err := c.admin.ListTopics(ctx, names...)
+	if err != nil {
+		return out
+	}
+
+	for t, role := range candidates {
+		if d, ok := details[t]; ok && d.Err == nil {
+			out = append(out, SubjectTopic{Topic: t, Role: role})
+		}
+	}
+
+	sort.Slice(out, func(i, j int) bool { return out[i].Topic < out[j].Topic })
+
+	return out
 }
 
 type CreateSchemaRequest struct {

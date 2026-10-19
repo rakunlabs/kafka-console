@@ -13,6 +13,7 @@ import (
 
 	"github.com/dop251/goja"
 	"github.com/twmb/franz-go/pkg/kadm"
+	"github.com/twmb/franz-go/pkg/kerr"
 	"github.com/twmb/franz-go/pkg/kgo"
 
 	"github.com/rakunlabs/kafka-console/internal/script"
@@ -62,19 +63,25 @@ type Message struct {
 type ConsumeRequest struct {
 	// Partitions empty means every partition.
 	Partitions []int32
-	// Start is newest, oldest, offset or timestamp.
+	// Start is newest, oldest, offset, timestamp or last (the last Offset
+	// records of each partition, read oldest first).
 	Start     string
 	Offset    int64
 	Timestamp int64
-	Limit     int
-	MaxScan   int
-	Filter    string
+	// After continues a previous read: per partition, where it stopped (its
+	// ConsumeResult.Next). Partitions missing from it are done.
+	After   map[int32]int64
+	Limit   int
+	MaxScan int
+	Filter  string
 	// Search keeps messages whose key, value or headers contain this text,
 	// case-insensitively. Applied before Filter, which is far more costly.
 	Search  string
 	Timeout time.Duration
 	// Raw skips schema registry decoding.
 	Raw bool
+	// As reads keys and values in a chosen format instead of guessing.
+	As DecodeAs
 }
 
 type ConsumeResult struct {
@@ -84,6 +91,10 @@ type ConsumeResult struct {
 	FirstError   string    `json:"first_error,omitempty"`
 	StoppedBy    string    `json:"stopped_by"`
 	ElapsedMs    int64     `json:"elapsed_ms"`
+	// Next is where to continue, per partition with records left to read in
+	// the same direction; empty once everything was read. Newest-first it is
+	// the end (exclusive) of what is still unread, otherwise its start.
+	Next map[int32]int64 `json:"next"`
 }
 
 type window struct {
@@ -93,6 +104,10 @@ type window struct {
 
 func (c *Client) Consume(ctx context.Context, topic string, req ConsumeRequest) (*ConsumeResult, error) {
 	begin := time.Now()
+
+	if err := req.As.validate(); err != nil {
+		return nil, err
+	}
 
 	req.Limit = clamp(req.Limit, defaultLimit, maxLimit)
 	req.MaxScan = clamp(req.MaxScan, defaultMaxScan, maxScanCap)
@@ -125,21 +140,37 @@ func (c *Client) Consume(ctx context.Context, topic string, req ConsumeRequest) 
 		return nil, err
 	}
 
-	reader, err := c.newReader(topic)
+	reader, release, err := c.scanReader(ctx, topic)
 	if err != nil {
 		return nil, fmt.Errorf("create reader; %w", err)
 	}
-	defer reader.Close()
+
+	sound := false
+	defer func() { release(sound) }()
 
 	stopGuard := script.Guard(ctx, filter, "filter timed out")
 	defer stopGuard()
 
 	result := &ConsumeResult{Messages: []Message{}}
 
+	newestFirst := req.Start == "newest"
+
+	// Per partition, where a continued read picks up: newest-first the
+	// lowest offset visited, otherwise one past the highest. scan visits each
+	// partition's records in offset order (see scan), so everything between
+	// the window's edge and this point was visited.
+	seen := map[int32]int64{}
+
 	visit := func(rec *kgo.Record) bool {
 		result.Scanned++
 
-		d := c.decodeRecord(ctx, rec, req.Raw)
+		if newestFirst {
+			seen[rec.Partition] = rec.Offset
+		} else {
+			seen[rec.Partition] = rec.Offset + 1
+		}
+
+		d := c.decodeRecord(ctx, rec, req.Raw, req.As)
 
 		if !textMatch(req.Search, rec, d) {
 			return result.Scanned < req.MaxScan
@@ -178,9 +209,27 @@ func (c *Client) Consume(ctx context.Context, topic string, req ConsumeRequest) 
 		return result.Scanned < req.MaxScan
 	}
 
-	newestFirst := req.Start == "newest"
+	// A round reads what is still needed. Without a search or filter every
+	// record is kept, so each partition needs at most the rest of the limit
+	// (all of it could sit in one partition). With one, max_scan bounds the
+	// whole round and is spread over the partitions.
+	matchAll := req.Search == "" && filter == nil
+	need := func(live int64) int64 {
+		left := int64(req.MaxScan - result.Scanned)
+		if left <= 0 {
+			return 0
+		}
 
-	for _, round := range rounds(windows, newestFirst) {
+		if matchAll {
+			return int64(req.Limit - len(result.Messages))
+		}
+
+		return (left + live - 1) / live
+	}
+
+	cur := newCursor(windows, newestFirst)
+
+	for round := cur.next(need); len(round) > 0; round = cur.next(need) {
 		if err := scan(ctx, reader, topic, round, newestFirst, visit); err != nil {
 			if errors.Is(err, context.DeadlineExceeded) {
 				result.StoppedBy = "timeout"
@@ -218,6 +267,11 @@ func (c *Client) Consume(ctx context.Context, topic string, req ConsumeRequest) 
 		result.StoppedBy = "end"
 	}
 
+	result.Next = map[int32]int64{}
+	if result.StoppedBy != "end" {
+		result.Next = resumeFrom(windows, seen, newestFirst)
+	}
+
 	sort.SliceStable(result.Messages, func(i, j int) bool {
 		a, b := result.Messages[i], result.Messages[j]
 		if !a.Timestamp.Equal(b.Timestamp) {
@@ -241,27 +295,25 @@ func (c *Client) Consume(ctx context.Context, topic string, req ConsumeRequest) 
 
 	result.ElapsedMs = time.Since(begin).Milliseconds()
 
+	// Only a reader whose scans all finished is reused; one cut off by a
+	// timeout or error may still have a fetch in flight.
+	sound = result.StoppedBy != "timeout" && ctx.Err() == nil
+
 	return result, nil
 }
 
 func (c *Client) windows(ctx context.Context, topic string, req ConsumeRequest) ([]window, error) {
-	starts, err := c.admin.ListStartOffsets(ctx, topic)
-	if err != nil {
-		return nil, fmt.Errorf("list start offsets; %w", err)
-	}
-
-	ends, err := c.admin.ListEndOffsets(ctx, topic)
-	if err != nil {
-		return nil, fmt.Errorf("list end offsets; %w", err)
-	}
-
-	var atTime kadm.ListedOffsets
+	var at *int64
 	if req.Start == "timestamp" {
-		atTime, err = c.admin.ListOffsetsAfterMilli(ctx, req.Timestamp, topic)
-		if err != nil {
-			return nil, fmt.Errorf("list offsets by time; %w", err)
-		}
+		at = &req.Timestamp
 	}
+
+	b, err := c.bounds(ctx, topic, false, at)
+	if err != nil {
+		return nil, err
+	}
+
+	starts, ends, atTime := b.starts, b.ends, b.atTime
 
 	wanted := map[int32]bool{}
 	for _, p := range req.Partitions {
@@ -283,6 +335,8 @@ func (c *Client) windows(ctx context.Context, topic string, req ConsumeRequest) 
 		w := window{partition: s.Partition, start: s.Offset, end: e.Offset}
 
 		switch req.Start {
+		case "last":
+			w.start = max(w.end-max(req.Offset, 0), w.start)
 		case "offset":
 			w.start = min(max(req.Offset, w.start), w.end)
 		case "timestamp":
@@ -293,13 +347,44 @@ func (c *Client) windows(ctx context.Context, topic string, req ConsumeRequest) 
 			}
 		}
 
+		if req.After != nil {
+			at, ok := req.After[s.Partition]
+			if !ok {
+				return
+			}
+
+			if req.Start == "newest" {
+				w.end = min(w.end, at)
+			} else {
+				w.start = max(w.start, at)
+			}
+		}
+
 		if w.start < w.end {
 			out = append(out, w)
 		}
 	})
 
-	if len(wanted) > 0 && len(out) == 0 && starts.Error() != nil {
-		return nil, fmt.Errorf("topic %q; %w", topic, ErrNotFound)
+	if len(out) == 0 {
+		if err := starts.Error(); err != nil {
+			// Every partition failed: say why instead of an empty result,
+			// a missing topic as not found and a refused one as such.
+			if errors.Is(err, kerr.UnknownTopicOrPartition) || len(starts) == 0 {
+				return nil, fmt.Errorf("topic %q; %w", topic, ErrNotFound)
+			}
+
+			return nil, fmt.Errorf("topic %q; %w", topic, err)
+		}
+
+		if _, ok := starts[topic]; !ok {
+			return nil, fmt.Errorf("topic %q; %w", topic, ErrNotFound)
+		}
+
+		for p := range wanted {
+			if _, ok := starts.Lookup(topic, p); !ok {
+				return nil, fmt.Errorf("topic %q partition %d; %w", topic, p, ErrNotFound)
+			}
+		}
 	}
 
 	sort.Slice(out, func(i, j int) bool { return out[i].partition < out[j].partition })
@@ -307,42 +392,89 @@ func (c *Client) windows(ctx context.Context, topic string, req ConsumeRequest) 
 	return out, nil
 }
 
-// rounds splits windows into chunks; round N holds depth N of every
-// partition, so a newest-first scan reads the whole topic breadth-first.
-func rounds(windows []window, newestFirst bool) [][]window {
-	var out [][]window
+// resumeFrom is where each partition continues: just past the last record
+// it visited, or where its window began if none was. Partitions with nothing
+// left are omitted.
+func resumeFrom(windows []window, seen map[int32]int64, newestFirst bool) map[int32]int64 {
+	out := map[int32]int64{}
 
-	for depth := 0; ; depth++ {
-		var round []window
-
-		for _, w := range windows {
-			var chunk window
-
-			if newestFirst {
-				end := w.end - int64(depth)*chunkSize
-				if end <= w.start {
-					continue
-				}
-
-				chunk = window{partition: w.partition, start: max(w.start, end-chunkSize), end: end}
-			} else {
-				start := w.start + int64(depth)*chunkSize
-				if start >= w.end {
-					continue
-				}
-
-				chunk = window{partition: w.partition, start: start, end: min(w.end, start+chunkSize)}
-			}
-
-			round = append(round, chunk)
+	for _, w := range windows {
+		at := w.end
+		if !newestFirst {
+			at = w.start
 		}
 
-		if len(round) == 0 {
-			return out
+		if o, ok := seen[w.partition]; ok {
+			at = o
 		}
 
-		out = append(out, round)
+		if newestFirst && at > w.start || !newestFirst && at < w.end {
+			out[w.partition] = at
+		}
 	}
+
+	return out
+}
+
+// minChunk keeps a round from shrinking to a few records per partition,
+// where each round's fetch round trip would cost more than the records.
+const minChunk = 32
+
+// cursor walks windows breadth-first: each round takes the next chunk of
+// every partition that has records left, so a newest-first scan sees the
+// newest records of all partitions before older ones. Rounds are made one
+// at a time and sized to what the caller still needs, so a small limit on
+// a wide topic does not fetch chunkSize records from every partition.
+type cursor struct {
+	left        []window // what each partition has not read yet
+	newestFirst bool
+}
+
+func newCursor(windows []window, newestFirst bool) *cursor {
+	return &cursor{left: append([]window(nil), windows...), newestFirst: newestFirst}
+}
+
+// next returns the following round; perPartition gets the number of
+// partitions with records left and returns how many to read from each.
+// nil once every window is read or nothing more is needed.
+func (c *cursor) next(perPartition func(live int64) int64) []window {
+	live := int64(0)
+	for _, w := range c.left {
+		if w.start < w.end {
+			live++
+		}
+	}
+
+	if live == 0 {
+		return nil
+	}
+
+	want := perPartition(live)
+	if want <= 0 {
+		return nil
+	}
+
+	size := min(max(want, minChunk), chunkSize)
+	round := make([]window, 0, live)
+
+	for i := range c.left {
+		w := &c.left[i]
+		if w.start >= w.end {
+			continue
+		}
+
+		if c.newestFirst {
+			from := max(w.start, w.end-size)
+			round = append(round, window{partition: w.partition, start: from, end: w.end})
+			w.end = from
+		} else {
+			to := min(w.end, w.start+size)
+			round = append(round, window{partition: w.partition, start: w.start, end: to})
+			w.start = to
+		}
+	}
+
+	return round
 }
 
 func scan(ctx context.Context, client *kgo.Client, topic string, round []window, newestFirst bool, visit func(*kgo.Record) bool) error {
@@ -411,24 +543,48 @@ func scan(ctx context.Context, client *kgo.Client, topic string, round []window,
 				delete(active, rec.Partition)
 			}
 
+			if isControl(rec) {
+				return
+			}
+
 			buffered = append(buffered, rec)
 		})
 	}
 
-	sort.SliceStable(buffered, func(i, j int) bool {
-		a, b := buffered[i], buffered[j]
-		if !a.Timestamp.Equal(b.Timestamp) {
-			return a.Timestamp.After(b.Timestamp) == newestFirst
-		}
-
-		if a.Partition != b.Partition {
-			return a.Partition < b.Partition
-		}
-
-		return (a.Offset > b.Offset) == newestFirst
-	})
-
+	// Merge the partitions by timestamp, but keep each partition in offset
+	// order even when its timestamps are not (producers set them): a read
+	// that stops mid-round then has visited a contiguous run per partition,
+	// which is what lets it continue without skipping records.
+	byPart := map[int32][]*kgo.Record{}
 	for _, rec := range buffered {
+		byPart[rec.Partition] = append(byPart[rec.Partition], rec)
+	}
+
+	heads := make([][]*kgo.Record, 0, len(byPart))
+	for _, rs := range byPart {
+		sort.Slice(rs, func(i, j int) bool { return (rs[i].Offset > rs[j].Offset) == newestFirst })
+		heads = append(heads, rs)
+	}
+
+	for len(heads) > 0 {
+		best := 0
+
+		for i := 1; i < len(heads); i++ {
+			a, b := heads[i][0], heads[best][0]
+			if !a.Timestamp.Equal(b.Timestamp) {
+				if a.Timestamp.After(b.Timestamp) == newestFirst {
+					best = i
+				}
+			} else if a.Partition < b.Partition {
+				best = i
+			}
+		}
+
+		rec := heads[best][0]
+		if heads[best] = heads[best][1:]; len(heads[best]) == 0 {
+			heads = append(heads[:best], heads[best+1:]...)
+		}
+
 		if !visit(rec) {
 			return nil
 		}
@@ -446,30 +602,48 @@ type recordView struct {
 	err        string
 }
 
-func (c *Client) decodeRecord(ctx context.Context, rec *kgo.Record, raw bool) recordView {
-	var v recordView
-	if raw {
-		return v
-	}
+func (c *Client) decodeRecord(ctx context.Context, rec *kgo.Record, raw bool, as DecodeAs) recordView {
+	var (
+		v    recordView
+		errs []string
+	)
 
-	var errs []string
+	// Registry framing first, then a local .proto type configured for the
+	// topic, then the requested format. A chosen format skips both: the
+	// user says what the bytes are, and binary data can start like framing
+	// by chance.
+	read := func(b []byte, format, side string) *decoded {
+		if !raw && format == AsAuto && b != nil {
+			if d, ok, err := c.decodeRegistry(ctx, b); ok {
+				if err != nil {
+					errs = append(errs, side+": "+err.Error())
 
-	if d, ok, err := c.decodeRegistry(ctx, rec.Key); ok {
-		if err != nil {
-			errs = append(errs, "key: "+err.Error())
-		} else {
-			v.key = d
+					return nil
+				}
+
+				return d
+			}
+
+			if md := c.protos.message(rec.Topic, side == "key"); md != nil {
+				d, err := decodeProto(md, b)
+				if err != nil {
+					errs = append(errs, side+": "+err.Error())
+				}
+
+				return d
+			}
 		}
-	}
 
-	if d, ok, err := c.decodeRegistry(ctx, rec.Value); ok {
-		if err != nil {
-			errs = append(errs, "value: "+err.Error())
-		} else {
-			v.value = d
+		d, ok, err := decodeAs(format, b)
+		if ok && err != nil {
+			errs = append(errs, side+": "+err.Error())
 		}
+
+		return d
 	}
 
+	v.key = read(rec.Key, as.Key, "key")
+	v.value = read(rec.Value, as.Value, "value")
 	v.err = strings.Join(errs, "; ")
 
 	return v
@@ -577,7 +751,7 @@ func render(rec *kgo.Record, d recordView, cutoff int) Message {
 	case d.value != nil:
 		text := d.value.Text
 		if len(text) > cutoff {
-			text = text[:cutoff]
+			text = string(trimRune([]byte(text[:cutoff])))
 			m.Truncated = true
 		}
 
@@ -586,7 +760,7 @@ func render(rec *kgo.Record, d recordView, cutoff int) Message {
 	case rec.Value != nil:
 		value := rec.Value
 		if len(value) > cutoff {
-			value = value[:cutoff]
+			value = trimRune(value[:cutoff])
 			m.Truncated = true
 		}
 
@@ -609,6 +783,25 @@ func render(rec *kgo.Record, d recordView, cutoff int) Message {
 	}
 
 	return m
+}
+
+// trimRune drops a UTF-8 sequence cut off at the end of b, so a truncated
+// text value stays valid text instead of being shown as binary.
+func trimRune(b []byte) []byte {
+	for i := 0; i < utf8.UTFMax && i < len(b); i++ {
+		start := len(b) - 1 - i
+		if !utf8.RuneStart(b[start]) {
+			continue
+		}
+
+		if r, _ := utf8.DecodeRune(b[start:]); r == utf8.RuneError && !utf8.FullRune(b[start:]) {
+			return b[:start]
+		}
+
+		break
+	}
+
+	return b
 }
 
 func encode(b []byte) (string, string) {

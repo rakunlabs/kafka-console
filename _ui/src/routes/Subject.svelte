@@ -131,11 +131,12 @@
   <button class="danger" disabled={cluster.read_only || !data} onclick={() => askDelete()}><Trash2 size={14} />Delete subject</button>
 </div>
 
-{#if error}
+{#if error && !data}
   <div class="error">{error}</div>
 {:else if !data || !current}
   <div class="empty">Loading…</div>
 {:else}
+  {#if error}<div class="error mb-3">{error}</div>{/if}
   <div class="summary">
     <span>Compatibility
       <select class="inline" value={data.override ? data.compatibility : 'DEFAULT'} disabled={cluster.read_only || busy}
@@ -146,6 +147,11 @@
     <span>Mode <b>{data.mode || '—'}</b></span>
     {#if topic}<span>Topic <a class="mono" href={href(cluster.name, 'topics', topic)}>{topic}</a></span>{/if}
     {#if data.referred_by.length}<span>Referenced by: <b class="mono">{data.referred_by.join(', ')}</b></span>{/if}
+    {#if data.topics?.length}
+      <span title="Topics this subject is named after (topic-key, topic-value or topic-Record); producers may still use it elsewhere">Topic
+        {#each data.topics as t, i (t.topic)}{#if i}, {/if}<a class="mono" href={href(cluster.name, 'topics', t.topic)}>{t.topic}</a> <span class="faint">({t.role})</span>{/each}
+      </span>
+    {/if}
   </div>
   {#if actionError}<div class="error">{actionError}</div>{/if}
 

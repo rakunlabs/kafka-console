@@ -55,6 +55,9 @@ type Features struct {
 	DeleteRecords *bool `cfg:"delete_records"`
 	// DeleteGroup allows deleting consumer groups.
 	DeleteGroup *bool `cfg:"delete_group"`
+	// AlterBroker allows changing broker configs and moving partition
+	// replicas between brokers.
+	AlterBroker *bool `cfg:"alter_broker"`
 }
 
 func (f Features) SecurityEnabled() bool      { return enabled(f.Security) }
@@ -63,6 +66,7 @@ func (f Features) DeleteTopicEnabled() bool   { return enabled(f.DeleteTopic) }
 func (f Features) AlterTopicEnabled() bool    { return enabled(f.AlterTopic) }
 func (f Features) DeleteRecordsEnabled() bool { return enabled(f.DeleteRecords) }
 func (f Features) DeleteGroupEnabled() bool   { return enabled(f.DeleteGroup) }
+func (f Features) AlterBrokerEnabled() bool   { return enabled(f.AlterBroker) }
 
 func enabled(b *bool) bool { return b == nil || *b }
 
@@ -111,6 +115,40 @@ type Cluster struct {
 	SASL *SASL `cfg:"sasl"`
 
 	SchemaRegistry *SchemaRegistry `cfg:"schema_registry"`
+
+	// Protobuf decodes plain (not registry-framed) protobuf messages with
+	// local .proto files.
+	Protobuf *Protobuf `cfg:"protobuf"`
+
+	// Docs shows a Markdown file per topic on its page.
+	Docs *Docs `cfg:"docs"`
+}
+
+// Docs reads topic documentation from Markdown files: <path>/<topic>.md.
+// The directory can be a checkout of a git repository kept current by
+// something else (a sidecar or cron running git pull); files are read on
+// each request, so changes show at once.
+type Docs struct {
+	Path string `cfg:"path"`
+}
+
+// Protobuf maps topics to message types from local .proto files, for
+// producers that write protobuf without a schema registry.
+type Protobuf struct {
+	// Paths are directories searched for .proto files and their imports,
+	// like protoc's -I. Every .proto file under them is compiled.
+	Paths []string `cfg:"paths"`
+	// Topics pick the message type per topic; the first match wins.
+	Topics []ProtobufTopic `cfg:"topics"`
+}
+
+type ProtobufTopic struct {
+	// Topic is a regular expression matched against the whole topic name.
+	Topic string `cfg:"topic"`
+	// Key and Value are fully qualified message names, e.g. shop.v1.Order;
+	// an empty one leaves that side to the usual decoding.
+	Key   string `cfg:"key"`
+	Value string `cfg:"value"`
 }
 
 // SchemaRegistry is a Confluent-compatible registry used to decode and
@@ -272,6 +310,26 @@ func (c *Config) validate() error {
 				}
 
 				sr.Password = strings.TrimSpace(string(raw))
+			}
+		}
+
+		if d := cluster.Docs; d != nil {
+			if d.Path == "" {
+				cluster.Docs = nil
+			} else if st, err := os.Stat(d.Path); err != nil || !st.IsDir() {
+				return fmt.Errorf("cluster %q: docs path %q is not a directory", name, d.Path)
+			}
+		}
+
+		if pb := cluster.Protobuf; pb != nil {
+			if len(pb.Paths) == 0 || len(pb.Topics) == 0 {
+				return fmt.Errorf("cluster %q: protobuf needs paths and topics", name)
+			}
+
+			for i, t := range pb.Topics {
+				if t.Topic == "" || t.Key == "" && t.Value == "" {
+					return fmt.Errorf("cluster %q: protobuf topics[%d] needs a topic and a key or value message", name, i)
+				}
 			}
 		}
 

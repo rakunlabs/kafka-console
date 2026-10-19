@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
+	"slices"
 	"sort"
 	"time"
 
@@ -58,7 +60,7 @@ func (c *Client) Message(ctx context.Context, topic string, ref RecordRef) (*Mes
 		return nil, fmt.Errorf("message no longer exists (deleted by retention or compaction): %w", ErrNotFound)
 	}
 
-	d := c.decodeRecord(ctx, rec, false)
+	d := c.decodeRecord(ctx, rec, false, DecodeAs{})
 	cutoff := len(rec.Value)
 	if d.value != nil {
 		cutoff = max(cutoff, len(d.value.Text))
@@ -66,6 +68,26 @@ func (c *Client) Message(ctx context.Context, topic string, ref RecordRef) (*Mes
 	m := render(rec, d, cutoff)
 
 	return &m, nil
+}
+
+// RawRecord reads one exact record's bytes, for downloading a key or value
+// too large (or too binary) to show.
+func (c *Client) RawRecord(ctx context.Context, topic string, ref RecordRef) (*kgo.Record, error) {
+	if ref.Partition < 0 || ref.Offset < 0 {
+		return nil, ErrInvalid{errors.New("partition and offset must be non-negative")}
+	}
+
+	records, err := c.fetchExact(ctx, topic, []RecordRef{ref})
+	if err != nil {
+		return nil, err
+	}
+
+	rec, ok := records[ref]
+	if !ok {
+		return nil, fmt.Errorf("message no longer exists (deleted by retention or compaction): %w", ErrNotFound)
+	}
+
+	return rec, nil
 }
 
 // Resend copies records byte for byte, key, value and headers included, to a
@@ -158,82 +180,115 @@ func (c *Client) Resend(ctx context.Context, topic string, req ResendRequest) ([
 	return out, nil
 }
 
-// fetchExact reads specific offsets. Each partition is read once from its
-// lowest requested offset up to its highest.
+// exactGap is how far apart two wanted offsets of a partition may be and
+// still be read in one pass; farther ones get their own window, so picking
+// offsets 0 and 10,000,000 reads two records, not everything between.
+const exactGap = chunkSize
+
+// fetchExact reads specific offsets. Nearby offsets of a partition are read
+// in one window; each round reads the next window of every partition.
 func (c *Client) fetchExact(ctx context.Context, topic string, refs []RecordRef) (map[RecordRef]*kgo.Record, error) {
 	want := map[RecordRef]bool{}
-	bounds := map[int32][2]int64{}
+	byPartition := map[int32][]int64{}
 
 	for _, r := range refs {
-		want[r] = true
-
-		b, ok := bounds[r.Partition]
-		if !ok {
-			b = [2]int64{r.Offset, r.Offset + 1}
+		if !want[r] {
+			want[r] = true
+			byPartition[r.Partition] = append(byPartition[r.Partition], r.Offset)
 		}
-
-		b[0] = min(b[0], r.Offset)
-		b[1] = max(b[1], r.Offset+1)
-		bounds[r.Partition] = b
 	}
 
 	// Offsets outside what the partition still holds are reported missing
 	// up front instead of waiting for records that will never arrive.
-	starts, err := c.admin.ListStartOffsets(ctx, topic)
+	b, err := c.bounds(ctx, topic, false, nil)
 	if err != nil {
-		return nil, fmt.Errorf("list start offsets; %w", err)
+		return nil, err
 	}
 
-	ends, err := c.admin.ListEndOffsets(ctx, topic)
-	if err != nil {
-		return nil, fmt.Errorf("list end offsets; %w", err)
-	}
+	starts, ends := b.starts, b.ends
 
-	round := make([]window, 0, len(bounds))
+	// Windows per partition, in offset order.
+	windows := map[int32][]window{}
+	depth := 0
 
-	for p, b := range bounds {
-		lo, hi := b[0], b[1]
-
+	for p, offs := range byPartition {
+		lo, hi := int64(0), int64(math.MaxInt64)
 		if s, ok := starts.Lookup(topic, p); ok && s.Err == nil {
-			lo = max(lo, s.Offset)
+			lo = s.Offset
 		}
 
 		if e, ok := ends.Lookup(topic, p); ok && e.Err == nil {
-			hi = min(hi, e.Offset)
+			hi = e.Offset
 		}
 
-		if lo < hi {
-			round = append(round, window{partition: p, start: lo, end: hi})
+		slices.Sort(offs)
+
+		var ws []window
+
+		for _, o := range offs {
+			if o < lo || o >= hi {
+				continue
+			}
+
+			if n := len(ws); n > 0 && o-ws[n-1].end < exactGap {
+				ws[n-1].end = o + 1
+
+				continue
+			}
+
+			ws = append(ws, window{partition: p, start: o, end: o + 1})
+		}
+
+		if len(ws) > 0 {
+			windows[p] = ws
+			depth = max(depth, len(ws))
 		}
 	}
 
 	found := make(map[RecordRef]*kgo.Record, len(refs))
-	if len(round) == 0 {
+	if depth == 0 {
 		return found, nil
 	}
-
-	sort.Slice(round, func(i, j int) bool { return round[i].partition < round[j].partition })
-
-	reader, err := c.newReader(topic)
-	if err != nil {
-		return nil, fmt.Errorf("reader; %w", err)
-	}
-	defer reader.Close()
 
 	rctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 
-	err = scan(rctx, reader, topic, round, false, func(rec *kgo.Record) bool {
-		ref := RecordRef{Partition: rec.Partition, Offset: rec.Offset}
-		if want[ref] {
-			found[ref] = rec
+	reader, release, err := c.scanReader(rctx, topic)
+	if err != nil {
+		return nil, fmt.Errorf("reader; %w", err)
+	}
+
+	sound := false
+	defer func() { release(sound && rctx.Err() == nil) }()
+
+	for i := range depth {
+		round := make([]window, 0, len(windows))
+		for _, ws := range windows {
+			if i < len(ws) {
+				round = append(round, ws[i])
+			}
 		}
 
-		return true
-	})
-	if err != nil && !errors.Is(err, context.DeadlineExceeded) {
-		return nil, err
+		sort.Slice(round, func(a, b int) bool { return round[a].partition < round[b].partition })
+
+		err = scan(rctx, reader, topic, round, false, func(rec *kgo.Record) bool {
+			ref := RecordRef{Partition: rec.Partition, Offset: rec.Offset}
+			if want[ref] {
+				found[ref] = rec
+			}
+
+			return true
+		})
+		if err != nil {
+			if errors.Is(err, context.DeadlineExceeded) {
+				break
+			}
+
+			return nil, err
+		}
 	}
+
+	sound = true
 
 	return found, nil
 }

@@ -25,24 +25,32 @@
 
   const window = 12 // keep about a minute of readings at 5s
 
-  async function tick() {
+  // Each start() is a new run; a reading that was still pending from an
+  // earlier run is dropped and does not schedule a second loop.
+  let run = 0
+
+  async function tick(id: number) {
     try {
       const r = await read()
+      if (id !== run) return
       samples = [...samples, { at: Date.now(), ...r }].slice(-window)
       error = ''
     } catch (e: any) {
+      if (id !== run) return
       error = e.message
     }
-    if (running) timer = setTimeout(tick, interval)
+    if (running) timer = setTimeout(() => tick(id), interval)
   }
 
   function start() {
+    clearTimeout(timer)
     samples = []
     running = true
-    void tick()
+    void tick(++run)
   }
 
   function stop() {
+    run++
     running = false
     clearTimeout(timer)
   }

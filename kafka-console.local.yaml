@@ -14,6 +14,7 @@ server:
 #   alter_topic: false   # topic config edits and adding partitions
 #   delete_records: false
 #   delete_group: false
+#   alter_broker: false  # broker config edits and partition reassignment
 
 clusters:
   local:

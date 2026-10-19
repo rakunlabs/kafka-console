@@ -4,7 +4,11 @@ export type Cluster = {
   read_only: boolean
   production: boolean
   schema_registry: boolean
+  // Topic documentation (Markdown files) is configured.
+  docs?: boolean
 }
+
+export type TopicDoc = { html: string; source: string; file: string; modified: string }
 
 export type Features = {
   security: boolean
@@ -13,6 +17,7 @@ export type Features = {
   alter_topic: boolean
   delete_records: boolean
   delete_group: boolean
+  alter_broker: boolean
 }
 
 export type AppInfo = {
@@ -99,6 +104,10 @@ export type Partition = {
   error?: string
 }
 
+export type Reassignment = { partition: number; replicas: number[] }
+export type ReassignResult = { partition: number; from: number[]; to: number[]; error?: string }
+export type PartitionMove = { partition: number; replicas: number[]; adding: number[]; removing: number[] }
+
 export type ConfigEntry = { key: string; value: string | null; sensitive: boolean; source: string }
 
 export type TopicDetail = {
@@ -164,9 +173,9 @@ export type SubjectSummary = {
   deleted: boolean
 }
 
-export type RegistryOverview = { mode: string; compatibility: string; types: string[]; subjects: SubjectSummary[]; total: number }
+export type RegistryOverview = { mode: string; compatibility: string; types: string[]; contexts?: string[]; subjects: SubjectSummary[]; total: number }
 
-export type RegistryQuery = { q?: string; type?: string; deleted?: boolean; offset?: number; limit?: number }
+export type RegistryQuery = { q?: string; type?: string; context?: string; deleted?: boolean; offset?: number; limit?: number }
 
 export type SchemaReference = { name: string; subject: string; version: number }
 
@@ -188,6 +197,8 @@ export type SubjectDetail = {
   mode: string
   versions: SchemaVersion[]
   referred_by: string[]
+  // Existing topics this subject is named after (key, value or record).
+  topics: { topic: string; role: string }[]
 }
 
 export type EncodeSchema = { subject?: string; version?: number; id?: number; message?: string }
@@ -211,6 +222,8 @@ export type ConsumeResult = {
   first_error?: string
   stopped_by: string
   elapsed_ms: number
+  // Where to continue, per partition; empty once everything was read.
+  next?: Record<string, number>
 }
 
 export type GroupSummary = {
@@ -353,6 +366,11 @@ async function request<T>(method: string, path: string, body?: unknown, opts: { 
 
 const enc = encodeURIComponent
 
+/** Link that downloads a record's key or value bytes exactly as stored. */
+export function rawURL(c: string, t: string, partition: number, offset: number, part: 'key' | 'value') {
+  return `api/v1/clusters/${enc(c)}/topics/${enc(t)}/messages/${partition}/${offset}/raw?part=${part}`
+}
+
 function query(params: Record<string, string | number | boolean | undefined>) {
   const q = new URLSearchParams()
   for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== '' && v !== false) q.set(k, String(v))
@@ -389,11 +407,17 @@ export function tail(
       } catch {}
     }
     // Validation failures come back as plain HTTP errors, which EventSource
-    // cannot read; fetch once to surface the message.
-    fetch(url)
+    // cannot read; fetch once to surface the message. A 200 means the stream
+    // itself works (the error was the connection), so it is closed at once
+    // instead of being left open as a second, unread tail.
+    const probe = new AbortController()
+    fetch(url, { signal: probe.signal })
       .then((r) => (r.ok ? '' : r.json().then((j) => j.message ?? r.statusText)))
       .catch(() => '')
-      .then((msg) => on.error(msg || 'Connection lost'))
+      .then((msg) => {
+        probe.abort()
+        on.error(msg || 'Connection lost')
+      })
   })
   return close
 }
@@ -507,6 +531,13 @@ export const api = {
   // Shared and cached across pages (⌘K, pickers), so not tied to one page.
   names: (c: string) => request<Names>('GET', `/clusters/${enc(c)}/names`, undefined, { app: true }),
   overview: (c: string) => request<Overview>('GET', `/clusters/${enc(c)}/overview`),
+  topicDoc: (c: string, t: string) => request<TopicDoc>('GET', `/clusters/${enc(c)}/topics/${enc(t)}/docs`),
+  balancePlan: (c: string, t: string) => request<Reassignment[]>('GET', `/clusters/${enc(c)}/topics/${enc(t)}/balance-plan`),
+  reassignments: (c: string, t: string) => request<PartitionMove[]>('GET', `/clusters/${enc(c)}/topics/${enc(t)}/reassignments`),
+  reassign: (c: string, t: string, body: { partitions: Reassignment[]; cancel?: boolean; dry_run?: boolean }) =>
+    request<ReassignResult[]>('POST', `/clusters/${enc(c)}/topics/${enc(t)}/reassign`, body),
+  electLeaders: (c: string, t: string, partitions: number[] = []) =>
+    request<ReassignResult[]>('POST', `/clusters/${enc(c)}/topics/${enc(t)}/elect-leaders`, { partitions }),
   topics: (c: string, q: TopicQuery = {}) => request<TopicPage>('GET', `/clusters/${enc(c)}/topics?${query(q)}`),
   topic: (c: string, t: string) => request<TopicDetail>('GET', `/clusters/${enc(c)}/topics/${enc(t)}`),
   topicConsumers: (c: string, t: string) => request<TopicConsumer[]>('GET', `/clusters/${enc(c)}/topics/${enc(t)}/consumers`),
@@ -532,6 +563,9 @@ export const api = {
     request<void>('POST', `/clusters/${enc(c)}/groups/${enc(g)}/delete-offsets`, { topic, partitions }),
 
   acls: (c: string) => request<ACL[]>('GET', `/clusters/${enc(c)}/acls`),
+  // The ACLs Kafka checks for one resource: exact, covering prefixes and *.
+  resourceACLs: (c: string, type: 'TOPIC' | 'GROUP', name: string) =>
+    request<ACL[]>('GET', `/clusters/${enc(c)}/acls?${query({ resource_type: type, resource_name: name })}`),
   createACLs: (c: string, acls: Partial<ACL>[]) => request<void>('POST', `/clusters/${enc(c)}/acls`, acls),
   deleteACL: (c: string, acl: ACL) => request<{ deleted: number }>('POST', `/clusters/${enc(c)}/acls/delete`, acl),
   users: (c: string) => request<User[]>('GET', `/clusters/${enc(c)}/users`),

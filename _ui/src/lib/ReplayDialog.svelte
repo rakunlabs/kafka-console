@@ -39,7 +39,7 @@
   let mark = $state(true)
   let limit = $state<number | ''>('')
   let confirm = $state('')
-  let topics = $state<TopicName[]>([])
+  let topics = $state.raw<TopicName[]>([])
 
   let phase = $state<'edit' | 'counting' | 'counted' | 'running' | 'done'>('edit')
   let plan = $state<ReplayRange[]>([])

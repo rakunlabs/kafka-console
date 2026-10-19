@@ -22,6 +22,12 @@ func unsupported(err error) error {
 		return fmt.Errorf("%w: %w", ErrUnsupported, err)
 	}
 
+	// kgo's answer for a request the broker's ApiVersions does not list,
+	// e.g. ElectLeaders on Redpanda. It has no exported sentinel.
+	if strings.HasPrefix(err.Error(), "broker is too old") || strings.Contains(err.Error(), ": broker is too old") {
+		return fmt.Errorf("%w: the broker does not offer this request", ErrUnsupported)
+	}
+
 	return err
 }
 
@@ -37,12 +43,41 @@ type ACL struct {
 	Permission   string `json:"permission"`
 }
 
+// ACLFor names one resource whose effective ACLs are wanted.
+type ACLFor struct {
+	// Type is TOPIC, GROUP, CLUSTER or TRANSACTIONAL_ID.
+	Type string
+	Name string
+}
+
 func (c *Client) ACLs(ctx context.Context) ([]ACL, error) {
+	return c.describeACLs(ctx, nil)
+}
+
+// ResourceACLs lists the ACLs that apply to one resource: those on its exact
+// name, prefixes that cover it and the * wildcard, which is what Kafka checks
+// when a client touches it.
+func (c *Client) ResourceACLs(ctx context.Context, r ACLFor) ([]ACL, error) {
+	return c.describeACLs(ctx, &r)
+}
+
+func (c *Client) describeACLs(ctx context.Context, r *ACLFor) ([]ACL, error) {
 	req := kmsg.NewPtrDescribeACLsRequest()
 	req.ResourceType = kmsg.ACLResourceTypeAny
 	req.ResourcePatternType = kmsg.ACLResourcePatternTypeAny
 	req.Operation = kmsg.ACLOperationAny
 	req.PermissionType = kmsg.ACLPermissionTypeAny
+
+	if r != nil {
+		rt, err := kmsg.ParseACLResourceType(r.Type)
+		if err != nil || rt == kmsg.ACLResourceTypeAny {
+			return nil, ErrInvalid{fmt.Errorf("resource type %q", r.Type)}
+		}
+
+		req.ResourceType = rt
+		req.ResourceName = &r.Name
+		req.ResourcePatternType = kmsg.ACLResourcePatternTypeMatch
+	}
 
 	resp, err := req.RequestWith(ctx, c.client)
 	if err != nil {

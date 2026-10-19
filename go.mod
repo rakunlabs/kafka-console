@@ -6,6 +6,8 @@ require (
 	github.com/bufbuild/protocompile v0.14.1
 	github.com/denizgursoy/kafka-mcp v0.2.3
 	github.com/dop251/goja v0.0.0-20260917113740-793a2a65c13b
+	github.com/fxamacker/cbor/v2 v2.9.1
+	github.com/gomarkdown/markdown v0.0.0-20260824154242-13c5cf49db8d
 	github.com/modelcontextprotocol/go-sdk v1.7.0
 	github.com/rakunlabs/ada v0.5.4
 	github.com/rakunlabs/ada/handler/folder v0.5.4
@@ -33,6 +35,7 @@ require (
 	github.com/twmb/franz-go/pkg/kmsg v1.15.0
 	github.com/twmb/franz-go/pkg/sr v1.8.0
 	github.com/twmb/tlscfg v1.3.0
+	github.com/vmihailenco/msgpack/v5 v5.4.1
 	golang.org/x/oauth2 v0.36.0
 	google.golang.org/protobuf v1.36.12
 )
@@ -119,8 +122,8 @@ require (
 	github.com/segmentio/asm v1.1.3 // indirect
 	github.com/segmentio/encoding v0.5.4 // indirect
 	github.com/spf13/cast v1.10.0 // indirect
-	github.com/vmihailenco/msgpack/v5 v5.4.1 // indirect
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
+	github.com/x448/float16 v0.8.4 // indirect
 	github.com/xhit/go-str2duration/v2 v2.1.0 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect

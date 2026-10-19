@@ -13,7 +13,7 @@
     maxHeight,
   }: { text: string | null; format?: string; depth?: number; maxHeight?: number } = $props()
 
-  const structured = (f?: string) => f === 'json' || f === 'avro' || f === 'protobuf' || f === 'json-schema'
+  const structured = (f?: string) => f === 'json' || f === 'avro' || f === 'protobuf' || f === 'json-schema' || f === 'msgpack' || f === 'cbor'
 
   const parsed = $derived.by(() => {
     if (text === null) return undefined

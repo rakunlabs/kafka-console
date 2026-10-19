@@ -33,15 +33,60 @@ type codec struct {
 type codecCache struct {
 	registry *sr.Client
 
-	mu     sync.Mutex
-	byID   map[int]*codec
-	failed map[int]time.Time
+	mu       sync.Mutex
+	byID     map[int]*codec
+	failed   map[int]time.Time
+	subjects map[subjectVersion]subjectID
 }
 
 const codecRetryAfter = 30 * time.Second
 
+// subjectFor is how long a subject version's ID is trusted. An import
+// encodes every record through it; a new latest version (or a subject that
+// was deleted and registered again) shows up after this.
+const subjectFor = 10 * time.Second
+
+type subjectVersion struct {
+	subject string
+	version int
+}
+
+type subjectID struct {
+	id int
+	at time.Time
+}
+
 func newCodecCache(registry *sr.Client) *codecCache {
-	return &codecCache{registry: registry, byID: map[int]*codec{}, failed: map[int]time.Time{}}
+	return &codecCache{registry: registry, byID: map[int]*codec{}, failed: map[int]time.Time{}, subjects: map[subjectVersion]subjectID{}}
+}
+
+// subjectID resolves a subject version (0 or -1 for latest) to its schema
+// ID, keeping the answer for subjectFor.
+func (cc *codecCache) subjectID(ctx context.Context, subject string, version int) (int, error) {
+	if version <= 0 {
+		version = -1
+	}
+
+	key := subjectVersion{subject, version}
+
+	cc.mu.Lock()
+	if v, ok := cc.subjects[key]; ok && time.Since(v.at) < subjectFor {
+		cc.mu.Unlock()
+
+		return v.id, nil
+	}
+	cc.mu.Unlock()
+
+	s, err := cc.registry.SchemaByVersion(ctx, subject, version)
+	if err != nil {
+		return 0, err
+	}
+
+	cc.mu.Lock()
+	cc.subjects[key] = subjectID{id: s.ID, at: time.Now()}
+	cc.mu.Unlock()
+
+	return s.ID, nil
 }
 
 func (cc *codecCache) get(ctx context.Context, id int) (*codec, error) {
@@ -67,7 +112,11 @@ func (cc *codecCache) get(ctx context.Context, id int) (*codec, error) {
 	defer cc.mu.Unlock()
 
 	if err != nil {
-		cc.failed[id] = time.Now()
+		// A caller that gave up (left the page, timed out) says nothing
+		// about the schema; only real failures block it for everyone.
+		if ctx.Err() == nil {
+			cc.failed[id] = time.Now()
+		}
 
 		return nil, err
 	}
@@ -209,13 +258,17 @@ func compileProto(source string, refs []namedSchema) (protoreflect.FileDescripto
 
 const magicByte = 0
 
-// schemaID reports the Confluent wire-format schema ID, if b carries one.
+// schemaID reads the Confluent framing: magic byte 0 and a 4-byte schema ID.
+// Registries hand out IDs from 1, so a payload that merely starts with five
+// zero-ish bytes (a big-endian number, say) is not taken for framing.
 func schemaID(b []byte) (int, bool) {
 	if len(b) < 5 || b[0] != magicByte {
 		return 0, false
 	}
 
-	return int(binary.BigEndian.Uint32(b[1:5])), true
+	id := int(binary.BigEndian.Uint32(b[1:5]))
+
+	return id, id > 0
 }
 
 // protoMessage resolves the message descriptor named by the index path that
@@ -408,22 +461,12 @@ func (c *Client) encodeRegistry(ctx context.Context, req *EncodeRequest, value [
 
 	id := req.ID
 	if id <= 0 {
-		var (
-			s   sr.SubjectSchema
-			err error
-		)
+		var err error
 
-		if req.Version > 0 {
-			s, err = c.registry.SchemaByVersion(ctx, req.Subject, req.Version)
-		} else {
-			s, err = c.registry.SchemaByVersion(ctx, req.Subject, -1)
-		}
-
+		id, err = c.codecs.subjectID(ctx, req.Subject, req.Version)
 		if err != nil {
 			return nil, fmt.Errorf("resolve schema %s; %w", req.Subject, err)
 		}
-
-		id = s.ID
 	}
 
 	cd, err := c.codecs.get(ctx, id)

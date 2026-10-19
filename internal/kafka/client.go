@@ -1,6 +1,7 @@
 package kafka
 
 import (
+	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -35,6 +36,9 @@ type Client struct {
 
 	registry *sr.Client
 	codecs   *codecCache
+
+	readers *readers
+	protos  *localProto
 }
 
 func New(name string, cfg *config.Cluster) (*Client, error) {
@@ -69,7 +73,17 @@ func New(name string, cfg *config.Cluster) (*Client, error) {
 		options: options,
 		client:  client,
 		admin:   kadm.NewClient(client),
+		readers: newReaders(),
 	}
+
+	protos, err := newLocalProto(cfg.Protobuf)
+	if err != nil {
+		client.Close()
+
+		return nil, fmt.Errorf("cluster %q; %w", name, err)
+	}
+
+	c.protos = protos
 
 	if cfg.SchemaRegistry != nil {
 		registry, err := registryClient(cfg.SchemaRegistry)
@@ -118,6 +132,7 @@ func registryClient(s *config.SchemaRegistry) (*sr.Client, error) {
 
 func (c *Client) Close() {
 	c.client.Close()
+	c.readers.close()
 
 	c.producersMu.Lock()
 	defer c.producersMu.Unlock()
@@ -160,8 +175,17 @@ func (c *Client) producer(manual bool, codec string) (*kgo.Client, error) {
 		return c.client, nil
 	}
 
-	key := fmt.Sprintf("%t/%s", manual, codec)
+	return c.cachedProducer(fmt.Sprintf("%t/%s", manual, codec), manual, codec)
+}
 
+// bulkProducer is producer for replays and imports. They write thousands of
+// records and fill the client's buffer; on their own clients, a single
+// Produce or an admin request of another user does not queue behind them.
+func (c *Client) bulkProducer(manual bool, codec string) (*kgo.Client, error) {
+	return c.cachedProducer(fmt.Sprintf("bulk/%t/%s", manual, codec), manual, codec)
+}
+
+func (c *Client) cachedProducer(key string, manual bool, codec string) (*kgo.Client, error) {
 	c.producersMu.Lock()
 	defer c.producersMu.Unlock()
 
@@ -216,6 +240,129 @@ func (c *Client) newReader(topic string) (*kgo.Client, error) {
 
 	return kgo.NewClient(opts...)
 }
+
+// newScanReader is newReader for scans that stop at a known end offset. It
+// also returns transaction markers: they take offsets but carry no data, so
+// a partition whose last offset is a commit marker would otherwise never
+// deliver its end and the scan would wait out its empty polls. Callers skip
+// them with isControl.
+func (c *Client) newScanReader() (*kgo.Client, error) {
+	opts := append(append([]kgo.Opt(nil), c.options...),
+		kgo.ConsumePartitions(map[string]map[int32]kgo.Offset{}),
+		kgo.FetchMaxWait(time.Second),
+		kgo.KeepControlRecords(),
+	)
+
+	return kgo.NewClient(opts...)
+}
+
+const (
+	// maxReads bounds the reads (browse, search, resend) running at once
+	// per cluster; more wait their turn instead of each opening its own
+	// connections to every broker.
+	maxReads = 16
+	// idleReaders is how many scan readers are kept connected between
+	// requests. A new one costs a dial, TLS and SASL to each broker it
+	// reads from; a kept one is ready at once.
+	idleReaders = 4
+	// maxStreams bounds live tails and replays per cluster. Each holds a
+	// consumer open for as long as it runs, so past the limit a new one is
+	// refused at once rather than queued behind streams that may never end.
+	maxStreams = 32
+)
+
+// ErrBusy refuses work when a cluster already runs as much of it as allowed.
+var ErrBusy = errors.New("too many live tails and replays are running on this cluster; stop one and retry")
+
+// readers hands out scan readers, at most maxReads at a time, reusing idle
+// ones. A reader holds no partitions while idle: scan removes what it adds.
+type readers struct {
+	slots   chan struct{}
+	streams chan struct{}
+
+	mu     sync.Mutex
+	idle   []*kgo.Client
+	closed bool
+}
+
+func newReaders() *readers {
+	return &readers{slots: make(chan struct{}, maxReads), streams: make(chan struct{}, maxStreams)}
+}
+
+// stream takes a place for a long-running consumer, or fails with ErrBusy.
+func (c *Client) stream() (release func(), err error) {
+	select {
+	case c.readers.streams <- struct{}{}:
+		return func() { <-c.readers.streams }, nil
+	default:
+		return nil, ErrBusy
+	}
+}
+
+// scanReader returns a reader for topic and the function that gives it
+// back; pass that function whether the reader is still sound (false after an
+// error, so a reader in an unknown state is closed, not reused).
+func (c *Client) scanReader(ctx context.Context, topic string) (*kgo.Client, func(ok bool), error) {
+	r := c.readers
+
+	select {
+	case r.slots <- struct{}{}:
+	case <-ctx.Done():
+		return nil, nil, ctx.Err()
+	}
+
+	r.mu.Lock()
+	var cl *kgo.Client
+	if n := len(r.idle); n > 0 {
+		cl, r.idle = r.idle[n-1], r.idle[:n-1]
+	}
+	r.mu.Unlock()
+
+	if cl == nil {
+		var err error
+		if cl, err = c.newScanReader(); err != nil {
+			<-r.slots
+
+			return nil, nil, err
+		}
+	}
+
+	done := func(ok bool) {
+		defer func() { <-r.slots }()
+
+		// Forget the topic, so a kept reader does not keep refreshing
+		// metadata for every topic it was ever lent for.
+		if ok {
+			cl.PurgeTopicsFromConsuming(topic)
+		}
+
+		r.mu.Lock()
+		keep := ok && !r.closed && len(r.idle) < idleReaders
+		if keep {
+			r.idle = append(r.idle, cl)
+		}
+		r.mu.Unlock()
+
+		if !keep {
+			cl.Close()
+		}
+	}
+
+	return cl, done, nil
+}
+
+func (r *readers) close() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.closed = true
+	for _, cl := range r.idle {
+		cl.Close()
+	}
+	r.idle = nil
+}
+
+func isControl(rec *kgo.Record) bool { return rec.Attrs.IsControl() }
 
 func tlsConfig(s *config.TLS) (*tls.Config, error) {
 	cfg, err := tlscfg.New(

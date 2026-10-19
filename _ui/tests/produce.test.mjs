@@ -78,3 +78,11 @@ test('formatting preserves large numbers, exponents, duplicate keys and string e
   assert.equal(formatPayload('9007199254740993'), '9007199254740993')
   assert.throws(() => formatPayload('{invalid}'))
 })
+
+test('refuses to edit values decoded without the registry', () => {
+  for (const format of ['protobuf', 'msgpack', 'cbor', 'uint', 'hex']) {
+    assert.throws(() => messageDraft(record({ value_format: format })), /cannot encode it back/)
+  }
+  assert.doesNotThrow(() => messageDraft(record({ value_format: 'json' })))
+  assert.doesNotThrow(() => messageDraft(record({ value_format: 'protobuf', value_schema_id: 3, value_schema_message: 'a.B' })))
+})

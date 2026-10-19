@@ -15,9 +15,10 @@
   let query = $state('')
   let active = $state(0)
   let loading = $state(false)
-  let topics = $state<string[]>([])
-  let groups = $state<string[]>([])
-  let subjects = $state<string[]>([])
+  // Raw: tens of thousands of names need no per-item proxies.
+  let topics = $state.raw<string[]>([])
+  let groups = $state.raw<string[]>([])
+  let subjects = $state.raw<string[]>([])
   let loadedFor = ''
   let dialog: HTMLDialogElement
   let input = $state<HTMLInputElement>()
@@ -49,8 +50,10 @@
       groups = n.groups
       subjects = n.subjects
       loadedFor = c
-    } catch {}
-    loading = false
+    } catch {
+    } finally {
+      if (c === cluster.name) loading = false
+    }
   }
 
   export function show() {
@@ -77,9 +80,8 @@
 
   // Fuzzy-ish: every query character must appear in order; contiguous and
   // early matches rank higher. Good enough for names like orders.created.
-  function score(text: string, q: string): number {
+  function score(t: string, q: string): number {
     if (!q) return 1
-    const t = text.toLowerCase()
     const i = t.indexOf(q)
     if (i === 0) return 1000 - t.length
     if (i > 0) return 800 - i - t.length / 10
@@ -94,24 +96,39 @@
     return 400 - gaps - t.length / 10
   }
 
-  const items = $derived.by(() => {
+  const others = $derived<Item[]>(clusters
+    .filter((c) => c.name !== cluster.name)
+    .map((c) => ({ kind: 'Cluster', label: c.name, detail: c.production ? 'production' : undefined, run: () => go(c.name, 'overview') })))
+
+  // Built once per list, not per keystroke: the label is lowercased up front
+  // and the page is opened by kind and name when an item is picked.
+  type Entry = { kind: string; label: string; low: string }
+  const sections: Record<string, string> = { Topic: 'topics', Group: 'groups', Subject: 'schemas' }
+  const named = $derived.by<Entry[]>(() => [
+    ...topics.map((n) => ({ kind: 'Topic', label: n, low: n.toLowerCase() })),
+    ...groups.map((n) => ({ kind: 'Group', label: n, low: n.toLowerCase() })),
+    ...subjects.map((n) => ({ kind: 'Subject', label: n, low: n.toLowerCase() })),
+  ])
+
+  const items = $derived.by<Item[]>(() => {
     const q = query.trim().toLowerCase()
-    const all: Item[] = [
-      ...pages,
-      ...topics.map((n) => ({ kind: 'Topic', label: n, run: () => go(cluster.name, 'topics', n) })),
-      ...groups.map((n) => ({ kind: 'Group', label: n, run: () => go(cluster.name, 'groups', n) })),
-      ...subjects.map((n) => ({ kind: 'Subject', label: n, run: () => go(cluster.name, 'schemas', n) })),
-      ...clusters
-        .filter((c) => c.name !== cluster.name)
-        .map((c) => ({ kind: 'Cluster', label: c.name, detail: c.production ? 'production' : undefined, run: () => go(c.name, 'overview') })),
-    ]
-    if (!q) return [...pages, ...all.filter((x) => x.kind === 'Cluster')].slice(0, 50)
-    return all
-      .map((x) => ({ x, s: score(x.label, q) }))
-      .filter((r) => r.s >= 0)
+    const fixed = [...pages, ...others]
+    if (!q) return fixed.slice(0, 50)
+    const c = cluster.name
+    const hits: { s: number; x?: Item; e?: Entry }[] = []
+    for (const x of fixed) {
+      const s = score(x.label.toLowerCase(), q)
+      if (s >= 0) hits.push({ s, x })
+    }
+    for (const e of named) {
+      const s = score(e.low, q)
+      if (s >= 0) hits.push({ s, e })
+    }
+    // Items (and their closures) only for the rows that are shown.
+    return hits
       .sort((a, b) => b.s - a.s)
       .slice(0, 50)
-      .map((r) => r.x)
+      .map(({ x, e }) => x ?? { kind: e!.kind, label: e!.label, run: () => go(c, sections[e!.kind], e!.label) })
   })
 
   $effect(() => {

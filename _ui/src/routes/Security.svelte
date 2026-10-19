@@ -3,6 +3,7 @@
   import { fmt } from '../lib/format'
   import { href, router } from '../lib/router.svelte'
   import Modal from '../lib/Modal.svelte'
+  import MoreRows from '../lib/MoreRows.svelte'
   import { RefreshCw, Plus } from '@lucide/svelte'
 
   let { cluster }: { cluster: Cluster } = $props()
@@ -15,10 +16,29 @@
   const tab = $derived(router.route.query.get('tab') ?? 'acls')
 
   // ─── ACLs ───
-  let acls = $state<ACL[]>([])
+  // Raw: a cluster can hold tens of thousands of ACLs; they are replaced on
+  // load, never edited in place.
+  let acls = $state.raw<ACL[]>([])
   let aclError = $state('')
   let aclLoading = $state(false)
   let aclSearch = $state('')
+  // The filter follows the search box after a pause, not on every key.
+  let aclQuery = $state('')
+  $effect(() => {
+    const q = aclSearch
+    const t = setTimeout(() => (aclQuery = q), q ? 150 : 0)
+    return () => clearTimeout(t)
+  })
+
+  // Rows render a page at a time; a new search starts from the top.
+  const page = 200
+  let aclShown = $state(page)
+  let userShown = $state(page)
+  let quotaShown = $state(page)
+  $effect(() => {
+    void aclQuery
+    aclShown = page
+  })
 
   async function loadACLs() {
     aclLoading = true
@@ -33,7 +53,7 @@
   }
 
   const aclRows = $derived.by(() => {
-    const q = aclSearch.trim().toLowerCase()
+    const q = aclQuery.trim().toLowerCase()
     if (!q) return acls
     return acls.filter((a) => [a.principal, a.resource_name, a.resource_type, a.operation].some((v) => v.toLowerCase().includes(q)))
   })
@@ -99,7 +119,7 @@
   }
 
   // ─── Users ───
-  let users = $state<User[]>([])
+  let users = $state.raw<User[]>([])
   let userError = $state('')
   let userLoading = $state(false)
 
@@ -166,7 +186,7 @@
   }
 
   // ─── Quotas ───
-  let quotas = $state<Quota[]>([])
+  let quotas = $state.raw<Quota[]>([])
   let quotaError = $state('')
   let quotaLoading = $state(false)
 
@@ -277,7 +297,7 @@
       <table>
         <thead><tr><th>Principal</th><th>Host</th><th>Resource</th><th>Pattern</th><th>Operation</th><th>Permission</th><th></th></tr></thead>
         <tbody>
-          {#each aclRows as a, i (i)}
+          {#each aclRows.slice(0, aclShown) as a, i (i)}
             <tr>
               <td class="mono">{a.principal}</td>
               <td class="mono faint">{a.host}</td>
@@ -301,6 +321,7 @@
           {/each}
         </tbody>
       </table>
+      <MoreRows total={aclRows.length} bind:shown={aclShown} step={page} />
     </div>
   {/if}
 {:else if tab === 'users'}
@@ -317,7 +338,7 @@
       <table>
         <thead><tr><th>User</th><th>Mechanism</th><th></th></tr></thead>
         <tbody>
-          {#each users as u (u.name)}
+          {#each users.slice(0, userShown) as u (u.name)}
             <tr>
               <td class="mono">{u.name}</td>
               <td>{#each u.mechanisms as m (m)}<span class="badge">{m}</span> {/each}</td>
@@ -331,6 +352,7 @@
           {/each}
         </tbody>
       </table>
+      <MoreRows total={users.length} bind:shown={userShown} step={page} />
     </div>
   {/if}
 {:else}
@@ -347,7 +369,7 @@
       <table>
         <thead><tr><th>Entity</th>{#each quotaKeys as k (k.key)}<th class="num">{k.label}</th>{/each}<th></th></tr></thead>
         <tbody>
-          {#each quotas as q, i (i)}
+          {#each quotas.slice(0, quotaShown) as q, i (i)}
             <tr>
               <td class="mono">{entityLabel(q)}</td>
               {#each quotaKeys as k (k.key)}<td class="num mono">{q.values[k.key] !== undefined ? fmt(q.values[k.key]) : '—'}</td>{/each}
@@ -361,6 +383,7 @@
           {/each}
         </tbody>
       </table>
+      <MoreRows total={quotas.length} bind:shown={quotaShown} step={page} />
     </div>
   {/if}
 {/if}

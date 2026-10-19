@@ -16,6 +16,7 @@
   let search = $state('')
   let showDeleted = $state(false)
   let typeFilter = $state('')
+  let contextFilter = $state('')
 
   // The page remounts per cluster ({#key} in App), so the first value is the one.
   const name = untrack(() => cluster.name)
@@ -25,14 +26,14 @@
 
   const list = paged<SubjectSummary, RegistryQuery>({
     key: `schemas:${name}`,
-    query: () => ({ q: search.trim(), type: typeFilter, deleted: showDeleted }),
+    query: () => ({ q: search.trim(), type: typeFilter, context: contextFilter, deleted: showDeleted }),
     fetch: async (q, offset, limit) => {
       const { subjects, total, ...rest } = await api.registry(name, { ...q, offset, limit })
       info = remember(infoKey, rest)
       return { items: subjects, total }
     },
     id: (s) => s.name,
-    cacheable: () => !search.trim() && !typeFilter && !showDeleted,
+    cacheable: () => !search.trim() && !typeFilter && !contextFilter && !showDeleted,
   })
   list.watch(() => search)
 
@@ -85,6 +86,12 @@
       <option value="">All types</option>
       {#each info.types as t (t)}<option value={t}>{t}</option>{/each}
     </select>
+    {#if (info.contexts?.length ?? 0) > 1}
+      <select bind:value={contextFilter} title="Registry context">
+        <option value="">All contexts</option>
+        {#each info.contexts ?? [] as c (c)}<option value={c}>{c === '.' ? 'Default context' : c}</option>{/each}
+      </select>
+    {/if}
     <label class="check"><input type="checkbox" bind:checked={showDeleted} /> Show deleted</label>
   </div>
 
@@ -105,7 +112,7 @@
             <td class="faint small">{s.compatibility ?? '—'}</td>
           </tr>
         {:else}
-          <tr><td colspan="6" class="empty">{list.loading ? 'Loading…' : search.trim() || typeFilter ? 'No subjects match your filters.' : 'No schemas registered.'}</td></tr>
+          <tr><td colspan="6" class="empty">{list.loading ? 'Loading…' : search.trim() || typeFilter || contextFilter ? 'No subjects match your filters.' : 'No schemas registered.'}</td></tr>
         {/each}
       </tbody>
     </table>

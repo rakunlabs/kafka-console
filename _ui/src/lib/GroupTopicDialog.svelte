@@ -33,7 +33,7 @@
   let step = $state<1 | 2>(1)
   let name = $state('')
   let topic = $state('')
-  let topics = $state<TopicName[]>([])
+  let topics = $state.raw<TopicName[]>([])
   let groupNames = $state<string[]>([])
   let mode = $state<Mode>('manual')
   let start = $state<Start>('latest')

@@ -2,8 +2,10 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -32,6 +34,35 @@ func partitions(v string) ([]int32, error) {
 	return out, nil
 }
 
+// resumeAt parses "after": partition:offset pairs, comma separated, from a
+// previous read's next. An empty value but a present parameter means the
+// read is over (nothing left anywhere).
+func resumeAt(q url.Values) (map[int32]int64, error) {
+	if !q.Has("after") {
+		return nil, nil
+	}
+
+	out := map[int32]int64{}
+
+	for pair := range strings.SplitSeq(q.Get("after"), ",") {
+		if pair = strings.TrimSpace(pair); pair == "" {
+			continue
+		}
+
+		p, o, ok := strings.Cut(pair, ":")
+		pn, errP := strconv.ParseInt(p, 10, 32)
+		on, errO := strconv.ParseInt(o, 10, 64)
+
+		if !ok || errP != nil || errO != nil {
+			return nil, ada.NewHTTPError(http.StatusBadRequest, "after must be partition:offset pairs, comma separated")
+		}
+
+		out[int32(pn)] = on
+	}
+
+	return out, nil
+}
+
 // handle runs fn with the request's cluster and replies with its result, or
 // 204 when the result is nil.
 func (s *Server) handle(c *ada.Context, fn func(cl *kafka.Client) (any, error)) error {
@@ -54,11 +85,22 @@ func (s *Server) handle(c *ada.Context, fn func(cl *kafka.Client) (any, error)) 
 
 func bind[T any](c *ada.Context) (T, error) {
 	var v T
-	if err := c.Bind(&v); err != nil {
-		return v, ada.WrapHTTPError(http.StatusBadRequest, err)
+
+	return v, bindErr(c.Bind(&v))
+}
+
+// bindErr makes a body that could not be read a 400, except one over the
+// size limit: ada answers that with 413 itself.
+func bindErr(err error) error {
+	if err == nil {
+		return nil
 	}
 
-	return v, nil
+	if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
+		return err
+	}
+
+	return ada.WrapHTTPError(http.StatusBadRequest, err)
 }
 
 // ─── Brokers ──────────────────────────────────────────────
@@ -172,6 +214,7 @@ func (s *Server) tail(c *ada.Context) error {
 		Filter:    q.Get("filter"),
 		Search:    q.Get("q"),
 		Raw:       q.Get("raw") == "true",
+		As:        kafka.DecodeAs{Key: q.Get("key_as"), Value: q.Get("value_as")},
 	}
 
 	if req.Partitions, err = partitions(q.Get("partitions")); err != nil {
@@ -321,7 +364,56 @@ func (s *Server) deleteGroupOffsets(c *ada.Context) error {
 
 // ─── Security ─────────────────────────────────────────────
 
+func (s *Server) topicDoc(c *ada.Context) error {
+	return s.handle(c, func(cl *kafka.Client) (any, error) {
+		return cl.TopicDoc(c.Request.PathValue("topic"))
+	})
+}
+
+func (s *Server) reassign(c *ada.Context) error {
+	req, err := bind[kafka.ReassignRequest](c)
+	if err != nil {
+		return err
+	}
+
+	return s.handle(c, func(cl *kafka.Client) (any, error) {
+		return cl.Reassign(c.Request.Context(), c.Request.PathValue("topic"), req)
+	})
+}
+
+func (s *Server) reassignments(c *ada.Context) error {
+	return s.handle(c, func(cl *kafka.Client) (any, error) {
+		return cl.Reassignments(c.Request.Context(), c.Request.PathValue("topic"))
+	})
+}
+
+func (s *Server) balancePlan(c *ada.Context) error {
+	return s.handle(c, func(cl *kafka.Client) (any, error) {
+		return cl.BalancePlan(c.Request.Context(), c.Request.PathValue("topic"))
+	})
+}
+
+func (s *Server) electLeaders(c *ada.Context) error {
+	req, err := bind[struct {
+		Partitions []int32 `json:"partitions"`
+	}](c)
+	if err != nil {
+		return err
+	}
+
+	return s.handle(c, func(cl *kafka.Client) (any, error) {
+		return cl.ElectPreferredLeaders(c.Request.Context(), c.Request.PathValue("topic"), req.Partitions)
+	})
+}
+
 func (s *Server) acls(c *ada.Context) error {
+	q := c.Request.URL.Query()
+	if q.Has("resource_type") {
+		r := kafka.ACLFor{Type: q.Get("resource_type"), Name: q.Get("resource_name")}
+
+		return s.handle(c, func(cl *kafka.Client) (any, error) { return cl.ResourceACLs(c.Request.Context(), r) })
+	}
+
 	return s.handle(c, func(cl *kafka.Client) (any, error) { return cl.ACLs(c.Request.Context()) })
 }
 
@@ -386,7 +478,7 @@ func (s *Server) alterQuota(c *ada.Context) error {
 
 func (s *Server) schemaRegistry(c *ada.Context) error {
 	q := c.Request.URL.Query()
-	query := kafka.RegistryQuery{ShowDeleted: q.Get("deleted") == "true", Search: q.Get("q"), Type: q.Get("type")}
+	query := kafka.RegistryQuery{ShowDeleted: q.Get("deleted") == "true", Search: q.Get("q"), Type: q.Get("type"), Context: q.Get("context")}
 
 	var err error
 	if query.Offset, query.Limit, err = pageParams(q); err != nil {

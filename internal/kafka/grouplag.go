@@ -29,7 +29,19 @@ func (c *Client) groupLag(ctx context.Context, groups ...string) (kadm.Described
 		return out, nil
 	}
 
-	described, err := c.admin.DescribeGroups(ctx, groups...)
+	// Describe and committed offsets do not depend on each other; fetching
+	// for a group that turns out not to be describable is cheap.
+	var (
+		described kadm.DescribedGroups
+		err       error
+		fetched   kadm.FetchOffsetsResponses
+		wg        sync.WaitGroup
+	)
+
+	wg.Go(func() { described, err = c.admin.DescribeGroups(ctx, groups...) })
+	wg.Go(func() { fetched = c.admin.FetchManyOffsets(ctx, groups...) })
+	wg.Wait()
+
 	if err != nil {
 		var se *kadm.ShardErrors
 		if !errors.As(err, &se) || se.AllFailed {
@@ -65,14 +77,8 @@ func (c *Client) groupLag(ctx context.Context, groups ...string) (kadm.Described
 		return out, nil
 	}
 
-	names := make([]string, 0, len(live))
-	for name := range live {
-		names = append(names, name)
-	}
-
-	fetched := c.admin.FetchManyOffsets(ctx, names...)
 	for _, r := range fetched {
-		if r.Err == nil {
+		if _, ok := live[r.Group]; !ok || r.Err == nil {
 			continue
 		}
 		l := out[r.Group]
@@ -124,8 +130,15 @@ func (c *Client) listOffsetsPerTopic(ctx context.Context, set kadm.TopicsSet) (s
 
 	// One combined request first: the common case where every topic is
 	// readable costs two round trips, as before.
-	s, errS := c.admin.ListStartOffsets(ctx, topics...)
-	e, errE := c.admin.ListEndOffsets(ctx, topics...)
+	var (
+		s, e       kadm.ListedOffsets
+		errS, errE error
+		both       sync.WaitGroup
+	)
+
+	both.Go(func() { s, errS = c.admin.ListStartOffsets(ctx, topics...) })
+	both.Go(func() { e, errE = c.admin.ListEndOffsets(ctx, topics...) })
+	both.Wait()
 	if errS == nil && errE == nil {
 		return s, e
 	}
@@ -176,4 +189,45 @@ func accessErr(err error) error {
 	}
 
 	return err
+}
+
+// offsetBounds lists a topic's start and end offsets in parallel, plus the
+// offsets at atMilli when it is set; each is a separate round trip. With
+// committed, ends are last stable offsets instead of high watermarks.
+type offsetBounds struct {
+	starts, ends, atTime kadm.ListedOffsets
+}
+
+func (c *Client) bounds(ctx context.Context, topic string, committed bool, atMilli *int64) (offsetBounds, error) {
+	var (
+		b                offsetBounds
+		errS, errE, errT error
+		wg               sync.WaitGroup
+	)
+
+	wg.Go(func() { b.starts, errS = c.admin.ListStartOffsets(ctx, topic) })
+	wg.Go(func() {
+		if committed {
+			b.ends, errE = c.admin.ListCommittedOffsets(ctx, topic)
+		} else {
+			b.ends, errE = c.admin.ListEndOffsets(ctx, topic)
+		}
+	})
+
+	if atMilli != nil {
+		wg.Go(func() { b.atTime, errT = c.admin.ListOffsetsAfterMilli(ctx, *atMilli, topic) })
+	}
+
+	wg.Wait()
+
+	switch {
+	case errS != nil:
+		return b, fmt.Errorf("list start offsets; %w", errS)
+	case errE != nil:
+		return b, fmt.Errorf("list end offsets; %w", errE)
+	case errT != nil:
+		return b, fmt.Errorf("list offsets by time; %w", errT)
+	}
+
+	return b, nil
 }

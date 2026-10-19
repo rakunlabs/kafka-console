@@ -1,7 +1,10 @@
 <script lang="ts">
-  import { onDestroy } from 'svelte'
-  import { api, tail, isAbort, withSignal, type Cluster, type ConsumeResult, type Message } from '../lib/api'
-  import { fmt, time } from '../lib/format'
+  import { onDestroy, untrack } from 'svelte'
+  import { api, tail, isAbort, withSignal, rawURL, type Cluster, type ConsumeResult, type Message } from '../lib/api'
+  import { fmt } from '../lib/format'
+  import { prefs, loadColumns, saveColumns } from '../lib/prefs.svelte'
+  import ViewSettings from '../lib/ViewSettings.svelte'
+  import { showTime, pick as pickField, cell } from '../lib/viewer'
   import ValueView from '../lib/ValueView.svelte'
   import ResendDialog from '../lib/ResendDialog.svelte'
   import ReplayDialog from '../lib/ReplayDialog.svelte'
@@ -10,7 +13,7 @@
   import { narrow } from '../lib/media.svelte'
   import Overflow from '../lib/Overflow.svelte'
   import { Pencil } from '@lucide/svelte'
-  import { Play, Pause, Square, Radio, Download, Copy, Check, ChevronUp, ChevronDown, Plus, Minus, ChevronsUpDown, ChevronsDownUp, Repeat, X, Code, Binary, Search, Upload, History, Loader } from '@lucide/svelte'
+  import { Play, Pause, Square, Radio, Download, Copy, Check, ChevronUp, ChevronDown, Plus, Minus, ChevronsUpDown, ChevronsDownUp, Repeat, X, Code, Binary, Search, Upload, History, Loader, ChevronsDown } from '@lucide/svelte'
 
   let { cluster, topic, partitions, onedit }: { cluster: Cluster; topic: string; partitions: number[]; onedit: (message: Message) => void } = $props()
 
@@ -37,6 +40,8 @@
   let start = $state('newest')
   let partition = $state('')
   let offset = $state(0)
+  // For "last": how many of the newest records of each partition.
+  let lastN = $state(100)
   let timestamp = $state('')
   let limit = $state(50)
   let maxScan = $state(10000)
@@ -47,55 +52,88 @@
   let searched = $state('')
   let showFilter = $state(false)
   let raw = $state(false)
+  // How keys and values are read when the automatic choice is wrong, e.g.
+  // MessagePack values that would otherwise show as base64.
+  let keyAs = $state('')
+  let valueAs = $state('')
+  const decoders: [string, string][] = [
+    ['', 'Auto'], ['json', 'JSON'], ['text', 'Text'], ['msgpack', 'MessagePack'], ['cbor', 'CBOR'],
+    ['hex', 'Hex'], ['base64', 'Base64'], ['uint', 'Unsigned int'],
+  ]
 
-  let result = $state<ConsumeResult>()
+  // Raw: results are replaced, never edited, so their (up to thousands of)
+  // messages need no deep proxies.
+  let result = $state.raw<ConsumeResult>()
   let loading = $state(false)
   let error = $state('')
   let selected = $state<Message>()
   // The read in flight. A new Fetch or Stop aborts it, on the server too.
   let reading: AbortController | undefined
 
-  async function load() {
+  // The query of the shown result, so "Load more" continues that read even
+  // after the form was edited.
+  let shownQuery = $state.raw<Record<string, string | number | boolean | undefined>>({})
+
+  // more continues the shown read from where it stopped, appending to it.
+  async function load(more = false) {
+    // Enter in the search box or ⌘Enter in the filter can fetch while a
+    // tail runs; the fetch replaces the list, so the tail must not feed it.
+    if (live) stopLive()
     reading?.abort()
     const ctl = (reading = new AbortController())
-    searched = search.trim()
-    loading = true
-    error = ''
-    try {
-      result = await withSignal(ctl.signal, () => api.messages(cluster.name, topic, {
+    const prev = result
+    if (!more) {
+      searched = search.trim()
+      shownQuery = {
         start,
         partitions: partition,
-        offset: start === 'offset' ? offset : undefined,
+        offset: start === 'offset' ? offset : start === 'last' ? lastN : undefined,
         timestamp: start === 'timestamp' && timestamp ? new Date(timestamp).getTime() : undefined,
         limit,
         max_scan: maxScan,
         filter: showFilter ? filter : undefined,
         q: search.trim() || undefined,
         raw,
-      }))
-      selected = undefined
-      expanded = new Set()
-      picked = new Set()
+        key_as: keyAs || undefined,
+        value_as: valueAs || undefined,
+      }
+    }
+    const after = more && prev ? Object.entries(prev.next ?? {}).map(([p, o]) => `${p}:${o}`).join(',') : undefined
+    loading = true
+    loadingMore = more
+    error = ''
+    try {
+      const res = await withSignal(ctl.signal, () => api.messages(cluster.name, topic, { ...shownQuery, after }))
+      if (more && prev) {
+        result = { ...res, messages: [...prev.messages, ...res.messages], scanned: prev.scanned + res.scanned, script_errors: prev.script_errors + res.script_errors }
+      } else {
+        result = res
+        selected = undefined
+        expanded = new Set()
+        picked = new Set()
+      }
     } catch (e: any) {
       // A stopped read keeps whatever was shown before it.
       if (!isAbort(e)) {
         error = e.message
-        result = undefined
+        if (!more) result = undefined
       }
     } finally {
       if (reading === ctl) {
         reading = undefined
         loading = false
+        loadingMore = false
       }
     }
   }
-  load()
+  let loadingMore = $state(false)
   onDestroy(() => reading?.abort())
 
   function stopReading() {
     reading?.abort()
     reading = undefined
     loading = false
+    loadingMore = false
   }
 
   // Rows that arrived over live tail. They flash once when inserted; the set
@@ -114,10 +152,29 @@
   let paused = $state(false)
   let stop: (() => void) | undefined
 
+  // A busy topic sends hundreds of messages a second; they are added in
+  // batches a few times a second, so the list re-renders per batch, not per
+  // message. Fast enough to read as live.
+  let incoming: Message[] = []
+  let frame: ReturnType<typeof setTimeout> | undefined
+  const liveEvery = 250
+  let liveError = $state('')
+  function flush() {
+    frame = undefined
+    if (!result || !incoming.length) return
+    const add = incoming.reverse()
+    incoming = []
+    result = { ...result, messages: [...add, ...result.messages].slice(0, liveCap) }
+  }
+
   function startLive() {
     stopLive()
+    stopReading()
     searched = search.trim()
     error = ''
+    liveError = ''
+    expanded = new Set()
+    picked = new Set()
     live = true
     paused = false
     liveStats = { scanned: 0, matched: 0 }
@@ -132,13 +189,19 @@
       filter: showFilter ? filter : undefined,
       q: search.trim() || undefined,
       raw,
+      key_as: keyAs || undefined,
+      value_as: valueAs || undefined,
     }, {
       event: (e) => {
         liveStats = { scanned: e.scanned, matched: e.matched }
-        if (e.error) error = e.error
-        if (e.message && result && !paused) {
+        // A fetch error mid-stream is passing; the tail keeps going, so it
+        // is shown above the rows instead of in place of them.
+        if (e.error) liveError = e.error
+        else if (e.message) liveError = ''
+        if (e.message && !paused) {
           fresh.add(`${e.message.partition}:${e.message.offset}`)
-          result.messages = [e.message, ...result.messages].slice(0, liveCap)
+          incoming.push(e.message)
+          frame ??= setTimeout(flush, liveEvery)
         }
       },
       error: (msg) => {
@@ -153,9 +216,17 @@
     stop?.()
     stop = undefined
     live = false
+    clearTimeout(frame)
+    frame = undefined
+    flush()
   }
 
   onDestroy(stopLive)
+
+  const hasMore = $derived(!live && !!result && result.stopped_by !== 'live' && Object.keys(result.next ?? {}).length > 0)
+
+  // After the live state above: load() reads it.
+  load()
 
   function exportMessages(kind: 'json' | 'csv') {
     if (!result) return
@@ -186,7 +257,8 @@
     a.href = URL.createObjectURL(new Blob([body], { type }))
     a.download = `${topic}-${new Date().toISOString().replaceAll(':', '-')}.${kind}`
     a.click()
-    URL.revokeObjectURL(a.href)
+    // Revoking at once can cancel the download before it starts.
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000)
   }
 
   // The value's own JSON text when it is a JSON document, else undefined.
@@ -246,7 +318,7 @@
     else next.add(k)
     picked = next
   }
-  const pickedMessages = $derived((result?.messages ?? []).filter((m) => picked.has(`${m.partition}:${m.offset}`)))
+  const pickedMessages = $derived(picked.size ? (result?.messages ?? []).filter((m) => picked.has(`${m.partition}:${m.offset}`)) : [])
   const allPicked = $derived(!!result?.messages.length && result.messages.every((m) => picked.has(`${m.partition}:${m.offset}`)))
   const pickAll = () => (picked = allPicked ? new Set() : new Set(result?.messages.map((m) => `${m.partition}:${m.offset}`)))
 
@@ -270,9 +342,12 @@
     else next.add(k)
     expanded = next
   }
-  const allOpen = $derived(!!result?.messages.length && result.messages.every((m) => expanded.has(mkey(m))))
+  // Each open row renders a full value tree; opening a thousand of them at
+  // once would freeze the tab, so Expand all opens the first expandCap.
+  const expandCap = 50
+  const allOpen = $derived(!!result?.messages.length && expanded.size >= Math.min(result.messages.length, expandCap))
   function toggleAll() {
-    expanded = allOpen ? new Set() : new Set(result?.messages.map(mkey))
+    expanded = allOpen ? new Set() : new Set(result?.messages.slice(0, expandCap).map(mkey))
   }
 
   let copied = $state(false)
@@ -319,7 +394,53 @@
       html.classList.remove('sheet-open')
     }
   })
-  const cols = $derived((cluster.read_only ? 0 : 1) + (narrow.matches ? 3 : 6))
+  // Value fields shown as their own columns, chosen per topic.
+  let columns = $state<string[]>(untrack(() => loadColumns(topic)))
+  function addColumn(path: string) {
+    if (columns.includes(path)) return
+    columns = [...columns, path]
+    saveColumns(topic, columns)
+  }
+  function removeColumn(path: string) {
+    columns = columns.filter((c) => c !== path)
+    saveColumns(topic, columns)
+  }
+  function moveColumn(path: string, by: number) {
+    const i = columns.indexOf(path)
+    const j = i + by
+    if (i < 0 || j < 0 || j >= columns.length) return
+    const next = [...columns]
+    ;[next[i], next[j]] = [next[j], next[i]]
+    columns = next
+    saveColumns(topic, columns)
+  }
+  const showColumns = $derived(!narrow.matches && columns.length > 0)
+  // Each JSON value is parsed once per result, and only with columns shown.
+  const parsed = $derived.by(() => {
+    const out = new Map<Message, unknown>()
+    if (!showColumns || !result) return out
+    for (const m of result.messages) {
+      if (m.value === null || m.value_format !== 'json' && !/^\s*[{[]/.test(m.value)) continue
+      try {
+        out.set(m, JSON.parse(m.value))
+      } catch {}
+    }
+    return out
+  })
+  const field = (m: Message, path: string) => cell(pickField(parsed.get(m), path))
+
+  // Relative times tick; the others never change.
+  let now = $state(Date.now())
+  $effect(() => {
+    if (prefs.time !== 'relative') return
+    const t = setInterval(() => (now = Date.now()), 15_000)
+    return () => clearInterval(t)
+  })
+  const when = (iso: string) => showTime(iso, prefs.time, now)
+  // The other clock, on hover: UTC for local times, local otherwise.
+  const other = (iso: string) => showTime(iso, prefs.time === 'local' ? 'utc' : 'local')
+
+  const cols = $derived((cluster.read_only ? 0 : 1) + (narrow.matches ? 3 : 6) + (showColumns ? columns.length : 0))
 </script>
 
 <svelte:window onkeydown={onkey} />
@@ -349,12 +470,15 @@
         <option value="oldest">Oldest</option>
         <option value="offset">From offset</option>
         <option value="timestamp">From time</option>
+        <option value="last">Last N per partition</option>
       </select>
     </label>
     {#if start === 'offset'}
       <label class="f"><span class="fl">Offset</span><input type="number" min="0" class="w-num" bind:value={offset} /></label>
     {:else if start === 'timestamp'}
       <label class="f"><span class="fl">Time</span><input type="datetime-local" step="1" bind:value={timestamp} /></label>
+    {:else if start === 'last'}
+      <label class="f" title="Read the newest N records of each partition, oldest first"><span class="fl">N</span><input type="number" min="1" class="w-sm" bind:value={lastN} /></label>
     {/if}
     <label class="f">
       <span class="fl">Partition</span>
@@ -367,6 +491,14 @@
     <label class="f" title="Stop after reading this many records, matched or not"><span class="fl">Max scan</span><input type="number" min="1" class="w-num" bind:value={maxScan} /></label>
     <label class="f switch" class:on={showFilter} title="Filter with a JavaScript expression">
       <input type="checkbox" bind:checked={showFilter} /><Code size={13} />JS filter
+    </label>
+    <label class="f" title="How keys are read. Auto: Schema Registry, then JSON, text, or base64 for binary. Any other choice reads the bytes in that format and skips the registry.">
+      <span class="fl">Key</span>
+      <select bind:value={keyAs}>{#each decoders as [id, label] (id)}<option value={id}>{label}</option>{/each}</select>
+    </label>
+    <label class="f" title="How values are read. Auto: Schema Registry, then JSON, text, or base64 for binary. Any other choice reads the bytes in that format and skips the registry.">
+      <span class="fl">Value</span>
+      <select bind:value={valueAs}>{#each decoders as [id, label] (id)}<option value={id}>{label}</option>{/each}</select>
     </label>
     {#if cluster.schema_registry}
       <label class="f switch" class:on={raw}
@@ -395,7 +527,7 @@
       {#await import('../lib/FilterEditor.svelte')}
         <div class="cm-loading"></div>
       {:then { default: FilterEditor }}
-        <FilterEditor bind:value={filter} onrun={load} placeholder={'return value.status === "FAILED"'} />
+        <FilterEditor bind:value={filter} onrun={() => load()} placeholder={'return value.status === "FAILED"'} />
       {/await}
       <div class="hint faint">
         <span>Return <code>true</code> to keep a message · <code>value</code> <code>key</code> <code>headers</code> <code>partition</code> <code>offset</code> <code>timestamp</code> <code>raw</code> · <kbd>Ctrl/⌘ Enter</kbd> runs</span>
@@ -411,6 +543,7 @@
 {#if error}
   <div class="error">{error}</div>
 {:else if result}
+  {#if live && liveError}<div class="error small-err">{liveError}</div>{/if}
   <div class="meta faint">
     {#if live || result.stopped_by === 'live'}
       {#if live}<span class="badge ok"><span class="sq live"></span>live</span>{:else}<span class="badge"><span class="sq idle"></span>stopped</span>{/if}
@@ -445,6 +578,7 @@
       {#if narrow.matches}
         <Overflow label="Message tools">{@render tools()}</Overflow>
       {:else}
+        <ViewSettings {columns} onadd={addColumn} onremove={removeColumn} onmove={moveColumn} />
         {@render tools()}
       {/if}
     {/if}
@@ -458,8 +592,10 @@
           {#if narrow.matches}
             <col />
           {:else}
-            <col style:width="40px" /><col style:width="44px" /><col style:width="84px" /><col style:width="200px" />
-            <col style:width={selected ? '120px' : '170px'} /><col />
+            <col style:width="40px" /><col style:width="44px" /><col style:width="84px" /><col style:width={prefs.time === 'relative' || prefs.time === 'unix' ? '130px' : prefs.time === 'utc' ? '210px' : '200px'} />
+            <col style:width={selected ? '120px' : '170px'} />
+            {#if showColumns}{#each columns as c (c)}<col style:width="140px" />{/each}{/if}
+            <col />
           {/if}
         </colgroup>
         <thead>
@@ -473,12 +609,14 @@
             {:else}
               <th class="tog">
                 {#if result.messages.length}
-                  <button type="button" class="ghost xbtn" onclick={toggleAll} title={allOpen ? 'Collapse all' : 'Expand all'} aria-label={allOpen ? 'Collapse all' : 'Expand all'}>
+                  <button type="button" class="ghost xbtn" onclick={toggleAll} title={allOpen ? 'Collapse all' : result.messages.length > expandCap ? `Expand the first ${expandCap}` : 'Expand all'} aria-label={allOpen ? 'Collapse all' : 'Expand all'}>
                     {#if allOpen}<ChevronsDownUp size={13} />{:else}<ChevronsUpDown size={13} />{/if}
                   </button>
                 {/if}
               </th>
-              <th class="num">P</th><th class="num">Offset</th><th>Time</th><th>Key</th><th>Value</th>
+              <th class="num">P</th><th class="num">Offset</th><th>Time</th><th>Key</th>
+              {#if showColumns}{#each columns as c (c)}<th class="mono vcol" title="value.{c}">{c}</th>{/each}{/if}
+              <th>Value</th>
             {/if}
           </tr>
         </thead>
@@ -496,7 +634,7 @@
                 <td class="card">
                   <div class="card-meta mono">
                     <span>P{m.partition}</span><span>#{m.offset}</span>
-                    <span class="faint">{time(m.timestamp)}</span>
+                    <span class="faint">{when(m.timestamp)}</span>
                   </div>
                   <div class="mono key">{k[0]}{#if k[1]}<mark>{k[1]}</mark>{/if}{k[2]}</div>
                   <div class="mono val">{v[0]}{#if v[1]}<mark>{v[1]}</mark>{/if}{v[2]}</div>
@@ -511,8 +649,9 @@
                 </td>
                 <td class="num mono">{m.partition}</td>
                 <td class="num mono">{m.offset}</td>
-                <td class="mono nowrap time">{time(m.timestamp)}</td>
+                <td class="mono nowrap time" title={other(m.timestamp)}>{when(m.timestamp)}</td>
                 <td class="mono key">{k[0]}{#if k[1]}<mark>{k[1]}</mark>{/if}{k[2]}</td>
+                {#if showColumns}{#each columns as c (c)}{@const f = field(m, c)}<td class="mono vcol" title={f}>{f}</td>{/each}{/if}
                 <td class="mono val">{v[0]}{#if v[1]}<mark>{v[1]}</mark>{/if}{v[2]}</td>
               {/if}
             </tr>
@@ -520,7 +659,7 @@
               <tr class="xrow" class:alt={i % 2 === 1} class:sel={selected === m}>
                 {#if !cluster.read_only}<td></td>{/if}
                 <td></td>
-                <td colspan="5">
+                <td colspan={5 + (showColumns ? columns.length : 0)}>
                   <div class="inl">
                     <div class="inl-meta">
                       <span class="badge" class:accent={!!m.value_schema_id}>{m.value_format ?? 'null'}</span>
@@ -547,6 +686,17 @@
           {/each}
         </tbody>
       </table>
+      {#if hasMore}
+        <div class="more-rows">
+          {#if loadingMore}
+            <button type="button" class="danger" onclick={stopReading}><Square size={12} />Stop</button>
+            <span class="faint"><Loader size={13} class="animate-spin inline" /> Reading…</span>
+          {:else}
+            <button type="button" onclick={() => load(true)} disabled={loading}
+              title="Continue the same read from where it stopped"><ChevronsDown size={14} />{shownQuery.start === 'newest' ? 'Load older' : 'Load more'}</button>
+          {/if}
+        </div>
+      {/if}
     </div>
 
     {#if selected}
@@ -555,7 +705,7 @@
         <div class="dhead">
           <div class="grid">
             <b>Partition {selected.partition} · Offset {fmt(selected.offset)}</b>
-            <span class="faint mono">{time(selected.timestamp)}</span>
+            <span class="faint mono" title={other(selected.timestamp)}>{when(selected.timestamp)}</span>
           </div>
           <span class="spacer"></span>
           <button class="ghost small" title="Previous (k)" aria-label="Previous message" onclick={() => step(-1)}><ChevronUp size={15} /></button>
@@ -585,6 +735,11 @@
             {#if selected.key_schema_id}<span class="faint">schema #{selected.key_schema_id}</span>{/if}
             {#if selected.key_encoding === 'base64'}<span class="badge">base64</span>{/if}
             {#if selected.key !== null}<span class="faint">{fmt(selected.key_bytes)} bytes</span>{/if}
+            {#if selected.key !== null}
+              <span class="spacer"></span>
+              <a class="btn ghost small" href={rawURL(cluster.name, topic, selected.partition, selected.offset, 'key')} download
+                title="Download the key's bytes exactly as stored"><Download size={13} />Raw</a>
+            {/if}
           </div>
           <ValueView text={selected.key} format={selected.key_format} depth={2} />
         </section>
@@ -597,6 +752,10 @@
             <span class="faint">{fmt(selected.value_bytes)} bytes</span>
             {#if selected.truncated}<span class="badge warn">truncated</span>{/if}
             <span class="spacer"></span>
+            {#if selected.value !== null}
+              <a class="btn ghost small" href={rawURL(cluster.name, topic, selected.partition, selected.offset, 'value')} download
+                title={selected.truncated ? 'Only the first 64 KiB is shown; download the whole value as stored' : "Download the value's bytes exactly as stored"}><Download size={13} />{selected.truncated ? 'Download full' : 'Raw'}</a>
+            {/if}
             <button class="ghost small" onclick={() => copy(selected?.value ?? '')}>{#if copied}<Check size={13} />Copied{:else}<Copy size={13} />Copy{/if}</button>
           </div>
           {#key selected}<ValueView text={selected.value} format={selected.value_format} />{/key}
@@ -746,6 +905,8 @@
   th .xbtn { border: 0; color: var(--text-3); }
   tr.opened td { border-bottom-color: transparent; }
   tr.xrow td { padding-top: 0; cursor: default; }
+  .vcol { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .more-rows { display: flex; align-items: center; justify-content: center; gap: 10px; padding: 10px; border-top: 1px solid var(--border); }
   tbody tr.xrow:hover td { background: transparent; }
   tbody tr.xrow.alt:hover td { background: var(--stripe); }
   .inl { display: grid; gap: 6px; padding-bottom: 4px; }

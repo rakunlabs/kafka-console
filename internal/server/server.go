@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"mime"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -18,6 +19,8 @@ import (
 	mrecover "github.com/rakunlabs/ada/middleware/recover"
 	mrequestid "github.com/rakunlabs/ada/middleware/requestid"
 	mserver "github.com/rakunlabs/ada/middleware/server"
+	"github.com/twmb/franz-go/pkg/kadm"
+	"github.com/twmb/franz-go/pkg/kerr"
 
 	"github.com/rakunlabs/kafka-console/internal/config"
 	"github.com/rakunlabs/kafka-console/internal/kafka"
@@ -37,6 +40,7 @@ type features struct {
 	AlterTopic    bool `json:"alter_topic"`
 	DeleteRecords bool `json:"delete_records"`
 	DeleteGroup   bool `json:"delete_group"`
+	AlterBroker   bool `json:"alter_broker"`
 }
 
 func newFeatures(f config.Features) features {
@@ -47,6 +51,7 @@ func newFeatures(f config.Features) features {
 		AlterTopic:    f.AlterTopicEnabled(),
 		DeleteRecords: f.DeleteRecordsEnabled(),
 		DeleteGroup:   f.DeleteGroupEnabled(),
+		AlterBroker:   f.AlterBrokerEnabled(),
 	}
 }
 
@@ -77,7 +82,7 @@ func Start(ctx context.Context, cfg *config.Config, registry *kafka.Registry, ui
 
 	root := server.Group(base)
 
-	api := root.Group("/api/v1", auditWrites(cfg.Server.UserHeader))
+	api := root.Group("/api/v1", limitBody, auditWrites(cfg.Server.UserHeader))
 	api.GET("/info", s.appInfo)
 	api.GET("/clusters", s.clusters)
 	api.POST("/filter/check", s.checkFilter)
@@ -86,10 +91,17 @@ func Start(ctx context.Context, cfg *config.Config, registry *kafka.Registry, ui
 	c.GET("/overview", s.overview)
 	c.GET("/names", s.names)
 	c.GET("/brokers/{broker}", s.broker)
-	c.PATCH("/brokers/{broker}/configs", s.alterBrokerConfigs)
 
 	// Switched-off features are not registered, so their paths fall through
 	// to the API's JSON 404: the operation is gone, not just refused.
+	if s.features.AlterBroker {
+		c.PATCH("/brokers/{broker}/configs", s.alterBrokerConfigs)
+		c.POST("/topics/{topic}/reassign", s.reassign)
+		c.GET("/topics/{topic}/balance-plan", s.balancePlan)
+		c.POST("/topics/{topic}/elect-leaders", s.electLeaders)
+	}
+	c.GET("/topics/{topic}/reassignments", s.reassignments)
+	c.GET("/topics/{topic}/docs", s.topicDoc)
 	c.GET("/topics", s.topics)
 	if s.features.CreateTopic {
 		c.POST("/topics", s.createTopic)
@@ -108,6 +120,7 @@ func Start(ctx context.Context, cfg *config.Config, registry *kafka.Registry, ui
 	c.GET("/topics/{topic}/consumers", s.topicConsumers)
 	c.GET("/topics/{topic}/messages", s.messages)
 	c.GET("/topics/{topic}/messages/{partition}/{offset}", s.message)
+	c.GET("/topics/{topic}/messages/{partition}/{offset}/raw", s.rawMessage)
 	c.GET("/topics/{topic}/tail", s.tail)
 	c.POST("/topics/{topic}/messages", s.produce)
 	c.POST("/topics/{topic}/resend", s.resend)
@@ -190,6 +203,7 @@ type clusterInfo struct {
 	ReadOnly       bool     `json:"read_only"`
 	Production     bool     `json:"production"`
 	SchemaRegistry bool     `json:"schema_registry"`
+	Docs           bool     `json:"docs"`
 }
 
 func (s *Server) appInfo(c *ada.Context) error {
@@ -202,7 +216,7 @@ func (s *Server) clusters(c *ada.Context) error {
 		cl, _ := s.registry.Get(name)
 		out = append(out, clusterInfo{
 			Name: name, Brokers: cl.Brokers(), ReadOnly: cl.ReadOnly(), Production: cl.Production(),
-			SchemaRegistry: cl.HasRegistry(),
+			SchemaRegistry: cl.HasRegistry(), Docs: cl.HasDocs(),
 		})
 	}
 
@@ -222,17 +236,26 @@ func (s *Server) client(c *ada.Context) (*kafka.Client, error) {
 
 // fail maps domain errors to HTTP errors whose text is safe to show.
 func fail(err error) error {
-	var invalid kafka.ErrInvalid
+	var (
+		invalid  kafka.ErrInvalid
+		conflict kafka.ErrConflict
+	)
 
 	switch {
-	case errors.Is(err, kafka.ErrReadOnly):
+	case errors.Is(err, kafka.ErrReadOnly), denied(err):
 		return ada.WrapHTTPError(http.StatusForbidden, err)
 	case errors.Is(err, kafka.ErrNotFound):
 		return ada.WrapHTTPError(http.StatusNotFound, err)
 	case errors.As(err, &invalid):
 		return ada.WrapHTTPError(http.StatusBadRequest, err)
-	case errors.Is(err, kafka.ErrNoRegistry), errors.Is(err, kafka.ErrUnsupported):
+	case errors.As(err, &conflict):
+		return ada.WrapHTTPError(http.StatusConflict, err)
+	case errors.Is(err, kafka.ErrBusy):
+		return ada.WrapHTTPError(http.StatusTooManyRequests, err)
+	case errors.Is(err, kafka.ErrNoRegistry), errors.Is(err, kafka.ErrUnsupported), errors.Is(err, kafka.ErrNoDocs):
 		return ada.WrapHTTPError(http.StatusNotImplemented, err)
+	case errors.Is(err, context.DeadlineExceeded):
+		return ada.WrapHTTPError(http.StatusGatewayTimeout, err)
 	default:
 		// Kafka errors carry no secrets and the operator needs them.
 		return ada.WrapHTTPError(http.StatusBadGateway, err)
@@ -351,8 +374,8 @@ func (s *Server) createTopic(c *ada.Context) error {
 	}
 
 	var req kafka.CreateTopicRequest
-	if err := c.Bind(&req); err != nil {
-		return ada.WrapHTTPError(http.StatusBadRequest, err)
+	if err := bindErr(c.Bind(&req)); err != nil {
+		return err
 	}
 
 	if strings.TrimSpace(req.Name) == "" {
@@ -397,9 +420,14 @@ func (s *Server) messages(c *ada.Context) error {
 		Search:    q.Get("q"),
 		Timeout:   time.Duration(queryInt(q.Get("timeout"))) * time.Second,
 		Raw:       q.Get("raw") == "true",
+		As:        kafka.DecodeAs{Key: q.Get("key_as"), Value: q.Get("value_as")},
 	}
 
 	if req.Partitions, err = partitions(q.Get("partitions")); err != nil {
+		return err
+	}
+
+	if req.After, err = resumeAt(q); err != nil {
 		return err
 	}
 
@@ -422,8 +450,8 @@ func (s *Server) produce(c *ada.Context) error {
 	}
 
 	var req kafka.ProduceRequest
-	if err := c.Bind(&req); err != nil {
-		return ada.WrapHTTPError(http.StatusBadRequest, err)
+	if err := bindErr(c.Bind(&req)); err != nil {
+		return err
 	}
 
 	res, err := cl.Produce(c.Request.Context(), c.Request.PathValue("topic"), req)
@@ -434,19 +462,75 @@ func (s *Server) produce(c *ada.Context) error {
 	return c.SendJSON(res)
 }
 
-func (s *Server) message(c *ada.Context) error {
+func recordRef(c *ada.Context) (kafka.RecordRef, error) {
 	partition, err := strconv.ParseInt(c.Request.PathValue("partition"), 10, 32)
 	if err != nil || partition < 0 {
-		return ada.NewHTTPError(http.StatusBadRequest, "partition must be a non-negative integer")
+		return kafka.RecordRef{}, ada.NewHTTPError(http.StatusBadRequest, "partition must be a non-negative integer")
 	}
 	offset, err := strconv.ParseInt(c.Request.PathValue("offset"), 10, 64)
 	if err != nil || offset < 0 {
-		return ada.NewHTTPError(http.StatusBadRequest, "offset must be a non-negative integer")
+		return kafka.RecordRef{}, ada.NewHTTPError(http.StatusBadRequest, "offset must be a non-negative integer")
+	}
+
+	return kafka.RecordRef{Partition: int32(partition), Offset: offset}, nil
+}
+
+func (s *Server) message(c *ada.Context) error {
+	ref, err := recordRef(c)
+	if err != nil {
+		return err
 	}
 
 	return s.handle(c, func(cl *kafka.Client) (any, error) {
-		return cl.Message(c.Request.Context(), c.Request.PathValue("topic"), kafka.RecordRef{Partition: int32(partition), Offset: offset})
+		return cl.Message(c.Request.Context(), c.Request.PathValue("topic"), ref)
 	})
+}
+
+// rawMessage downloads a record's key or value (?part=key) exactly as stored,
+// schema framing included.
+func (s *Server) rawMessage(c *ada.Context) error {
+	ref, err := recordRef(c)
+	if err != nil {
+		return err
+	}
+
+	part := c.Request.URL.Query().Get("part")
+	if part != "" && part != "key" && part != "value" {
+		return ada.NewHTTPError(http.StatusBadRequest, "part must be key or value")
+	}
+
+	cl, err := s.client(c)
+	if err != nil {
+		return err
+	}
+
+	topic := c.Request.PathValue("topic")
+
+	rec, err := cl.RawRecord(c.Request.Context(), topic, ref)
+	if err != nil {
+		return fail(err)
+	}
+
+	b := rec.Value
+	if part == "key" {
+		b = rec.Key
+	} else {
+		part = "value"
+	}
+
+	if b == nil {
+		return ada.NewHTTPError(http.StatusNotFound, "the record's "+part+" is null")
+	}
+
+	name := fmt.Sprintf("%s-%d-%d-%s.bin", topic, ref.Partition, ref.Offset, part)
+	w := c.Response
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": name}))
+	w.Header().Set("Content-Length", strconv.Itoa(len(b)))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(b)
+
+	return nil
 }
 
 func (s *Server) resend(c *ada.Context) error {
@@ -543,8 +627,8 @@ func (s *Server) resetOffsets(c *ada.Context) error {
 	}
 
 	var req kafka.ResetRequest
-	if err := c.Bind(&req); err != nil {
-		return ada.WrapHTTPError(http.StatusBadRequest, err)
+	if err := bindErr(c.Bind(&req)); err != nil {
+		return err
 	}
 
 	plan, err := cl.ResetOffsets(c.Request.Context(), c.Request.PathValue("group"), req)
@@ -559,4 +643,47 @@ func queryInt(v string) int64 {
 	n, _ := strconv.ParseInt(v, 10, 64)
 
 	return n
+}
+
+const (
+	maxBody       = 4 << 20
+	maxImportBody = 64 << 20 // a batch of 500 records with 64 KiB values and keys
+)
+
+// limitBody caps request bodies, so a huge POST is refused (413) instead
+// of being decoded into memory whole. It wraps the body before the audit
+// log reads it.
+func limitBody(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Body != nil && r.Body != http.NoBody {
+			limit := int64(maxBody)
+			if strings.HasSuffix(r.URL.Path, "/import") {
+				limit = maxImportBody
+			}
+
+			r.Body = http.MaxBytesReader(w, r.Body, limit)
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+// denied reports Kafka refusing the console's credentials an operation:
+// the request was understood, the principal may not do it.
+func denied(err error) bool {
+	if _, ok := errors.AsType[*kadm.AuthError](err); ok {
+		return true
+	}
+
+	for _, e := range []error{
+		kerr.TopicAuthorizationFailed, kerr.GroupAuthorizationFailed, kerr.ClusterAuthorizationFailed,
+		kerr.TransactionalIDAuthorizationFailed, kerr.DelegationTokenAuthorizationFailed,
+		kerr.SaslAuthenticationFailed, kafka.ErrNoTopicAccess,
+	} {
+		if errors.Is(err, e) {
+			return true
+		}
+	}
+
+	return false
 }

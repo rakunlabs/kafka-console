@@ -6,7 +6,14 @@ export function messageDraft(message: Message): ProduceBody {
   if (message.truncated) throw new Error('The full message could not be loaded. Use Resend to copy the original bytes instead.')
   if (message.decode_error) throw new Error(`Cannot safely edit this message: ${message.decode_error}. Use Resend to copy the original bytes instead.`)
   for (const side of ['key', 'value'] as const) {
-    if (message[`${side}_format`] === 'protobuf' && !message[`${side}_schema_message`]) {
+    const format = message[`${side}_format`]
+    // Decoded without the registry (local .proto, MessagePack, CBOR, uint):
+    // the form would send the JSON view as the bytes, not the original
+    // encoding.
+    if (format && !message[`${side}_schema_id`] && !['json', 'text', 'binary'].includes(format)) {
+      throw new Error(`The ${side} is ${format} decoded for display, and Produce cannot encode it back. Use Resend to copy the original bytes instead.`)
+    }
+    if (format === 'protobuf' && !message[`${side}_schema_message`]) {
       throw new Error(`The ${side}'s Protobuf message type is missing. Reload the message before editing.`)
     }
   }

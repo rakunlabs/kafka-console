@@ -375,6 +375,13 @@ type TopicDetail struct {
 
 var ErrNotFound = errors.New("not found")
 
+// ErrConflict is a request the cluster's current state refuses, like
+// resetting a group whose consumers are still running.
+type ErrConflict struct{ Err error }
+
+func (e ErrConflict) Error() string { return e.Err.Error() }
+func (e ErrConflict) Unwrap() error { return e.Err }
+
 func (c *Client) Topic(ctx context.Context, name string) (*TopicDetail, error) {
 	details, err := c.admin.ListTopicsWithInternal(ctx, name)
 	if err != nil {
@@ -386,19 +393,34 @@ func (c *Client) Topic(ctx context.Context, name string) (*TopicDetail, error) {
 		return nil, fmt.Errorf("topic %q; %w", name, ErrNotFound)
 	}
 
-	starts, _ := c.admin.ListStartOffsets(ctx, name)
-	ends, _ := c.admin.ListEndOffsets(ctx, name)
-
 	out := &TopicDetail{Name: name, ID: d.ID.String(), Internal: d.IsInternal, Size: -1, ReplicatedSize: -1}
-
-	partSizes := map[int32]int64{}
 
 	set := kadm.TopicsSet{}
 	for p := range d.Partitions {
 		set.Add(name, p)
 	}
 
-	if dirs, err := c.admin.DescribeAllLogDirs(ctx, set); err == nil {
+	// Independent reads, each a round trip or more; partial failures leave
+	// their part empty instead of failing the page.
+	var (
+		starts, ends kadm.ListedOffsets
+		dirs         kadm.DescribedAllLogDirs
+		dirsErr      error
+		configs      kadm.ResourceConfigs
+		configsErr   error
+		wg           sync.WaitGroup
+	)
+
+	wg.Go(func() { starts, _ = c.admin.ListStartOffsets(ctx, name) })
+	wg.Go(func() { ends, _ = c.admin.ListEndOffsets(ctx, name) })
+	wg.Go(func() { dirs, dirsErr = c.admin.DescribeAllLogDirs(ctx, set) })
+	wg.Go(func() { configs, configsErr = c.admin.DescribeTopicConfigs(ctx, name) })
+	wg.Go(func() { out.Groups, _ = c.topicGroups(ctx, name) })
+	wg.Wait()
+
+	partSizes := map[int32]int64{}
+
+	if dirsErr == nil {
 		out.Size, out.ReplicatedSize = 0, 0
 
 		dirs.Each(func(ld kadm.DescribedLogDir) {
@@ -446,13 +468,11 @@ func (c *Client) Topic(ctx context.Context, name string) (*TopicDetail, error) {
 		out.Partitions = append(out.Partitions, part)
 	}
 
-	if configs, err := c.admin.DescribeTopicConfigs(ctx, name); err == nil {
+	if configsErr == nil {
 		if rc, err := configs.On(name, nil); err == nil {
 			out.Configs = configEntries(rc.Configs)
 		}
 	}
-
-	out.Groups, _ = c.topicGroups(ctx, name)
 
 	return out, nil
 }
@@ -538,7 +558,17 @@ func (c *Client) groupTopics(ctx context.Context, groups []string) map[string]ma
 		return out
 	}
 
-	for _, r := range c.admin.FetchManyOffsets(ctx, groups...) {
+	var (
+		fetched   kadm.FetchOffsetsResponses
+		described kadm.DescribedGroups
+		wg        sync.WaitGroup
+	)
+
+	wg.Go(func() { fetched = c.admin.FetchManyOffsets(ctx, groups...) })
+	wg.Go(func() { described, _ = c.admin.DescribeGroups(ctx, groups...) })
+	wg.Wait()
+
+	for _, r := range fetched {
 		if r.Err != nil {
 			continue
 		}
@@ -548,7 +578,6 @@ func (c *Client) groupTopics(ctx context.Context, groups []string) map[string]ma
 		}
 	}
 
-	described, _ := c.admin.DescribeGroups(ctx, groups...)
 	for _, g := range described {
 		for topic := range g.AssignedPartitions() {
 			add(g.Group, topic)
@@ -593,27 +622,40 @@ type TopicName struct {
 }
 
 func (c *Client) Names(ctx context.Context) (*Names, error) {
-	details, err := c.admin.ListTopicsWithInternal(ctx)
+	out := &Names{Groups: []string{}, Subjects: []string{}}
+
+	var (
+		details kadm.TopicDetails
+		err     error
+		wg      sync.WaitGroup
+	)
+
+	wg.Go(func() { details, err = c.admin.ListTopicsWithInternal(ctx) })
+	wg.Go(func() {
+		if listed, err := c.admin.ListGroups(ctx); err == nil {
+			out.Groups = listed.Groups()
+			sort.Strings(out.Groups)
+		}
+	})
+
+	if c.registry != nil {
+		wg.Go(func() {
+			if subjects, err := c.registry.Subjects(ctx); err == nil {
+				sort.Strings(subjects)
+				out.Subjects = subjects
+			}
+		})
+	}
+
+	wg.Wait()
+
 	if err != nil {
 		return nil, fmt.Errorf("list topics; %w", err)
 	}
 
-	out := &Names{Topics: make([]TopicName, 0, len(details)), Groups: []string{}, Subjects: []string{}}
-
+	out.Topics = make([]TopicName, 0, len(details))
 	for _, d := range details.Sorted() {
 		out.Topics = append(out.Topics, TopicName{Name: d.Topic, Internal: d.IsInternal, Partitions: len(d.Partitions)})
-	}
-
-	if listed, err := c.admin.ListGroups(ctx); err == nil {
-		out.Groups = listed.Groups()
-		sort.Strings(out.Groups)
-	}
-
-	if c.registry != nil {
-		if subjects, err := c.registry.Subjects(ctx); err == nil {
-			sort.Strings(subjects)
-			out.Subjects = subjects
-		}
 	}
 
 	return out, nil
@@ -990,29 +1032,35 @@ func (c *Client) ResetOffsets(ctx context.Context, group string, req ResetReques
 		return nil, fmt.Errorf("describe group; %w", err)
 	}
 
-	if g, ok := described[group]; ok && len(g.Members) > 0 && !req.DryRun {
-		return nil, fmt.Errorf("group %q has %d active members; stop the consumers first", group, len(g.Members))
-	}
+	if g, ok := described[group]; ok && !req.DryRun {
+		// A failed describe has no members listed; that is not "idle".
+		if g.Err != nil {
+			return nil, fmt.Errorf("describe group; %w", g.Err)
+		}
 
-	starts, err := c.admin.ListStartOffsets(ctx, req.Topic)
-	if err != nil {
-		return nil, fmt.Errorf("list start offsets; %w", err)
-	}
-
-	ends, err := c.admin.ListEndOffsets(ctx, req.Topic)
-	if err != nil {
-		return nil, fmt.Errorf("list end offsets; %w", err)
-	}
-
-	var atTime kadm.ListedOffsets
-	if req.Strategy == "timestamp" {
-		atTime, err = c.admin.ListOffsetsAfterMilli(ctx, req.Timestamp, req.Topic)
-		if err != nil {
-			return nil, fmt.Errorf("list offsets by time; %w", err)
+		if len(g.Members) > 0 {
+			return nil, ErrConflict{fmt.Errorf("group %q has %d active members; stop the consumers first", group, len(g.Members))}
 		}
 	}
 
-	current, _ := c.admin.FetchOffsets(ctx, group)
+	var at *int64
+	if req.Strategy == "timestamp" {
+		at = &req.Timestamp
+	}
+
+	b, err := c.bounds(ctx, req.Topic, false, at)
+	if err != nil {
+		return nil, err
+	}
+
+	starts, ends, atTime := b.starts, b.ends, b.atTime
+
+	// Without the committed offsets "from" is unknown and a shift would
+	// move from the start of the log instead; never guess on a reset.
+	current, err := c.admin.FetchOffsets(ctx, group)
+	if err != nil {
+		return nil, fmt.Errorf("fetch committed offsets; %w", err)
+	}
 
 	wanted := map[int32]bool{}
 	for _, p := range req.Partitions {
@@ -1057,7 +1105,7 @@ func (c *Client) ResetOffsets(ctx context.Context, group string, req ResetReques
 		case "shift":
 			// Needs the committed offset, resolved below.
 		default:
-			return nil, fmt.Errorf("unknown strategy %q", req.Strategy)
+			return nil, ErrInvalid{fmt.Errorf("unknown strategy %q", req.Strategy)}
 		}
 
 		from := int64(-1)
@@ -1155,7 +1203,7 @@ func (c *Client) AddGroupTopic(ctx context.Context, req CreateGroupRequest) ([]R
 	}
 
 	if len(g.Members) > 0 {
-		return nil, fmt.Errorf("group %q has %d active members; stop the consumers first", req.Group, len(g.Members))
+		return nil, ErrConflict{fmt.Errorf("group %q has %d active members; stop the consumers first", req.Group, len(g.Members))}
 	}
 
 	current, err := c.admin.FetchOffsets(ctx, req.Group)
@@ -1188,15 +1236,12 @@ func (r *CreateGroupRequest) validate() error {
 // commitFirstOffsets checks every offset against the partition's retained
 // range and commits them in one request.
 func (c *Client) commitFirstOffsets(ctx context.Context, req CreateGroupRequest) ([]ResetPlan, error) {
-	starts, err := c.admin.ListStartOffsets(ctx, req.Topic)
+	b, err := c.bounds(ctx, req.Topic, false, nil)
 	if err != nil {
-		return nil, fmt.Errorf("list start offsets; %w", err)
+		return nil, err
 	}
 
-	ends, err := c.admin.ListEndOffsets(ctx, req.Topic)
-	if err != nil {
-		return nil, fmt.Errorf("list end offsets; %w", err)
-	}
+	starts, ends := b.starts, b.ends
 
 	offsets := make(kadm.Offsets)
 	plan := make([]ResetPlan, 0, len(req.Offsets))

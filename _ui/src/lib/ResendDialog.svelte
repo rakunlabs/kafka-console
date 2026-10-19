@@ -19,7 +19,7 @@
   let elsewhere = $state(false)
   let keepPartition = $state(false)
   let mark = $state(true)
-  let topics = $state<TopicName[]>([])
+  let topics = $state.raw<TopicName[]>([])
   let results = $state<ResendResult[]>()
   let error = $state('')
   let busy = $state(false)

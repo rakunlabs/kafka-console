@@ -1,6 +1,6 @@
 <script lang="ts">
   import { untrack } from 'svelte'
-  import { api, type Cluster, type SubjectSummary, type SchemaVersion, type Message, type ProduceBody, type TopicName } from '../lib/api'
+  import { api, type Cluster, type SchemaVersion, type Message, type ProduceBody, type TopicName } from '../lib/api'
   import { time, jsonProblem } from '../lib/format'
   import { messageDraft, produceChanges, formatPayload } from '../lib/produce'
   import { names } from '../lib/names'
@@ -12,7 +12,7 @@
   let { cluster, topic, partitions, source, onclear }: { cluster: Cluster; topic: string; partitions: number[]; source?: Message; onclear: () => void } = $props()
   const initial = untrack(() => source ? messageDraft(source) : undefined)
   let target = $state(untrack(() => topic))
-  let topics = $state<TopicName[]>([])
+  let topics = $state.raw<TopicName[]>([])
   let choosingTarget = $state(false)
   let topicsError = $state('')
   const targetPartitions = $derived(target === topic ? partitions : Array.from({ length: topics.find((t) => t.name === target)?.partitions ?? 0 }, (_, i) => i))
@@ -30,19 +30,20 @@
   let valueEncoding = $state<'text' | 'base64' | 'schema'>(initial?.value_schema ? 'schema' : initial?.value_encoding === 'base64' ? 'base64' : 'text')
   let keyEncoding = $state<'text' | 'base64' | 'schema'>(initial?.key_schema ? 'schema' : initial?.key_encoding === 'base64' ? 'base64' : 'text')
   let compression = $state('')
-  let subjects = $state<SubjectSummary[]>([])
+  let subjects = $state.raw<string[]>([])
   let subject = $state('')
   let schema = $state<SchemaVersion>()
   let message = $state('')
 
   function loadSubjects() {
     if (!cluster.schema_registry) return
-    api
-      .registry(cluster.name)
-      .then((r) => {
-        subjects = r.subjects
+    // Names only, from the shared cache: the full registry listing would
+    // compute versions per subject just to fill a select.
+    names(cluster.name)
+      .then((n) => {
+        subjects = [...n.subjects].sort()
         // TopicNameStrategy is the common default.
-        if (!source && r.subjects.some((s) => s.name === `${topic}-value`)) {
+        if (!source && subjects.includes(`${topic}-value`)) {
           subject = `${topic}-value`
           valueEncoding = 'schema'
           loadSchema()
@@ -285,7 +286,7 @@
           <label>Subject
             <select bind:value={subject} onchange={loadSchema}>
               <option value="">{initial?.value_schema ? `Original schema #${initial.value_schema.id}` : 'Select…'}</option>
-              {#each subjects as s (s.name)}<option value={s.name}>{s.name} ({s.type})</option>{/each}
+              {#each subjects as s (s)}<option value={s}>{s}</option>{/each}
             </select>
           </label>
           {#if schema?.messages?.length}

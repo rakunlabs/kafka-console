@@ -92,7 +92,7 @@ func TestEditedProtobufKeepsMessageType(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	d := c.decodeRecord(ctx, &kgo.Record{Key: encoded, Value: encoded}, false)
+	d := c.decodeRecord(ctx, &kgo.Record{Key: encoded, Value: encoded}, false, DecodeAs{})
 	m := render(&kgo.Record{Key: encoded, Value: encoded}, d, 1024)
 	if m.KeySchemaMessage != "shop.Envelope.Order" || m.ValueSchemaMessage != "shop.Envelope.Order" || m.ValueSchemaID != 17 {
 		t.Fatalf("missing original schema metadata: %+v", m)
@@ -105,7 +105,7 @@ func TestEditedProtobufKeepsMessageType(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	view := c.decodeRecord(ctx, got, false)
+	view := c.decodeRecord(ctx, got, false, DecodeAs{})
 	if view.err != "" || view.key.Message != "shop.Envelope.Order" || view.value.Message != "shop.Envelope.Order" || !strings.Contains(view.value.Text, "FIXED") {
 		t.Fatalf("wrong message type after edit: %+v", view)
 	}
@@ -144,7 +144,7 @@ func TestEditedJSONSchemaKeepsNumericPrecision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	d := c.decodeRecord(t.Context(), &kgo.Record{Value: encoded}, false)
+	d := c.decodeRecord(t.Context(), &kgo.Record{Value: encoded}, false, DecodeAs{})
 	m := render(&kgo.Record{Value: encoded}, d, 1024)
 	if m.DecodeError != "" || m.Value == nil || *m.Value != input {
 		t.Fatalf("editable JSON changed: %+v", m)

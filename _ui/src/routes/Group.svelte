@@ -10,6 +10,7 @@
   import LagEta from '../lib/LagEta.svelte'
   import { app } from '../lib/features.svelte'
   import MoreRows from '../lib/MoreRows.svelte'
+  import ResourceACLs from '../lib/ResourceACLs.svelte'
 
   let { cluster, name }: { cluster: Cluster; name: string } = $props()
 
@@ -17,15 +18,19 @@
   let error = $state('')
   let loading = $state(false)
 
+  // Refreshes can overlap (Refresh, after a reset); the last one started wins.
+  let seq = 0
   async function load() {
+    const id = ++seq
     loading = true
     error = ''
     try {
-      data = await api.group(cluster.name, name)
+      const g = await api.group(cluster.name, name)
+      if (id === seq) data = g
     } catch (e: any) {
-      error = e.message
+      if (id === seq) error = e.message
     } finally {
-      loading = false
+      if (id === seq) loading = false
     }
   }
   load()
@@ -166,11 +171,12 @@
   {/if}
 </div>
 
-{#if error}
+{#if error && !data}
   <div class="error">{error}</div>
 {:else if !data}
   <div class="empty">Loading…</div>
 {:else}
+  {#if error}<div class="error mb-3">{error}</div>{/if}
   <div class="summary">
     <span>Total lag <b class:lagnum={data.lag > 0}>{fmt(data.lag)}</b></span>
     <span><b>{data.members.length}</b> members</span>
@@ -226,6 +232,11 @@
       </tbody>
     </table>
   </div>
+
+  {#if app.features.security}
+    <div class="section-title"><h2>ACL</h2></div>
+    <ResourceACLs {cluster} type="GROUP" {name} />
+  {/if}
 {/if}
 
 <GroupTopicDialog {cluster} group={name} existingTopics={topics} activeMembers={data?.members.length ?? 0} bind:open={addingTopic} ondone={load} />

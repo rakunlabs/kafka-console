@@ -22,6 +22,7 @@ type TailRequest struct {
 	Filter    string
 	Search    string
 	Raw       bool
+	As        DecodeAs
 }
 
 // TailEvent is one message or a periodic progress report.
@@ -42,6 +43,10 @@ const (
 
 // Tail streams records to emit until ctx ends or emit returns false.
 func (c *Client) Tail(ctx context.Context, topic string, req TailRequest, emit func(TailEvent) bool) error {
+	if err := req.As.validate(); err != nil {
+		return err
+	}
+
 	var filter *script.Script
 	if strings.TrimSpace(req.Filter) != "" {
 		var err error
@@ -51,6 +56,12 @@ func (c *Client) Tail(ctx context.Context, topic string, req TailRequest, emit f
 			return ErrInvalid{err}
 		}
 	}
+
+	release, err := c.stream()
+	if err != nil {
+		return err
+	}
+	defer release()
 
 	offsets, err := c.tailOffsets(ctx, topic, req)
 	if err != nil {
@@ -100,7 +111,7 @@ func (c *Client) Tail(ctx context.Context, topic string, req TailRequest, emit f
 
 			scanned++
 
-			d := c.decodeRecord(ctx, rec, req.Raw)
+			d := c.decodeRecord(ctx, rec, req.Raw, req.As)
 
 			if !textMatch(req.Search, rec, d) {
 				return
