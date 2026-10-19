@@ -46,7 +46,7 @@
   })
 </script>
 
-<div class="vv" style:max-height={maxHeight ? `${maxHeight}px` : undefined}>
+<div class="vv theme-dark" style:max-height={maxHeight ? `${maxHeight}px` : undefined}>
   {#if parsed !== undefined}
     <div class="vbar">
       {#if !raw}

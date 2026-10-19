@@ -204,10 +204,12 @@ type clusterInfo struct {
 	Production     bool     `json:"production"`
 	SchemaRegistry bool     `json:"schema_registry"`
 	Docs           bool     `json:"docs"`
+	// Description is HTML rendered from the configured Markdown.
+	Description string `json:"description,omitempty"`
 }
 
 func (s *Server) appInfo(c *ada.Context) error {
-	return c.SendJSON(map[string]any{"info": s.info, "features": s.features})
+	return c.SendJSON(map[string]any{"info": s.info, "version": config.Version, "features": s.features})
 }
 
 func (s *Server) clusters(c *ada.Context) error {
@@ -216,7 +218,7 @@ func (s *Server) clusters(c *ada.Context) error {
 		cl, _ := s.registry.Get(name)
 		out = append(out, clusterInfo{
 			Name: name, Brokers: cl.Brokers(), ReadOnly: cl.ReadOnly(), Production: cl.Production(),
-			SchemaRegistry: cl.HasRegistry(), Docs: cl.HasDocs(),
+			SchemaRegistry: cl.HasRegistry(), Docs: cl.HasDocs(), Description: cl.Description(),
 		})
 	}
 

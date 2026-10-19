@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -39,6 +40,8 @@ type Client struct {
 
 	readers *readers
 	protos  *localProto
+
+	description string
 }
 
 func New(name string, cfg *config.Cluster) (*Client, error) {
@@ -84,6 +87,10 @@ func New(name string, cfg *config.Cluster) (*Client, error) {
 	}
 
 	c.protos = protos
+
+	if strings.TrimSpace(cfg.Description) != "" {
+		c.description = renderMarkdown([]byte(cfg.Description))
+	}
 
 	if cfg.SchemaRegistry != nil {
 		registry, err := registryClient(cfg.SchemaRegistry)
@@ -146,6 +153,10 @@ func (c *Client) ReadOnly() bool    { return c.cfg.ReadOnly }
 func (c *Client) Production() bool  { return c.cfg.Production }
 func (c *Client) Brokers() []string { return c.cfg.Brokers }
 func (c *Client) HasRegistry() bool { return c.registry != nil }
+
+// Description is the configured cluster description rendered from Markdown
+// with the same safe renderer as topic docs; empty when unset.
+func (c *Client) Description() string { return c.description }
 
 // ErrNoRegistry means the cluster has no schema registry configured.
 var ErrNoRegistry = errors.New("schema registry is not configured for this cluster")

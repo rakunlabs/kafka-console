@@ -29,7 +29,7 @@
 {:else if !doc}
   <div class="empty">Loading…</div>
 {:else}
-  <article class="panel doc">
+  <article class="panel doc markdown">
     <!-- eslint-disable-next-line svelte/no-at-html-tags -- rendered server-side without raw HTML -->
     {@html doc.html}
   </article>
@@ -37,19 +37,5 @@
 {/if}
 
 <style>
-  .doc { padding: 16px 20px; line-height: 1.6; overflow-x: auto; }
-  .doc :global(h1) { font-size: 20px; margin: 0 0 10px; }
-  .doc :global(h2) { font-size: 16px; margin: 18px 0 8px; }
-  .doc :global(h3) { font-size: 14px; margin: 14px 0 6px; }
-  .doc :global(p), .doc :global(ul), .doc :global(ol) { margin: 0 0 10px; }
-  .doc :global(ul), .doc :global(ol) { padding-left: 22px; }
-  .doc :global(ul) { list-style: disc; }
-  .doc :global(ol) { list-style: decimal; }
-  .doc :global(code) { font-family: var(--font-mono); font-size: 12.5px; background: var(--surface-2); padding: 1px 4px; border-radius: 3px; }
-  .doc :global(pre) { background: var(--surface-2); padding: 10px 12px; border-radius: var(--radius); overflow-x: auto; margin: 0 0 10px; }
-  .doc :global(pre code) { background: none; padding: 0; }
-  .doc :global(table) { border-collapse: collapse; margin: 0 0 10px; }
-  .doc :global(th), .doc :global(td) { border: 1px solid var(--border); padding: 4px 8px; }
-  .doc :global(blockquote) { border-left: 3px solid var(--border-strong); padding-left: 12px; color: var(--text-2); margin: 0 0 10px; }
-  .doc :global(a) { text-decoration: underline; }
+  .doc { padding: 16px 20px; }
 </style>

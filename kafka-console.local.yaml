@@ -21,6 +21,22 @@ clusters:
     brokers: ["localhost:19092"]
     schema_registry:
       urls: ["http://localhost:18081"]
+    description: |   # Markdown, shown in a box on the cluster overview
+      ## Local development cluster
+
+      Single-broker Redpanda from `env/docker-compose.yaml`, with a Schema Registry.
+      **Safe to break**: data here is throwaway.
+
+      - Owner: *platform team* (`#kafka-help` on Slack)
+      - Start it: `docker compose -f env/docker-compose.yaml up -d`
+      - Docs: [Redpanda](https://docs.redpanda.com/)
+
+      | Service         | Address           |
+      |-----------------|-------------------|
+      | Broker          | `localhost:19092` |
+      | Schema Registry | `localhost:18081` |
+
+      > This box comes from `clusters.local.description` in this file.
 
   # staging:
   #   brokers: ["kafka-1.staging:9093", "kafka-2.staging:9093"]

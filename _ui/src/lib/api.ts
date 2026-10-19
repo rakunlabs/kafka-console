@@ -6,6 +6,8 @@ export type Cluster = {
   schema_registry: boolean
   // Topic documentation (Markdown files) is configured.
   docs?: boolean
+  // HTML rendered server-side from the configured Markdown description.
+  description?: string
 }
 
 export type TopicDoc = { html: string; source: string; file: string; modified: string }
@@ -22,6 +24,7 @@ export type Features = {
 
 export type AppInfo = {
   info: string
+  version: string
   features: Features
 }
 

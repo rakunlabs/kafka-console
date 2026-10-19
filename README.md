@@ -118,6 +118,9 @@ clusters:
     brokers: ["kafka-1.prod:9093", "kafka-2.prod:9093"]
     production: true     # red banner and warnings in the UI
     read_only: true      # refuses produce, topic changes, offset resets
+    description: |       # Markdown, shown in a box on the cluster overview
+      **Production** cluster. Owner: platform team.
+      Runbook: [wiki](https://wiki.example.com/kafka-prod)
     tls:
       enabled: true
       ca_file: /etc/kafka/ca.pem

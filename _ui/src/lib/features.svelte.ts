@@ -16,12 +16,14 @@ const off: Features = {
 let current = $state<Features>(off)
 let loaded = $state(false)
 let label = $state('')
+let version = $state('')
 
 api
   .info()
   .then((r) => {
     current = { ...off, ...r.features }
     label = r.info
+    version = r.version ?? ''
     loaded = true
   })
   .catch(() => {})
@@ -36,5 +38,9 @@ export const app = {
   /** Short environment label from the config, e.g. "PreProd". */
   get info() {
     return label
+  },
+  /** Server build version, e.g. "v1.4.0". */
+  get version() {
+    return version
   },
 }

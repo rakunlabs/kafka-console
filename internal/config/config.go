@@ -110,6 +110,9 @@ type Cluster struct {
 	ReadOnly bool `cfg:"read_only"`
 	// Production only changes how the UI presents the cluster.
 	Production bool `cfg:"production"`
+	// Description is Markdown shown on the cluster overview, e.g. owners,
+	// runbook links or what the cluster is for. Raw HTML is dropped.
+	Description string `cfg:"description"`
 
 	TLS  *TLS  `cfg:"tls"`
 	SASL *SASL `cfg:"sasl"`

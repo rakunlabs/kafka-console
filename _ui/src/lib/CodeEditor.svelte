@@ -97,7 +97,7 @@
   })
 </script>
 
-<div class="cm" class:invalid bind:this={host} style:--min="{minHeight}px" style:--max="{maxHeight}px"></div>
+<div class="cm theme-dark" class:invalid bind:this={host} style:--min="{minHeight}px" style:--max="{maxHeight}px"></div>
 
 <style>
   .cm {

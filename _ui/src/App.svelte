@@ -92,7 +92,7 @@
   {/if}
   <aside
     id="sidebar"
-    class="fixed inset-y-0 left-0 z-40 flex w-[min(280px,85vw)] flex-col overflow-y-auto border-r border-line-strong bg-sidebar transition-transform duration-200 lg:sticky lg:top-0 lg:z-auto lg:h-screen lg:w-auto lg:translate-x-0 lg:transition-none {menuOpen
+    class="theme-dark fixed inset-y-0 left-0 z-40 flex w-[min(280px,85vw)] flex-col overflow-y-auto border-r border-line-strong bg-sidebar transition-transform duration-200 lg:sticky lg:top-0 lg:z-auto lg:h-screen lg:w-auto lg:translate-x-0 lg:transition-none {menuOpen
       ? 'translate-x-0 shadow-2xl'
       : '-translate-x-full'}"
     class:prod-edge={current?.production}
@@ -105,7 +105,7 @@
         title="Overview"
       >
         <Logo size={22} />
-        kafka-console
+        <span title={app.version ? `kafka-console ${app.version}` : undefined}>kafka-console</span>
       </a>
       {#if app.info}
         <span class="ml-auto truncate bg-[#fbff81] px-1.5 py-0.5 text-[11.5px] leading-tight font-semibold text-[#222220]" title={app.info}>{app.info}</span>
@@ -198,7 +198,7 @@
           <span class="sq {current.production ? 'danger' : 'ok'}"></span>
           <span class="truncate text-sm font-semibold">{current.name}</span>
         {:else}
-          <span class="text-sm font-semibold">kafka-console</span>
+          <span class="text-sm font-semibold" title={app.version ? `kafka-console ${app.version}` : undefined}>kafka-console</span>
         {/if}
       </a>
       {#if app.info}

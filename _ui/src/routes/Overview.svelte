@@ -107,6 +107,13 @@
   </div>
 </header>
 
+{#if cluster.description}
+  <section class="panel markdown mb-6 px-4 py-3 text-[13.5px]" aria-label="Cluster description">
+    <!-- eslint-disable-next-line svelte/no-at-html-tags -- rendered server-side without raw HTML -->
+    {@html cluster.description}
+  </section>
+{/if}
+
 {#if error}
   <div class="error">{error}</div>
 {:else if !data}

@@ -131,7 +131,10 @@
     color-scheme: dark;
   }
 }
-:root[data-theme='dark'] {
+/* .theme-dark keeps one part of the page (the sidebar, value and code views)
+   dark whatever the page theme is. */
+:root[data-theme='dark'],
+.theme-dark {
   --bg: #171714;
   --sidebar: #1e1e1b;
   --surface: #1b1b18;
@@ -170,6 +173,7 @@
   --syn-kw: #c49bff;
   --syn-var: #8f9bfa;
   color-scheme: dark;
+  color: var(--text);
 }
 
 @layer base {
@@ -528,4 +532,22 @@ td.num { white-space: nowrap; }
 /* Thin progress track used for lag and share bars. */
 .track { display: block; height: 6px; background: var(--surface-2); border-radius: 1px; overflow: hidden; }
 .track > span { display: block; height: 100%; background: var(--text-2); }
+
+/* Server-rendered Markdown: topic docs and cluster descriptions. */
+.markdown { line-height: 1.6; overflow-x: auto; }
+.markdown > :last-child { margin-bottom: 0; }
+.markdown h1 { font-size: 20px; margin: 0 0 10px; }
+.markdown h2 { font-size: 16px; margin: 18px 0 8px; }
+.markdown h3 { font-size: 14px; margin: 14px 0 6px; }
+.markdown p, .markdown ul, .markdown ol { margin: 0 0 10px; }
+.markdown ul, .markdown ol { padding-left: 22px; }
+.markdown ul { list-style: square; }
+.markdown ol { list-style: decimal; }
+.markdown code { font-family: var(--font-mono); font-size: 12.5px; background: var(--surface-2); padding: 1px 4px; border-radius: 3px; }
+.markdown pre { background: var(--surface-2); padding: 10px 12px; border-radius: var(--radius); overflow-x: auto; margin: 0 0 10px; }
+.markdown pre code { background: none; padding: 0; }
+.markdown table { border-collapse: collapse; margin: 0 0 10px; }
+.markdown th, .markdown td { border: 1px solid var(--border); padding: 4px 8px; }
+.markdown blockquote { border-left: 3px solid var(--border-strong); padding-left: 12px; color: var(--text-2); margin: 0 0 10px; }
+.markdown a { text-decoration: underline; }
 }
