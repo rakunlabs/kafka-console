@@ -51,7 +51,7 @@ func (c *Client) TopicDoc(topic string) (*TopicDoc, error) {
 	if err != nil {
 		return nil, fmt.Errorf("docs; %w", err)
 	}
-	defer root.Close()
+	defer root.Close() //nolint:errcheck // read-only
 
 	name := topic + ".md"
 
@@ -63,7 +63,7 @@ func (c *Client) TopicDoc(topic string) (*TopicDoc, error) {
 	if err != nil {
 		return nil, fmt.Errorf("docs; %w", err)
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck // read-only
 
 	st, err := f.Stat()
 	if err != nil {
@@ -105,6 +105,6 @@ func validTopicName(t string) bool {
 	}
 
 	return strings.IndexFunc(t, func(r rune) bool {
-		return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '_' || r == '-')
+		return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '_' || r == '-') //nolint:staticcheck // allowlist reads clearer
 	}) < 0
 }
