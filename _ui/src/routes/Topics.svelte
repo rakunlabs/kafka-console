@@ -1,54 +1,40 @@
 <script lang="ts">
-  import { api, type Cluster, type TopicSummary } from '../lib/api'
+  import { untrack } from 'svelte'
+  import { api, type Cluster, type TopicQuery, type TopicSummary } from '../lib/api'
   import { fmt, bytes } from '../lib/format'
   import { href, go } from '../lib/router.svelte'
   import Modal from '../lib/Modal.svelte'
-  import MoreRows from '../lib/MoreRows.svelte'
+  import MorePages from '../lib/MorePages.svelte'
+  import RefreshStop from '../lib/RefreshStop.svelte'
   import { forgetNames } from '../lib/names'
-  import { ArrowDown, ArrowUp, RefreshCw, Plus } from '@lucide/svelte'
+  import { paged } from '../lib/paged.svelte'
+  import { app } from '../lib/features.svelte'
+  import { ArrowDown, ArrowUp, Plus } from '@lucide/svelte'
 
   let { cluster }: { cluster: Cluster } = $props()
 
-  let topics = $state<TopicSummary[]>([])
-  let loading = $state(true)
-  let error = $state('')
+  type SortKey = NonNullable<TopicQuery['sort']>
+
   let search = $state('')
   let showInternal = $state(false)
-  let sortKey = $state<keyof TopicSummary>('name')
+  let sortKey = $state<SortKey>('name')
   let sortDesc = $state(false)
 
-  async function load() {
-    loading = true
-    error = ''
-    try {
-      topics = await api.topics(cluster.name)
-    } catch (e: any) {
-      error = e.message
-    } finally {
-      loading = false
-    }
-  }
-  load()
-
-  const rows = $derived.by(() => {
-    const q = search.trim().toLowerCase()
-    const list = topics.filter((t) => (showInternal || !t.internal) && (!q || t.name.toLowerCase().includes(q)))
-    return list.sort((a, b) => {
-      const av = a[sortKey] ?? ''
-      const bv = b[sortKey] ?? ''
-      const r = typeof av === 'string' ? av.localeCompare(bv as string) : (av as number) - (bv as number)
-      return sortDesc ? -r : r
-    })
+  // The page remounts per cluster ({#key} in App), so the first value is the one.
+  const name = untrack(() => cluster.name)
+  const list = paged<TopicSummary, TopicQuery>({
+    key: `topics:${name}`,
+    query: () => ({ q: search.trim(), internal: showInternal, sort: sortKey, desc: sortDesc }),
+    fetch: async (q, offset, limit) => {
+      const r = await api.topics(name, { ...q, offset, limit })
+      return { items: r.topics, total: r.total }
+    },
+    id: (t) => t.name,
+    cacheable: () => !search.trim() && !showInternal && sortKey === 'name' && !sortDesc,
   })
+  list.watch(() => search)
 
-  const page = 200
-  let shown = $state(page)
-  $effect(() => {
-    void search, showInternal, sortKey, sortDesc
-    shown = page
-  })
-
-  function sort(key: keyof TopicSummary) {
+  function sort(key: SortKey) {
     if (sortKey === key) sortDesc = !sortDesc
     else {
       sortKey = key
@@ -90,14 +76,16 @@
 
 <div class="head">
   <h1>Topics</h1>
-  <span class="faint">{rows.length}</span>
+  <span class="faint">{fmt(list.total)}</span>
   <span class="spacer"></span>
-  <button onclick={load} disabled={loading}><RefreshCw size={14} class={loading ? 'animate-spin' : ''} />Refresh</button>
-  <button class="primary" disabled={cluster.read_only} onclick={() => {
-    form = { name: '', partitions: 3, replication_factor: 0, configs: '' }
-    createError = ''
-    creating = true
-  }}><Plus size={14} />Create topic</button>
+  <RefreshStop loading={list.loading} onrefresh={() => list.load(true)} onstop={list.stop} />
+  {#if app.features.create_topic}
+    <button class="primary" disabled={cluster.read_only} onclick={() => {
+      form = { name: '', partitions: 3, replication_factor: 0, configs: '' }
+      createError = ''
+      creating = true
+    }}><Plus size={14} />Create topic</button>
+  {/if}
 </div>
 
 <div class="filters">
@@ -105,24 +93,24 @@
   <label class="check"><input type="checkbox" bind:checked={showInternal} /> Show internal topics</label>
 </div>
 
-{#if error}
-  <div class="error">{error}</div>
+{#if list.error}
+  <div class="error">{list.error}</div>
 {:else}
-  <div class="panel">
+  <div class="panel" class:stale={list.loading && list.items.length > 0}>
     <table>
       <thead>
         <tr>
           <th><button class="ghost th" onclick={() => sort('name')}>Name {#if sortKey === 'name'}{#if sortDesc}<ArrowDown size={12} />{:else}<ArrowUp size={12} />{/if}{/if}</button></th>
           <th class="num"><button class="ghost th" onclick={() => sort('partitions')}>Partitions {#if sortKey === 'partitions'}{#if sortDesc}<ArrowDown size={12} />{:else}<ArrowUp size={12} />{/if}{/if}</button></th>
           <th class="num">RF</th>
-          <th class="num"><button class="ghost th" onclick={() => sort('messages')}>Messages {#if sortKey === 'messages'}{#if sortDesc}<ArrowDown size={12} />{:else}<ArrowUp size={12} />{/if}{/if}</button></th>
-          <th class="num"><button class="ghost th" onclick={() => sort('size')}>Size {#if sortKey === 'size'}{#if sortDesc}<ArrowDown size={12} />{:else}<ArrowUp size={12} />{/if}{/if}</button></th>
+          <th class="num"><button class="ghost th" onclick={() => sort('messages')} title="Reads offsets of every matching topic; slower on large clusters">Messages {#if sortKey === 'messages'}{#if sortDesc}<ArrowDown size={12} />{:else}<ArrowUp size={12} />{/if}{/if}</button></th>
+          <th class="num"><button class="ghost th" onclick={() => sort('size')} title="Reads log sizes of every matching topic; slower on large clusters">Size {#if sortKey === 'size'}{#if sortDesc}<ArrowDown size={12} />{:else}<ArrowUp size={12} />{/if}{/if}</button></th>
           <th>Cleanup</th>
           <th class="num"><button class="ghost th" onclick={() => sort('under_replicated')}>Under-replicated {#if sortKey === 'under_replicated'}{#if sortDesc}<ArrowDown size={12} />{:else}<ArrowUp size={12} />{/if}{/if}</button></th>
         </tr>
       </thead>
       <tbody>
-        {#each rows.slice(0, shown) as t (t.name)}
+        {#each list.items as t (t.name)}
           <tr>
             <td>
               <a class="mono" href={href(cluster.name, 'topics', t.name)}>{t.name}</a>
@@ -132,17 +120,17 @@
             <td class="num">{t.replication_factor}</td>
             <td class="num">{fmt(t.messages)}</td>
             <td class="num">{t.size >= 0 ? bytes(t.size) : '—'}</td>
-            <td class="muted">{t.cleanup_policy ?? '—'}</td>
+            <td class="muted">{t.cleanup_policy || '—'}</td>
             <td class="num">
               {#if t.under_replicated > 0}<span class="badge warn">{t.under_replicated}</span>{:else}<span class="faint">0</span>{/if}
             </td>
           </tr>
         {:else}
-          <tr><td colspan="7" class="empty">{loading ? 'Loading…' : search ? 'No topics match your search.' : 'This cluster has no topics.'}</td></tr>
+          <tr><td colspan="7" class="empty">{list.loading ? 'Loading…' : search.trim() ? 'No topics match your search.' : 'This cluster has no topics.'}</td></tr>
         {/each}
       </tbody>
     </table>
-    <MoreRows total={rows.length} bind:shown step={page} />
+    <MorePages shown={list.items.length} total={list.total} step={list.size} busy={list.more || list.loading} onmore={list.loadMore} />
   </div>
 {/if}
 

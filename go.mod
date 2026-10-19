@@ -7,13 +7,14 @@ require (
 	github.com/denizgursoy/kafka-mcp v0.2.3
 	github.com/dop251/goja v0.0.0-20260917113740-793a2a65c13b
 	github.com/modelcontextprotocol/go-sdk v1.7.0
-	github.com/rakunlabs/ada v0.5.3
-	github.com/rakunlabs/ada/handler/folder v0.5.3
-	github.com/rakunlabs/ada/middleware/cors v0.5.4-1
-	github.com/rakunlabs/ada/middleware/log v0.5.3
-	github.com/rakunlabs/ada/middleware/recover v0.5.3
-	github.com/rakunlabs/ada/middleware/requestid v0.5.3
-	github.com/rakunlabs/ada/middleware/server v0.5.3
+	github.com/rakunlabs/ada v0.5.4
+	github.com/rakunlabs/ada/handler/folder v0.5.4
+	github.com/rakunlabs/ada/middleware/cors v0.5.4
+	github.com/rakunlabs/ada/middleware/encoding v0.5.4
+	github.com/rakunlabs/ada/middleware/log v0.5.4
+	github.com/rakunlabs/ada/middleware/recover v0.5.4
+	github.com/rakunlabs/ada/middleware/requestid v0.5.4
+	github.com/rakunlabs/ada/middleware/server v0.5.4
 	github.com/rakunlabs/chu v0.5.0
 	github.com/rakunlabs/chu/loader/external/loaderawssecrets v0.0.0-20260831101252-0c6a77e06f7f
 	github.com/rakunlabs/chu/loader/external/loaderawsssm v0.0.0-20260831101252-0c6a77e06f7f
@@ -50,6 +51,7 @@ require (
 	github.com/Azure/azure-sdk-for-go/sdk/security/keyvault/internal v1.2.0 // indirect
 	github.com/AzureAD/microsoft-authentication-library-for-go v1.7.0 // indirect
 	github.com/BurntSushi/toml v1.6.0 // indirect
+	github.com/andybalholm/brotli v1.2.6 // indirect
 	github.com/armon/go-metrics v0.4.1 // indirect
 	github.com/aws/aws-sdk-go-v2 v1.41.8 // indirect
 	github.com/aws/aws-sdk-go-v2/config v1.32.19 // indirect

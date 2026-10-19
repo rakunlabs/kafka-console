@@ -7,7 +7,7 @@
   // ⌘K / Ctrl+K: jump to any page, topic, group or subject in the current
   // cluster, or switch cluster. Lists load on first open and are kept for the
   // session; reopening refreshes them in the background.
-  let { cluster, clusters }: { cluster: Cluster; clusters: Cluster[] } = $props()
+  let { cluster, clusters, security }: { cluster: Cluster; clusters: Cluster[]; security: boolean } = $props()
 
   type Item = { kind: string; label: string; detail?: string; run: () => void }
 
@@ -72,7 +72,7 @@
     { kind: 'Page', label: 'Topics', run: () => go(cluster.name, 'topics') },
     { kind: 'Page', label: 'Consumer groups', run: () => go(cluster.name, 'groups') },
     ...(cluster.schema_registry ? [{ kind: 'Page', label: 'Schema Registry', run: () => go(cluster.name, 'schemas') }] : []),
-    { kind: 'Security', label: 'Security', run: () => go(cluster.name, 'security') },
+    ...(security ? [{ kind: 'Security', label: 'Security', run: () => go(cluster.name, 'security') }] : []),
   ])
 
   // Fuzzy-ish: every query character must appear in order; contiguous and

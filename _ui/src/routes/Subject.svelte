@@ -250,5 +250,5 @@
   .diff .line { display: block; }
   .diff .add { background: var(--ok-soft); color: var(--ok); }
   .diff .del { background: var(--danger-soft); color: var(--danger); }
-  @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
+  @media (max-width: 900px) { .layout { grid-template-columns: minmax(0, 1fr); } }
 </style>

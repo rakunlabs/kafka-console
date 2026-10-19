@@ -47,6 +47,7 @@ far behind they are.
 - **Security:** ACLs, SCRAM users, client quotas.
 - **Operator safety:**
   - Per-cluster `read_only` and `production` flags.
+  - Switch off features such as topic create or delete; see [Features](#features-1).
   - An audit log line for every write.
   - Confirmation before destructive actions.
 - **MCP (optional):** expose the shared [kafka-mcp](https://github.com/denizgursoy/kafka-mcp) tools on the same HTTP server, read-only by default.
@@ -96,6 +97,10 @@ server:
   # base_path: /kafka    # serve under a sub-path behind a reverse proxy
   # user_header: X-User  # header your auth proxy sets; logged on every write
 
+# features:              # every feature is on unless set to false; see Features below
+#   create_topic: false
+#   delete_topic: false
+
 clusters:
   local:
     brokers: ["localhost:9092"]
@@ -119,6 +124,35 @@ clusters:
       user: console              # basic auth, or token: <bearer>
       password_file: /run/secrets/registry-password
 ```
+
+### Features
+
+Switch off parts of the console you do not want offered, for example when
+its credentials lack the ACL for them. Every feature is on unless set to
+`false`; leaving a key out keeps it on.
+
+```yaml
+features:
+  create_topic: false
+  delete_topic: false
+```
+
+A feature that is off is removed everywhere: its buttons and pages are gone
+from the UI, its API routes answer 404, and its MCP tools are not offered
+(an MCP endpoint's `tools` cannot switch them back on).
+
+| Key | Turns off | MCP tools |
+|---|---|---|
+| `security` | The Security section: ACLs, SCRAM users, client quotas | `list_acls` |
+| `create_topic` | Create topic | `create_topic` |
+| `delete_topic` | Delete topic | `delete_topic` |
+| `alter_topic` | Editing topic config and adding partitions | `alter_topic_config`, `add_partitions` |
+| `delete_records` | Delete records from a topic | `delete_records` |
+| `delete_group` | Delete consumer group | `delete_consumer_group` |
+
+Features apply to every cluster. To block all writes on one cluster, use its
+`read_only` flag instead. Environment variables work too, for example
+`KAFKA_CONSOLE_FEATURES_DELETE_TOPIC=false`.
 
 ### OAUTHBEARER
 

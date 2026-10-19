@@ -311,10 +311,11 @@ func configEntries(cfgs []kadm.Config) []ConfigEntry {
 	return out
 }
 
-// topicSizes returns the on-disk size of every topic across leader replicas
-// and across all replicas. Errors are swallowed: sizes are best effort.
-func (c *Client) topicSizes(ctx context.Context) map[string][2]int64 {
-	dirs, err := c.admin.DescribeAllLogDirs(ctx, nil)
+// topicSizes returns the on-disk size of the given topics across leader
+// replicas and across all replicas. Errors are swallowed: sizes are best
+// effort. Leaders come from topics, the metadata the caller already holds.
+func (c *Client) topicSizes(ctx context.Context, topics kadm.TopicDetails) map[string][2]int64 {
+	dirs, err := c.admin.DescribeAllLogDirs(ctx, topics.TopicsSet())
 	if err != nil {
 		return nil
 	}
@@ -336,29 +337,27 @@ func (c *Client) topicSizes(ctx context.Context) map[string][2]int64 {
 	})
 
 	// Leader-only sizes approximate the logical topic size.
-	if meta, err := c.admin.Metadata(ctx); err == nil {
-		leaderSize := map[string]int64{}
+	leaderSize := map[string]int64{}
 
-		dirs.Each(func(d kadm.DescribedLogDir) {
-			for t, ps := range d.Topics {
-				mt, ok := meta.Topics[t]
-				if !ok {
-					continue
-				}
+	dirs.Each(func(d kadm.DescribedLogDir) {
+		for t, ps := range d.Topics {
+			mt, ok := topics[t]
+			if !ok {
+				continue
+			}
 
-				for p, part := range ps {
-					if mp, ok := mt.Partitions[p]; ok && mp.Leader == d.Broker && !part.IsFuture {
-						leaderSize[t] += part.Size
-					}
+			for p, part := range ps {
+				if mp, ok := mt.Partitions[p]; ok && mp.Leader == d.Broker && !part.IsFuture {
+					leaderSize[t] += part.Size
 				}
 			}
-		})
-
-		for t, v := range leaderSize {
-			s := out[t]
-			s[0] = v
-			out[t] = s
 		}
+	})
+
+	for t, v := range leaderSize {
+		s := out[t]
+		s[0] = v
+		out[t] = s
 	}
 
 	return out

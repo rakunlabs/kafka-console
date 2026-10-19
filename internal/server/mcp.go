@@ -20,6 +20,33 @@ import (
 
 // mcpEndpoints returns the configured endpoints, or one read-only-by-default
 // endpoint per cluster at /mcp/<cluster>.
+// mcpTools is the endpoint's tool policy with the tools of switched-off
+// features removed, so a feature that is off is off for MCP too. An endpoint
+// cannot switch such a tool back on.
+func mcpTools(endpoint map[string]bool, f config.Features) map[string]bool {
+	off := map[string]bool{
+		"list_acls":             !f.SecurityEnabled(),
+		"create_topic":          !f.CreateTopicEnabled(),
+		"delete_topic":          !f.DeleteTopicEnabled(),
+		"alter_topic_config":    !f.AlterTopicEnabled(),
+		"add_partitions":        !f.AlterTopicEnabled(),
+		"delete_records":        !f.DeleteRecordsEnabled(),
+		"delete_consumer_group": !f.DeleteGroupEnabled(),
+	}
+
+	tools := make(map[string]bool, len(endpoint)+len(off))
+	for name, on := range endpoint {
+		tools[name] = on
+	}
+	for name, disabled := range off {
+		if disabled {
+			tools[name] = false
+		}
+	}
+
+	return tools
+}
+
 func mcpEndpoints(cfg *config.Config) map[string]*config.MCPEndpoint {
 	if len(cfg.MCP.Endpoints) > 0 {
 		return cfg.MCP.Endpoints
@@ -73,7 +100,7 @@ func mcpHandler(cfg *config.Config, registry *kafka.Registry) (*mcpRoutes, error
 		if err := clusters.Register(server, endpoint.Cluster, kafkamcp.Options{
 			ReadOnly:     endpoint.ReadOnly || !cfg.MCP.AllowWrites,
 			Destinations: endpoint.Destinations,
-			Tools:        endpoint.Tools,
+			Tools:        mcpTools(endpoint.Tools, cfg.Features),
 			Path:         path,
 			OutputDir:    cfg.MCP.OutputDir,
 		}); err != nil {

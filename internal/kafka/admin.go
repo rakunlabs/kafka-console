@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/twmb/franz-go/pkg/kadm"
 	"github.com/twmb/franz-go/pkg/kerr"
@@ -68,7 +69,34 @@ func (c *Client) Overview(ctx context.Context) (*Overview, error) {
 		index[b.ID] = i
 	}
 
-	if versions, err := c.admin.ApiVersions(ctx); err == nil {
+	// These only need the metadata above, so they run together; one after
+	// another each waits its own round trip, and the log dir scan touches
+	// every partition on every broker.
+	var (
+		wg       sync.WaitGroup
+		versions kadm.BrokersApiVersions
+		verErr   error
+		size     int64 = -1
+		groups         = -1
+	)
+	wg.Go(func() { versions, verErr = c.admin.ApiVersions(ctx) })
+	wg.Go(func() {
+		if dirs, err := c.admin.DescribeAllLogDirs(ctx, nil); err == nil {
+			size = 0
+			dirs.Each(func(d kadm.DescribedLogDir) { size += d.Size() })
+		}
+	})
+	wg.Go(func() {
+		if listed, err := c.admin.ListGroups(ctx); err == nil {
+			groups = len(listed)
+		}
+	})
+
+	o.countTopics(meta, index)
+
+	wg.Wait()
+
+	if verErr == nil {
 		versions.Each(func(v kadm.BrokerApiVersions) {
 			if i, ok := index[v.NodeID]; ok && v.Err == nil {
 				o.Brokers[i].Version = v.VersionGuess()
@@ -76,12 +104,14 @@ func (c *Client) Overview(ctx context.Context) (*Overview, error) {
 		})
 	}
 
-	if dirs, err := c.admin.DescribeAllLogDirs(ctx, nil); err == nil {
-		o.Size = 0
+	o.Size = size
+	o.Groups = max(groups, 0)
 
-		dirs.Each(func(d kadm.DescribedLogDir) { o.Size += d.Size() })
-	}
+	return o, nil
+}
 
+// countTopics fills topic, partition, leader and health counts from metadata.
+func (o *Overview) countTopics(meta kadm.Metadata, index map[int32]int) {
 	for _, t := range meta.Topics.Sorted() {
 		if t.IsInternal {
 			o.InternalTopics++
@@ -129,12 +159,6 @@ func (c *Client) Overview(ctx context.Context) (*Overview, error) {
 			o.Problems = append(o.Problems, TopicHealth{Topic: t.Topic, Partitions: string(marks)})
 		}
 	}
-
-	if groups, err := c.admin.ListGroups(ctx); err == nil {
-		o.Groups = len(groups)
-	}
-
-	return o, nil
 }
 
 func brokers(meta kadm.Metadata) []Broker {
@@ -170,20 +194,125 @@ type TopicSummary struct {
 	CleanupPolicy  string `json:"cleanup_policy,omitempty"`
 }
 
-func (c *Client) Topics(ctx context.Context) ([]TopicSummary, error) {
+// TopicQuery selects one page of the topic list. Name, partition and
+// under-replicated sorts only need metadata, so offsets, sizes and configs
+// are fetched for the returned page alone. Sorting by messages or size needs
+// those numbers for every matching topic first.
+type TopicQuery struct {
+	Search   string
+	Internal bool
+	Sort     string
+	Desc     bool
+	Offset   int
+	// Limit is the page size; 0 returns every matching topic.
+	Limit int
+}
+
+type TopicPage struct {
+	Topics []TopicSummary `json:"topics"`
+	// Total counts every topic matching the search and internal filter.
+	Total int `json:"total"`
+}
+
+func (c *Client) Topics(ctx context.Context, q TopicQuery) (*TopicPage, error) {
 	details, err := c.admin.ListTopicsWithInternal(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list topics; %w", err)
 	}
 
-	names := details.Names()
+	search := strings.ToLower(strings.TrimSpace(q.Search))
+	all := make([]TopicSummary, 0, len(details))
+	for name, d := range details {
+		if d.IsInternal && !q.Internal || search != "" && !strings.Contains(strings.ToLower(name), search) {
+			continue
+		}
 
-	starts, _ := c.admin.ListStartOffsets(ctx, names...)
-	ends, _ := c.admin.ListEndOffsets(ctx, names...)
-	sizes := c.topicSizes(ctx)
+		s := TopicSummary{Name: name, Internal: d.IsInternal, Partitions: len(d.Partitions), Size: -1, ReplicatedSize: -1}
+		for _, p := range d.Partitions {
+			s.ReplicationFactor = max(s.ReplicationFactor, len(p.Replicas))
+			if len(p.ISR) < len(p.Replicas) {
+				s.UnderReplicated++
+			}
+		}
+		all = append(all, s)
+	}
+
+	page := &TopicPage{Total: len(all)}
+
+	heavy := q.Sort == "messages" || q.Sort == "size"
+	if heavy {
+		c.topicStats(ctx, details, all)
+	}
+
+	sortTopics(all, q.Sort, q.Desc)
+
+	page.Topics = pageOf(all, q.Offset, q.Limit)
+
+	if !heavy {
+		c.topicStats(ctx, details, page.Topics)
+	}
+
+	return page, nil
+}
+
+// sortTopics orders by key, falling back to name so pages are stable.
+func sortTopics(ts []TopicSummary, key string, desc bool) {
+	sort.SliceStable(ts, func(i, j int) bool {
+		a, b := ts[i], ts[j]
+		var d int64
+		switch key {
+		case "partitions":
+			d = int64(a.Partitions - b.Partitions)
+		case "under_replicated":
+			d = int64(a.UnderReplicated - b.UnderReplicated)
+		case "messages":
+			d = a.Messages - b.Messages
+		case "size":
+			d = a.Size - b.Size
+		}
+		if desc {
+			d = -d
+		}
+		if d != 0 {
+			return d < 0
+		}
+		if key == "name" && desc {
+			return a.Name > b.Name
+		}
+		return a.Name < b.Name
+	})
+}
+
+// topicStats fills messages, sizes and cleanup policy for ts in place. The
+// four broker requests only cover these topics and run in parallel. Each is
+// best effort: a failed one leaves its fields at their zero or -1 values.
+func (c *Client) topicStats(ctx context.Context, details kadm.TopicDetails, ts []TopicSummary) {
+	if len(ts) == 0 {
+		return
+	}
+
+	names := make([]string, len(ts))
+	subset := make(kadm.TopicDetails, len(ts))
+	for i, t := range ts {
+		names[i] = t.Name
+		subset[t.Name] = details[t.Name]
+	}
+
+	var (
+		wg           sync.WaitGroup
+		starts, ends kadm.ListedOffsets
+		sizes        map[string][2]int64
+		configs      kadm.ResourceConfigs
+		configsErr   error
+	)
+	wg.Go(func() { starts, _ = c.admin.ListStartOffsets(ctx, names...) })
+	wg.Go(func() { ends, _ = c.admin.ListEndOffsets(ctx, names...) })
+	wg.Go(func() { sizes = c.topicSizes(ctx, subset) })
+	wg.Go(func() { configs, configsErr = c.admin.DescribeTopicConfigs(ctx, names...) })
+	wg.Wait()
 
 	policies := map[string]string{}
-	if configs, err := c.admin.DescribeTopicConfigs(ctx, names...); err == nil {
+	if configsErr == nil {
 		for _, rc := range configs {
 			for _, cfg := range rc.Configs {
 				if cfg.Key == "cleanup.policy" && cfg.Value != nil {
@@ -193,40 +322,24 @@ func (c *Client) Topics(ctx context.Context) ([]TopicSummary, error) {
 		}
 	}
 
-	out := make([]TopicSummary, 0, len(names))
-	for _, name := range names {
-		d := details[name]
-		s := TopicSummary{
-			Name: name, Internal: d.IsInternal, Partitions: len(d.Partitions),
-			Size: -1, ReplicatedSize: -1, CleanupPolicy: policies[name],
-		}
+	for i := range ts {
+		s := &ts[i]
+		s.CleanupPolicy = policies[s.Name]
 
-		if sz, ok := sizes[name]; ok {
+		if sz, ok := sizes[s.Name]; ok {
 			s.Size, s.ReplicatedSize = sz[0], sz[1]
 		} else if sizes != nil {
 			s.Size, s.ReplicatedSize = 0, 0
 		}
 
-		for _, p := range d.Partitions {
-			if len(p.Replicas) > s.ReplicationFactor {
-				s.ReplicationFactor = len(p.Replicas)
-			}
-
-			if len(p.ISR) < len(p.Replicas) {
-				s.UnderReplicated++
-			}
-
-			start, okS := starts.Lookup(name, p.Partition)
-			end, okE := ends.Lookup(name, p.Partition)
+		for _, p := range details[s.Name].Partitions {
+			start, okS := starts.Lookup(s.Name, p.Partition)
+			end, okE := ends.Lookup(s.Name, p.Partition)
 			if okS && okE && start.Err == nil && end.Err == nil {
 				s.Messages += end.Offset - start.Offset
 			}
 		}
-
-		out = append(out, s)
 	}
-
-	return out, nil
 }
 
 type Partition struct {
@@ -403,63 +516,61 @@ type GroupSummary struct {
 	Topics       []string `json:"topics"`
 	Lag          int64    `json:"lag"`
 	Error        string   `json:"error,omitempty"`
+	// Unreadable lists topics whose lag is unknown because the console may
+	// not read their offsets. Lag counts the other topics only.
+	Unreadable []string `json:"unreadable,omitempty"`
 }
 
-func (c *Client) groupLags(ctx context.Context) (kadm.DescribedGroupLags, error) {
-	listed, err := c.admin.ListGroups(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("list groups; %w", err)
+// groupTopics maps each group to the topics it committed offsets for or is
+// assigned partitions of. It reads committed offsets and group descriptions
+// only, without listing any topic offsets, so it stays cheap on clusters
+// with many groups. Partial results are kept when some coordinators fail.
+func (c *Client) groupTopics(ctx context.Context, groups []string) map[string]map[string]bool {
+	out := make(map[string]map[string]bool, len(groups))
+	add := func(group, topic string) {
+		if out[group] == nil {
+			out[group] = map[string]bool{}
+		}
+		out[group][topic] = true
 	}
 
-	if len(listed) == 0 {
-		return kadm.DescribedGroupLags{}, nil
+	if len(groups) == 0 {
+		return out
 	}
 
-	return c.admin.Lag(ctx, listed.Groups()...)
+	for _, r := range c.admin.FetchManyOffsets(ctx, groups...) {
+		if r.Err != nil {
+			continue
+		}
+
+		for topic := range r.Fetched {
+			add(r.Group, topic)
+		}
+	}
+
+	described, _ := c.admin.DescribeGroups(ctx, groups...)
+	for _, g := range described {
+		for topic := range g.AssignedPartitions() {
+			add(g.Group, topic)
+		}
+	}
+
+	return out
 }
 
 // topicGroups names the groups that committed offsets for, or are assigned
-// partitions of, the topic. It reads committed offsets and group
-// descriptions only, without listing any topic offsets, so it stays cheap on
-// clusters with many groups.
+// partitions of, the topic.
 func (c *Client) topicGroups(ctx context.Context, topic string) ([]string, error) {
 	listed, err := c.admin.ListGroups(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list groups; %w", err)
 	}
 
-	names := listed.Groups()
-	if len(names) == 0 {
-		return []string{}, nil
-	}
-
-	found := map[string]bool{}
-
-	for _, r := range c.admin.FetchManyOffsets(ctx, names...) {
-		if r.Err != nil {
-			continue
+	out := []string{}
+	for group, topics := range c.groupTopics(ctx, listed.Groups()) {
+		if topics[topic] {
+			out = append(out, group)
 		}
-
-		if _, ok := r.Fetched[topic]; ok {
-			found[r.Group] = true
-		}
-	}
-
-	// Partial results are still useful when some coordinators fail.
-	described, _ := c.admin.DescribeGroups(ctx, names...)
-	for _, g := range described {
-		if found[g.Group] {
-			continue
-		}
-
-		if _, ok := g.AssignedPartitions()[topic]; ok {
-			found[g.Group] = true
-		}
-	}
-
-	out := make([]string, 0, len(found))
-	for g := range found {
-		out = append(out, g)
 	}
 
 	sort.Strings(out)
@@ -508,10 +619,94 @@ func (c *Client) Names(ctx context.Context) (*Names, error) {
 	return out, nil
 }
 
-func (c *Client) Groups(ctx context.Context) ([]GroupSummary, error) {
-	lags, err := c.groupLags(ctx)
+// GroupQuery selects one page of the group list. Lag is computed for the
+// returned page alone unless the list is sorted by lag, which needs every
+// matching group's lag first. A search also matches topic names, which
+// reads committed offsets (but no lag) of every group.
+type GroupQuery struct {
+	Search    string
+	SortByLag bool
+	Offset    int
+	// Limit is the page size; 0 returns every matching group.
+	Limit int
+}
+
+type GroupPage struct {
+	Groups []GroupSummary `json:"groups"`
+	// Total counts every group matching the search.
+	Total int `json:"total"`
+}
+
+func (c *Client) Groups(ctx context.Context, q GroupQuery) (*GroupPage, error) {
+	listed, err := c.admin.ListGroups(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list groups; %w", err)
+	}
+
+	names := listed.Groups()
+	sort.Strings(names)
+
+	if search := strings.ToLower(strings.TrimSpace(q.Search)); search != "" {
+		topics := c.groupTopics(ctx, names)
+		matched := names[:0]
+		for _, n := range names {
+			if strings.Contains(strings.ToLower(n), search) || anyContains(topics[n], search) {
+				matched = append(matched, n)
+			}
+		}
+		names = matched
+	}
+
+	page := &GroupPage{Total: len(names), Groups: []GroupSummary{}}
+
+	if !q.SortByLag {
+		names = pageOf(names, q.Offset, q.Limit)
+	}
+
+	summaries, err := c.groupSummaries(ctx, names)
 	if err != nil {
 		return nil, err
+	}
+
+	if q.SortByLag {
+		sort.SliceStable(summaries, func(i, j int) bool { return summaries[i].Lag > summaries[j].Lag })
+		summaries = pageOf(summaries, q.Offset, q.Limit)
+	}
+
+	page.Groups = summaries
+
+	return page, nil
+}
+
+// pageOf returns the window of s starting at offset; limit 0 means no end.
+func pageOf[T any](s []T, offset, limit int) []T {
+	start := min(max(offset, 0), len(s))
+	end := len(s)
+	if limit > 0 {
+		end = min(start+limit, len(s))
+	}
+
+	return s[start:end]
+}
+
+func anyContains(set map[string]bool, sub string) bool {
+	for s := range set {
+		if strings.Contains(strings.ToLower(s), sub) {
+			return true
+		}
+	}
+	return false
+}
+
+// groupSummaries describes the groups and computes their lag, in name order.
+func (c *Client) groupSummaries(ctx context.Context, names []string) ([]GroupSummary, error) {
+	if len(names) == 0 {
+		return []GroupSummary{}, nil
+	}
+
+	lags, err := c.groupLag(ctx, names...)
+	if err != nil {
+		return nil, fmt.Errorf("group lag; %w", err)
 	}
 
 	out := make([]GroupSummary, 0, len(lags))
@@ -534,11 +729,29 @@ func (c *Client) Groups(ctx context.Context) ([]GroupSummary, error) {
 
 		sort.Strings(s.Topics)
 		s.Lag = positiveLag(l.Lag)
+		s.Unreadable = unreadable(l.Lag)
 
 		out = append(out, s)
 	}
 
 	return out, nil
+}
+
+// unreadable names the topics whose lag failed for lack of access.
+func unreadable(l kadm.GroupLag) []string {
+	var out []string
+	for topic, ps := range l {
+		for _, p := range ps {
+			if errors.Is(p.Err, ErrNoTopicAccess) {
+				out = append(out, topic)
+				break
+			}
+		}
+	}
+
+	sort.Strings(out)
+
+	return out
 }
 
 type Member struct {
@@ -559,6 +772,8 @@ type PartitionLag struct {
 	ClientID  string `json:"client_id,omitempty"`
 	Host      string `json:"host,omitempty"`
 	Error     string `json:"error,omitempty"`
+	// NoAccess is set when the console may not read this topic's offsets.
+	NoAccess bool `json:"no_access,omitempty"`
 }
 
 type GroupDetail struct {
@@ -573,7 +788,7 @@ type GroupDetail struct {
 }
 
 func (c *Client) Group(ctx context.Context, name string) (*GroupDetail, error) {
-	lags, err := c.admin.Lag(ctx, name)
+	lags, err := c.groupLag(ctx, name)
 	if err != nil {
 		return nil, fmt.Errorf("describe group; %w", err)
 	}
@@ -622,6 +837,7 @@ func (c *Client) Group(ctx context.Context, name string) (*GroupDetail, error) {
 
 		if p.Err != nil {
 			pl.Error = p.Err.Error()
+			pl.NoAccess = errors.Is(p.Err, ErrNoTopicAccess)
 		}
 
 		out.Partitions = append(out.Partitions, pl)
@@ -653,7 +869,7 @@ func (c *Client) TopicConsumers(ctx context.Context, topic string) ([]TopicConsu
 
 	// Lag only for the groups on this topic: computing it for every group
 	// would list offsets of every topic any group reads.
-	lags, err := c.admin.Lag(ctx, groups...)
+	lags, err := c.groupLag(ctx, groups...)
 	if err != nil {
 		return nil, fmt.Errorf("group lag; %w", err)
 	}
@@ -689,6 +905,7 @@ func (c *Client) TopicConsumers(ctx context.Context, topic string) ([]TopicConsu
 
 			if p.Err != nil {
 				pl.Error = p.Err.Error()
+				pl.NoAccess = errors.Is(p.Err, ErrNoTopicAccess)
 			}
 
 			if p.Lag > 0 {

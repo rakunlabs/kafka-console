@@ -346,7 +346,7 @@
       {#if error}<div class="error">{error}</div>{/if}
       {#if invalid}<p class="error" role="alert">{invalid}</p>{/if}
 
-      <div class="row">
+      <div class="row submit">
         {#if cluster.production}<span class="prodnote">You are producing to a production cluster.</span>{/if}
         <span class="spacer"></span>
         <button class="primary" type="submit" disabled={busy || !!invalid}><Send size={14} />{busy ? 'Sending…' : source ? 'Review & send' : 'Send'}</button>
@@ -431,6 +431,24 @@
   .schemainfo { align-self: end; padding-bottom: 7px; font-size: 12px; }
   .small-hint { font-size: 12px; margin-top: -4px; }
   .ed-loading { height: 252px; border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--surface-2); }
-  @media (max-width: 1000px) { .layout { grid-template-columns: 1fr; } }
-  @media (max-width: 560px) { .grid, .comparison { grid-template-columns: 1fr; } .hrow { flex-wrap: wrap; } .keybox > input { min-width: 0; } }
+  @media (max-width: 1000px) { .layout { grid-template-columns: minmax(0, 1fr); } }
+  @media (max-width: 560px) { .grid, .comparison { grid-template-columns: minmax(0, 1fr); } .hrow { flex-wrap: wrap; } .keybox > input { min-width: 0; } }
+  @media (max-width: 639.98px) {
+    .form { padding: 12px; }
+    .field > .row { flex-wrap: wrap; row-gap: 2px; }
+    .hrow input { flex-basis: calc(50% - 30px); }
+    /* The send bar stays in reach while the value editor scrolls past. */
+    .submit {
+      position: sticky;
+      bottom: 0;
+      z-index: 2;
+      flex-wrap: wrap;
+      margin: 0 -12px -12px;
+      padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
+      background: var(--surface);
+      border-top: 1px solid var(--border);
+    }
+    .submit .spacer { display: none; }
+    .submit button { flex: 1 1 100%; justify-content: center; padding-block: 9px; }
+  }
 </style>

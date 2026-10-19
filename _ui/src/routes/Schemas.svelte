@@ -1,44 +1,40 @@
 <script lang="ts">
-  import { api, type Cluster, type RegistryOverview } from '../lib/api'
+  import { untrack } from 'svelte'
+  import { api, type Cluster, type RegistryOverview, type RegistryQuery, type SubjectSummary } from '../lib/api'
+  import { fmt } from '../lib/format'
   import { href, go } from '../lib/router.svelte'
   import Modal from '../lib/Modal.svelte'
   import SchemaEditor from '../lib/SchemaEditor.svelte'
-  import MoreRows from '../lib/MoreRows.svelte'
-  import { RefreshCw, Plus } from '@lucide/svelte'
+  import MorePages from '../lib/MorePages.svelte'
+  import RefreshStop from '../lib/RefreshStop.svelte'
+  import { paged } from '../lib/paged.svelte'
+  import { cached, remember } from '../lib/cache'
+  import { Plus } from '@lucide/svelte'
 
   let { cluster }: { cluster: Cluster } = $props()
 
-  let data = $state<RegistryOverview>()
-  let error = $state('')
-  let loading = $state(false)
   let search = $state('')
   let showDeleted = $state(false)
   let typeFilter = $state('')
 
-  async function load() {
-    loading = true
-    error = ''
-    try {
-      data = await api.registry(cluster.name, showDeleted)
-    } catch (e: any) {
-      error = e.message
-    } finally {
-      loading = false
-    }
-  }
-  load()
+  // The page remounts per cluster ({#key} in App), so the first value is the one.
+  const name = untrack(() => cluster.name)
+  // Mode, compatibility and types come with every page; the latest wins.
+  const infoKey = `registry-info:${name}`
+  let info = $state<Omit<RegistryOverview, 'subjects' | 'total'> | undefined>(cached(infoKey))
 
-  const rows = $derived.by(() => {
-    const q = search.trim().toLowerCase()
-    return (data?.subjects ?? []).filter((s) => (!q || s.name.toLowerCase().includes(q)) && (!typeFilter || s.type === typeFilter))
+  const list = paged<SubjectSummary, RegistryQuery>({
+    key: `schemas:${name}`,
+    query: () => ({ q: search.trim(), type: typeFilter, deleted: showDeleted }),
+    fetch: async (q, offset, limit) => {
+      const { subjects, total, ...rest } = await api.registry(name, { ...q, offset, limit })
+      info = remember(infoKey, rest)
+      return { items: subjects, total }
+    },
+    id: (s) => s.name,
+    cacheable: () => !search.trim() && !typeFilter && !showDeleted,
   })
-
-  const page = 200
-  let shown = $state(page)
-  $effect(() => {
-    void search, typeFilter
-    shown = page
-  })
+  list.watch(() => search)
 
   const levels = ['NONE', 'BACKWARD', 'BACKWARD_TRANSITIVE', 'FORWARD', 'FORWARD_TRANSITIVE', 'FULL', 'FULL_TRANSITIVE']
 
@@ -53,7 +49,7 @@
     try {
       await api.setGlobalCompatibility(cluster.name, compatLevel)
       compatOpen = false
-      load()
+      list.load(true)
     } catch (e: any) {
       compatError = e.message
     } finally {
@@ -66,37 +62,37 @@
 
 <div class="head">
   <h1>Schema Registry</h1>
-  <span class="faint">{rows.length}</span>
+  <span class="faint">{fmt(list.total)}</span>
   <span class="spacer"></span>
-  <button onclick={load} disabled={loading}><RefreshCw size={14} class={loading ? 'animate-spin' : ''} />Refresh</button>
-  <button class="primary" disabled={cluster.read_only || !data} onclick={() => (creating = true)}><Plus size={14} />Create schema</button>
+  <RefreshStop loading={list.loading} onrefresh={() => list.load(true)} onstop={list.stop} />
+  <button class="primary" disabled={cluster.read_only || !info} onclick={() => (creating = true)}><Plus size={14} />Create schema</button>
 </div>
 
-{#if error}
-  <div class="error">{error}</div>
-{:else if data}
+{#if list.error}
+  <div class="error">{list.error}</div>
+{:else if info}
   <div class="summary">
-    <span>Global compatibility <b>{data.compatibility || '—'}</b>
-      {#if !cluster.read_only}<button class="ghost small" onclick={() => { compatLevel = data?.compatibility ?? 'BACKWARD'; compatError = ''; compatOpen = true }}>Change</button>{/if}
+    <span>Global compatibility <b>{info.compatibility || '—'}</b>
+      {#if !cluster.read_only}<button class="ghost small" onclick={() => { compatLevel = info?.compatibility ?? 'BACKWARD'; compatError = ''; compatOpen = true }}>Change</button>{/if}
     </span>
-    <span>Mode <b>{data.mode || '—'}</b></span>
-    <span>Types <b>{data.types.join(', ')}</b></span>
+    <span>Mode <b>{info.mode || '—'}</b></span>
+    <span>Types <b>{info.types.join(', ')}</b></span>
   </div>
 
   <div class="filters">
     <input type="search" placeholder="Search subjects…" bind:value={search} />
-    <select bind:value={typeFilter}>
+    <select bind:value={typeFilter} title="Filtering by type reads every subject's latest schema; slower on large registries">
       <option value="">All types</option>
-      {#each data.types as t (t)}<option value={t}>{t}</option>{/each}
+      {#each info.types as t (t)}<option value={t}>{t}</option>{/each}
     </select>
-    <label class="check"><input type="checkbox" bind:checked={showDeleted} onchange={load} /> Show deleted</label>
+    <label class="check"><input type="checkbox" bind:checked={showDeleted} /> Show deleted</label>
   </div>
 
-  <div class="panel">
+  <div class="panel" class:stale={list.loading && list.items.length > 0}>
     <table>
       <thead><tr><th>Subject</th><th>Type</th><th class="num">Latest version</th><th class="num">Versions</th><th class="num">ID</th><th>Compatibility</th></tr></thead>
       <tbody>
-        {#each rows.slice(0, shown) as s (s.name)}
+        {#each list.items as s (s.name)}
           <tr class:deleted={s.deleted}>
             <td>
               <a class="mono" href={href(cluster.name, 'schemas', s.name)}>{s.name}</a>
@@ -109,11 +105,11 @@
             <td class="faint small">{s.compatibility ?? '—'}</td>
           </tr>
         {:else}
-          <tr><td colspan="6" class="empty">{loading ? 'Loading…' : search ? 'No subjects match your search.' : 'No schemas registered.'}</td></tr>
+          <tr><td colspan="6" class="empty">{list.loading ? 'Loading…' : search.trim() || typeFilter ? 'No subjects match your filters.' : 'No schemas registered.'}</td></tr>
         {/each}
       </tbody>
     </table>
-    <MoreRows total={rows.length} bind:shown step={page} />
+    <MorePages shown={list.items.length} total={list.total} step={list.size} busy={list.more || list.loading} onmore={list.loadMore} />
   </div>
 {:else}
   <div class="empty">Loading…</div>
@@ -131,7 +127,7 @@
   {/snippet}
 </Modal>
 
-<SchemaEditor {cluster} bind:open={creating} types={data?.types ?? []} onsaved={(subject) => go(cluster.name, 'schemas', subject)} />
+<SchemaEditor {cluster} bind:open={creating} types={info?.types ?? []} onsaved={(subject) => go(cluster.name, 'schemas', subject)} />
 
 <style>
   button.small { padding: 1px 6px; }

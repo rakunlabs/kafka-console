@@ -302,3 +302,49 @@ func (t mcpBearerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	r.Header.Set("Authorization", "Bearer "+t.token)
 	return http.DefaultTransport.RoundTrip(r)
 }
+
+func TestMCPFeaturesWithholdTools(t *testing.T) {
+	off := false
+	cfg := &config.Config{
+		Clusters: map[string]*config.Cluster{"local": {Brokers: []string{"localhost:1"}}},
+		Features: config.Features{CreateTopic: &off, DeleteGroup: &off},
+		MCP:      config.MCP{Enabled: true, AllowWrites: true},
+	}
+	server := ada.New()
+	registry, err := kafka.NewRegistry(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer registry.Close()
+	// Registration validates tool names, so this also proves every name the
+	// feature map switches off is a real tool.
+	if err := mountMCP(server, cfg, registry); err != nil {
+		t.Fatal(err)
+	}
+	host := httptest.NewServer(server)
+	defer host.Close()
+	client := mcp.NewClient(&mcp.Implementation{Name: "console-test", Version: "1"}, nil)
+	session, err := client.Connect(t.Context(), &mcp.StreamableClientTransport{Endpoint: host.URL + "/mcp/local"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close() //nolint:errcheck // test cleanup
+	listed, err := session.ListTools(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, tool := range listed.Tools {
+		seen[tool.Name] = true
+	}
+	for _, name := range []string{"create_topic", "delete_consumer_group"} {
+		if seen[name] {
+			t.Errorf("%s advertised while its feature is off", name)
+		}
+	}
+	for _, name := range []string{"delete_topic", "list_acls"} {
+		if !seen[name] {
+			t.Errorf("%s missing while its feature is on", name)
+		}
+	}
+}

@@ -5,9 +5,10 @@
   import PartitionOffsets from '../lib/PartitionOffsets.svelte'
   import Modal from '../lib/Modal.svelte'
   import { forgetNames } from '../lib/names'
-  import { RefreshCw, Trash2, RotateCcw, Plus } from '@lucide/svelte'
+  import { RefreshCw, Trash2, RotateCcw, Plus, Lock } from '@lucide/svelte'
   import GroupTopicDialog from '../lib/GroupTopicDialog.svelte'
   import LagEta from '../lib/LagEta.svelte'
+  import { app } from '../lib/features.svelte'
   import MoreRows from '../lib/MoreRows.svelte'
 
   let { cluster, name }: { cluster: Cluster; name: string } = $props()
@@ -158,9 +159,11 @@
   <span class="spacer"></span>
   <button onclick={load} disabled={loading}><RefreshCw size={14} class={loading ? 'animate-spin' : ''} />Refresh</button>
   <button disabled={cluster.read_only || !data} title={cluster.read_only ? 'This cluster is read-only' : ''} onclick={() => (addingTopic = true)}><Plus size={14} />Add topic</button>
-  <button class="danger" disabled={cluster.read_only || !data || data.members.length > 0}
-    title={data && data.members.length > 0 ? 'Cannot delete a group with active members' : ''}
-    onclick={() => { deleteError = ''; deleting = true }}><Trash2 size={14} />Delete group</button>
+  {#if app.features.delete_group}
+    <button class="danger" disabled={cluster.read_only || !data || data.members.length > 0}
+      title={data && data.members.length > 0 ? 'Cannot delete a group with active members' : ''}
+      onclick={() => { deleteError = ''; deleting = true }}><Trash2 size={14} />Delete group</button>
+  {/if}
 </div>
 
 {#if error}
@@ -177,17 +180,29 @@
   </div>
 
   {#each byTopic.slice(0, shownTopics) as t (t.topic)}
+    {@const denied = t.rows.every((r) => r.no_access)}
     <div class="thead">
       <h2><a class="mono" href={href(cluster.name, 'topics', t.topic)}>{t.topic}</a></h2>
-      <span class="faint">lag {fmt(t.rows.reduce((s, r) => s + Math.max(r.lag, 0), 0))}</span>
-      {#if t.rows.some((r) => r.lag > 0) && byTopic.length > 1}<LagEta read={() => reading(t.topic)} />{/if}
+      {#if denied}
+        <span class="badge gap-1"><Lock size={11} />no access</span>
+      {:else}
+        <span class="faint">lag {fmt(t.rows.reduce((s, r) => s + Math.max(r.lag, 0), 0))}</span>
+        {#if t.rows.some((r) => r.lag > 0) && byTopic.length > 1}<LagEta read={() => reading(t.topic)} />{/if}
+      {/if}
       <span class="spacer"></span>
-      <button disabled={cluster.read_only} onclick={() => openReset(t.topic)}><RotateCcw size={14} />Reset all partitions…</button>
+      <button disabled={cluster.read_only || denied} title={denied ? 'No permission to read this topic' : ''} onclick={() => openReset(t.topic)}><RotateCcw size={14} />Reset all partitions…</button>
       <button class="danger" disabled={cluster.read_only || (data?.members.length ?? 0) > 0}
         title={(data?.members.length ?? 0) > 0 ? 'Cannot delete offsets for a group with active members' : 'Deletes committed offsets for this topic'}
         onclick={() => { dropError = ''; dropTopic = t.topic; dropping = true }}>Delete offsets</button>
     </div>
-    <PartitionOffsets {cluster} group={name} topic={t.topic} rows={t.rows} activeMembers={data.members.length} showLow onchanged={load} />
+    {#if denied}
+      <div class="panel noaccess">
+        The console's credentials may not read <b class="mono">{t.topic}</b>, so its offsets and lag are unknown.
+        This group reads it on {t.rows.length === 1 ? '1 partition' : `${t.rows.length} partitions`}. Total lag above leaves it out.
+      </div>
+    {:else}
+      <PartitionOffsets {cluster} group={name} topic={t.topic} rows={t.rows} activeMembers={data.members.length} showLow onchanged={load} />
+    {/if}
   {:else}
     <div class="panel empty">
       This group has no committed offsets.
@@ -287,6 +302,7 @@
 
 <style>
   .thead { display: flex; align-items: center; gap: 10px; margin: 18px 0 8px; }
+  .noaccess { padding: 12px 14px; font-size: 13px; color: var(--text-2); }
   .mtop { margin: 24px 0 8px; }
   .lagnum { background: var(--sel); padding: 0 4px; }
   .plan { max-height: 260px; overflow: auto; }

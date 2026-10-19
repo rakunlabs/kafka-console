@@ -167,6 +167,7 @@
 
 <style>
   .grid { display: grid; grid-template-columns: 2fr 1fr; gap: 12px; }
+  @media (max-width: 640px) { .grid { grid-template-columns: minmax(0, 1fr); } }
   .lbl { font-size: 12px; font-weight: 500; color: var(--text-2); }
   .ref { margin-top: 6px; }
   .field { display: grid; gap: 4px; }

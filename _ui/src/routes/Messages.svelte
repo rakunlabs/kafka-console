@@ -1,14 +1,16 @@
 <script lang="ts">
   import { onDestroy } from 'svelte'
-  import { api, tail, type Cluster, type ConsumeResult, type Message } from '../lib/api'
+  import { api, tail, isAbort, withSignal, type Cluster, type ConsumeResult, type Message } from '../lib/api'
   import { fmt, time } from '../lib/format'
   import ValueView from '../lib/ValueView.svelte'
   import ResendDialog from '../lib/ResendDialog.svelte'
   import ReplayDialog from '../lib/ReplayDialog.svelte'
   import ImportDialog from '../lib/ImportDialog.svelte'
   import { messageDraft } from '../lib/produce'
+  import { narrow } from '../lib/media.svelte'
+  import Overflow from '../lib/Overflow.svelte'
   import { Pencil } from '@lucide/svelte'
-  import { Play, Pause, Square, Radio, Download, Copy, Check, ChevronUp, ChevronDown, Plus, Minus, ChevronsUpDown, ChevronsDownUp, Repeat, X, Code, Binary, Search, Upload, History } from '@lucide/svelte'
+  import { Play, Pause, Square, Radio, Download, Copy, Check, ChevronUp, ChevronDown, Plus, Minus, ChevronsUpDown, ChevronsDownUp, Repeat, X, Code, Binary, Search, Upload, History, Loader } from '@lucide/svelte'
 
   let { cluster, topic, partitions, onedit }: { cluster: Cluster; topic: string; partitions: number[]; onedit: (message: Message) => void } = $props()
 
@@ -50,13 +52,17 @@
   let loading = $state(false)
   let error = $state('')
   let selected = $state<Message>()
+  // The read in flight. A new Fetch or Stop aborts it, on the server too.
+  let reading: AbortController | undefined
 
   async function load() {
+    reading?.abort()
+    const ctl = (reading = new AbortController())
     searched = search.trim()
     loading = true
     error = ''
     try {
-      result = await api.messages(cluster.name, topic, {
+      result = await withSignal(ctl.signal, () => api.messages(cluster.name, topic, {
         start,
         partitions: partition,
         offset: start === 'offset' ? offset : undefined,
@@ -66,18 +72,31 @@
         filter: showFilter ? filter : undefined,
         q: search.trim() || undefined,
         raw,
-      })
+      }))
       selected = undefined
       expanded = new Set()
       picked = new Set()
     } catch (e: any) {
-      error = e.message
-      result = undefined
+      // A stopped read keeps whatever was shown before it.
+      if (!isAbort(e)) {
+        error = e.message
+        result = undefined
+      }
     } finally {
-      loading = false
+      if (reading === ctl) {
+        reading = undefined
+        loading = false
+      }
     }
   }
   load()
+  onDestroy(() => reading?.abort())
+
+  function stopReading() {
+    reading?.abort()
+    reading = undefined
+    loading = false
+  }
 
   // Rows that arrived over live tail. They flash once when inserted; the set
   // is not reactive on purpose, it is only read as each row is created.
@@ -274,12 +293,33 @@
     }
   }
   function onkey(e: KeyboardEvent) {
+    // Esc stops a running read wherever focus is, even in the search box.
+    if (e.key === 'Escape' && loading && !resending && !replaying && !importing) {
+      e.preventDefault()
+      stopReading()
+      return
+    }
     const t = e.target as HTMLElement
     if (resending || replaying || importing || t.closest('input, textarea, select, [contenteditable], dialog') || e.metaKey || e.ctrlKey || e.altKey) return
     if (e.key === 'j' || e.key === 'ArrowDown') { e.preventDefault(); step(1) }
     else if (e.key === 'k' || e.key === 'ArrowUp') { e.preventDefault(); step(-1) }
     else if (e.key === 'Escape') selected = undefined
   }
+
+  // On phones the detail is a full-screen sheet; the page behind must not
+  // scroll with it, and the app header (a separate stacking layer) steps
+  // aside so the sheet can cover the whole screen.
+  const sheet = $derived(narrow.matches && !!selected)
+  $effect(() => {
+    const html = document.documentElement
+    html.style.overflow = sheet ? 'hidden' : ''
+    html.classList.toggle('sheet-open', sheet)
+    return () => {
+      html.style.overflow = ''
+      html.classList.remove('sheet-open')
+    }
+  })
+  const cols = $derived((cluster.read_only ? 0 : 1) + (narrow.matches ? 3 : 6))
 </script>
 
 <svelte:window onkeydown={onkey} />
@@ -340,10 +380,13 @@
     {#if live}
       <button type="button" onclick={() => (paused = !paused)}>{#if paused}<Play size={14} />Resume{:else}<Pause size={14} />Pause{/if}</button>
       <button type="button" class="danger" onclick={stopLive}><Square size={13} />Stop</button>
+    {:else if loading}
+      <button type="button" class="danger" onclick={stopReading} title="Stop reading; the server stops scanning too (Esc)"><Square size={13} />Stop</button>
+      <button class="primary" type="submit" disabled><Loader size={14} class="animate-spin" />Reading…</button>
     {:else}
-      <button type="button" onclick={startLive} disabled={loading}
+      <button type="button" onclick={startLive}
         title={start === 'newest' ? 'Watch new messages as they arrive' : 'Read from the selected start and keep following'}><Radio size={14} />Live tail</button>
-      <button class="primary" type="submit" disabled={loading}><Play size={14} />{loading ? 'Reading…' : 'Fetch'}</button>
+      <button class="primary" type="submit"><Play size={14} />Fetch</button>
     {/if}
   </div>
 
@@ -388,13 +431,22 @@
         <button class="primary small" disabled={cluster.read_only} onclick={() => resend(pickedMessages)}><Repeat size={13} />Resend…</button>
       </span>
     {/if}
-    {#if !cluster.read_only}
-      <button class="ghost small" onclick={() => (replaying = true)} title="Copy a range of this topic to another topic or back into it"><History size={13} />Replay range…</button>
-      <button class="ghost small" onclick={() => (importing = true)} title="Write records from a JSON, CSV or text file"><Upload size={13} />Import…</button>
-    {/if}
-    {#if result.messages.length}
-      <button class="ghost small" onclick={() => exportMessages('json')}><Download size={13} />JSON</button>
-      <button class="ghost small" onclick={() => exportMessages('csv')}><Download size={13} />CSV</button>
+    {#if !cluster.read_only || result.messages.length}
+      {#snippet tools()}
+        {#if !cluster.read_only}
+          <button class="ghost small" onclick={() => (replaying = true)} title="Copy a range of this topic to another topic or back into it"><History size={13} />Replay range…</button>
+          <button class="ghost small" onclick={() => (importing = true)} title="Write records from a JSON, CSV or text file"><Upload size={13} />Import…</button>
+        {/if}
+        {#if result?.messages.length}
+          <button class="ghost small" onclick={() => exportMessages('json')}><Download size={13} />{narrow.matches ? 'Export JSON' : 'JSON'}</button>
+          <button class="ghost small" onclick={() => exportMessages('csv')}><Download size={13} />{narrow.matches ? 'Export CSV' : 'CSV'}</button>
+        {/if}
+      {/snippet}
+      {#if narrow.matches}
+        <Overflow label="Message tools">{@render tools()}</Overflow>
+      {:else}
+        {@render tools()}
+      {/if}
     {/if}
   </div>
 
@@ -402,8 +454,13 @@
     <div class="panel list">
       <table class="manual">
         <colgroup>
-          {#if !cluster.read_only}<col style:width="34px" />{/if}<col style:width="40px" /><col style:width="44px" /><col style:width="84px" /><col style:width="200px" />
-          <col style:width={selected ? '120px' : '170px'} /><col />
+          {#if !cluster.read_only}<col style:width="34px" />{/if}
+          {#if narrow.matches}
+            <col />
+          {:else}
+            <col style:width="40px" /><col style:width="44px" /><col style:width="84px" /><col style:width="200px" />
+            <col style:width={selected ? '120px' : '170px'} /><col />
+          {/if}
         </colgroup>
         <thead>
           <tr>
@@ -411,19 +468,23 @@
               <th class="pk"><input type="checkbox" checked={allPicked} indeterminate={picked.size > 0 && !allPicked}
                 disabled={!result.messages.length} onchange={pickAll} aria-label="Select all messages" /></th>
             {/if}
-            <th class="tog">
-              {#if result.messages.length}
-                <button type="button" class="ghost xbtn" onclick={toggleAll} title={allOpen ? 'Collapse all' : 'Expand all'} aria-label={allOpen ? 'Collapse all' : 'Expand all'}>
-                  {#if allOpen}<ChevronsDownUp size={13} />{:else}<ChevronsUpDown size={13} />{/if}
-                </button>
-              {/if}
-            </th>
-            <th class="num">P</th><th class="num">Offset</th><th>Time</th><th>Key</th><th>Value</th>
+            {#if narrow.matches}
+              <th>Message</th>
+            {:else}
+              <th class="tog">
+                {#if result.messages.length}
+                  <button type="button" class="ghost xbtn" onclick={toggleAll} title={allOpen ? 'Collapse all' : 'Expand all'} aria-label={allOpen ? 'Collapse all' : 'Expand all'}>
+                    {#if allOpen}<ChevronsDownUp size={13} />{:else}<ChevronsUpDown size={13} />{/if}
+                  </button>
+                {/if}
+              </th>
+              <th class="num">P</th><th class="num">Offset</th><th>Time</th><th>Key</th><th>Value</th>
+            {/if}
           </tr>
         </thead>
         <tbody>
           {#each result.messages as m, i (mkey(m))}
-            {@const open = expanded.has(mkey(m))}
+            {@const open = !narrow.matches && expanded.has(mkey(m))}
             {@const k = hit(m.key ?? '—')}
             {@const v = hit(preview(m))}
             <tr id="m-{m.partition}-{m.offset}" class:alt={i % 2 === 1} class:sel={selected === m} class:bad={!!m.decode_error} class:opened={open} class:picked={picked.has(mkey(m))} onclick={() => (selected = m)} use:arrived={mkey(m)}>
@@ -431,18 +492,29 @@
                 <td class="pk"><input type="checkbox" checked={picked.has(mkey(m))} onclick={(e) => e.stopPropagation()}
                   onchange={() => pick(m)} aria-label="Select message {m.partition}:{m.offset}" /></td>
               {/if}
-              <td class="tog">
-                <button type="button" class="xbtn" class:on={open} aria-expanded={open}
-                  aria-label={open ? 'Collapse message' : 'Expand message'}
-                  onclick={(e) => { e.stopPropagation(); toggle(m) }}>
-                  {#if open}<Minus size={12} strokeWidth={2.2} />{:else}<Plus size={12} strokeWidth={2.2} />{/if}
-                </button>
-              </td>
-              <td class="num mono">{m.partition}</td>
-              <td class="num mono">{m.offset}</td>
-              <td class="mono nowrap time">{time(m.timestamp)}</td>
-              <td class="mono key">{k[0]}{#if k[1]}<mark>{k[1]}</mark>{/if}{k[2]}</td>
-              <td class="mono val">{v[0]}{#if v[1]}<mark>{v[1]}</mark>{/if}{v[2]}</td>
+              {#if narrow.matches}
+                <td class="card">
+                  <div class="card-meta mono">
+                    <span>P{m.partition}</span><span>#{m.offset}</span>
+                    <span class="faint">{time(m.timestamp)}</span>
+                  </div>
+                  <div class="mono key">{k[0]}{#if k[1]}<mark>{k[1]}</mark>{/if}{k[2]}</div>
+                  <div class="mono val">{v[0]}{#if v[1]}<mark>{v[1]}</mark>{/if}{v[2]}</div>
+                </td>
+              {:else}
+                <td class="tog">
+                  <button type="button" class="xbtn" class:on={open} aria-expanded={open}
+                    aria-label={open ? 'Collapse message' : 'Expand message'}
+                    onclick={(e) => { e.stopPropagation(); toggle(m) }}>
+                    {#if open}<Minus size={12} strokeWidth={2.2} />{:else}<Plus size={12} strokeWidth={2.2} />{/if}
+                  </button>
+                </td>
+                <td class="num mono">{m.partition}</td>
+                <td class="num mono">{m.offset}</td>
+                <td class="mono nowrap time">{time(m.timestamp)}</td>
+                <td class="mono key">{k[0]}{#if k[1]}<mark>{k[1]}</mark>{/if}{k[2]}</td>
+                <td class="mono val">{v[0]}{#if v[1]}<mark>{v[1]}</mark>{/if}{v[2]}</td>
+              {/if}
             </tr>
             {#if open}
               <tr class="xrow" class:alt={i % 2 === 1} class:sel={selected === m}>
@@ -471,14 +543,15 @@
               </tr>
             {/if}
           {:else}
-            <tr><td colspan={cluster.read_only ? 6 : 7} class="empty">{live ? 'Waiting for new messages…' : 'No messages found.'}</td></tr>
+            <tr><td colspan={cols} class="empty">{live ? 'Waiting for new messages…' : 'No messages found.'}</td></tr>
           {/each}
         </tbody>
       </table>
     </div>
 
     {#if selected}
-      <div class="panel detail">
+      <div class="panel detail" class:sheet role={sheet ? 'dialog' : undefined} aria-modal={sheet ? 'true' : undefined}
+        aria-label={sheet ? `Message ${selected.partition}:${selected.offset}` : undefined}>
         <div class="dhead">
           <div class="grid">
             <b>Partition {selected.partition} · Offset {fmt(selected.offset)}</b>
@@ -487,11 +560,18 @@
           <span class="spacer"></span>
           <button class="ghost small" title="Previous (k)" aria-label="Previous message" onclick={() => step(-1)}><ChevronUp size={15} /></button>
           <button class="ghost small" title="Next (j)" aria-label="Next message" onclick={() => step(1)}><ChevronDown size={15} /></button>
-           {#if !cluster.read_only}
-             <button class="ghost small" disabled={editing} title="Open this message in Produce" onclick={() => selected && edit(selected)}><Pencil size={13} />{editing ? 'Loading…' : 'Edit & resend'}</button>
-             <button class="ghost small" title="Resend this message" onclick={() => selected && resend([selected])}><Repeat size={13} />Resend…</button>
-           {/if}
-          <button class="ghost small" title="Close (Esc)" onclick={() => (selected = undefined)}>Close</button>
+          {#snippet msgActions()}
+            {#if !cluster.read_only}
+              <button class="ghost small" disabled={editing} title="Open this message in Produce" onclick={() => selected && edit(selected)}><Pencil size={13} />{editing ? 'Loading…' : 'Edit & resend'}</button>
+              <button class="ghost small" title="Resend this message" onclick={() => selected && resend([selected])}><Repeat size={13} />Resend…</button>
+            {/if}
+          {/snippet}
+          {#if sheet && !cluster.read_only}
+            <Overflow label="Message actions">{@render msgActions()}</Overflow>
+          {:else}
+            {@render msgActions()}
+          {/if}
+          <button class="ghost small" title="Close (Esc)" aria-label="Close" onclick={() => (selected = undefined)}>{#if sheet}<X size={16} />{:else}Close{/if}</button>
         </div>
 
         {#if selected.decode_error}
@@ -617,6 +697,7 @@
   .err { color: var(--danger); font-size: 12px; }
   .split { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; align-items: start; }
   .split.open { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .list > table { min-width: 0; }
   .list { max-height: calc(100vh - 300px); overflow: auto; }
   .list table { table-layout: fixed; }
   .list tr { cursor: pointer; }
@@ -673,7 +754,49 @@
   .hdr { display: inline-flex; gap: 4px; font: 11.5px var(--mono); padding: 0 6px; border: 1px solid var(--border); border-radius: 2px; }
 
   @media (max-width: 1100px) {
-    .split.open { grid-template-columns: 1fr; }
+    .split.open { grid-template-columns: minmax(0, 1fr); }
     .detail { position: static; }
+  }
+
+  /* Phones. The field strip becomes a two-column grid with search on its own
+     row, the actions fill the width, rows are two-line cards, and the
+     selected message opens as a full-screen sheet. */
+  @media (max-width: 639.98px) {
+    .controls { gap: 8px; }
+    .fields { display: grid; grid-template-columns: 1fr 1fr; width: 100%; }
+    .f { height: 40px; min-width: 0; }
+    .f select, .f input:not([type='checkbox']) { height: 38px; min-width: 0; flex: 1; font-size: 16px; }
+    .search { grid-column: 1 / -1; min-width: 0; }
+    .switch { justify-content: center; }
+    .w-sm, .w-num { width: auto; }
+    .controls > .spacer { display: none; }
+    .actions { width: 100%; }
+    .actions > button { flex: 1; justify-content: center; padding-block: 8px; }
+    .hint .examples { display: none; }
+    .meta { gap: 6px; }
+    .pickbar { order: 1; width: 100%; margin: 0; justify-content: space-between; }
+
+    .list { max-height: none; overflow: visible; }
+    .card { display: grid; gap: 2px; min-width: 0; padding-block: 9px; }
+    .card-meta { display: flex; gap: 10px; font-size: 11.5px; color: var(--text-2); }
+    .card-meta .faint { margin-left: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .card .key { font-size: 12px; color: var(--text); }
+    .card .val { font-size: 12px; }
+    td.pk { padding-top: 12px; }
+
+    .detail.sheet {
+      position: fixed;
+      inset: 0;
+      z-index: 50;
+      max-height: none;
+      border: 0;
+      border-radius: 0;
+      overscroll-behavior: contain;
+      padding-bottom: env(safe-area-inset-bottom);
+    }
+    .sheet .dhead { padding: 10px 8px 10px 14px; flex-wrap: nowrap; }
+    .sheet .dhead .grid { min-width: 0; }
+    .sheet .dhead .grid > * { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .sheet .dhead button.small { padding: 6px 8px; }
   }
 </style>

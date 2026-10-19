@@ -34,9 +34,37 @@ type Config struct {
 	Info string `cfg:"info"`
 
 	Server   Server              `cfg:"server"`
+	Features Features            `cfg:"features"`
 	Clusters map[string]*Cluster `cfg:"clusters"`
 	MCP      MCP                 `cfg:"mcp"`
 }
+
+// Features switches parts of the console off with false; unset means on. A
+// feature that is off is gone from both the API and the UI, for example
+// when the console's credentials lack the ACL for it.
+type Features struct {
+	// Security is the ACL, SCRAM user and quota section.
+	Security *bool `cfg:"security"`
+	// CreateTopic allows creating topics.
+	CreateTopic *bool `cfg:"create_topic"`
+	// DeleteTopic allows deleting topics.
+	DeleteTopic *bool `cfg:"delete_topic"`
+	// AlterTopic allows changing topic configs and adding partitions.
+	AlterTopic *bool `cfg:"alter_topic"`
+	// DeleteRecords allows deleting records from the start of partitions.
+	DeleteRecords *bool `cfg:"delete_records"`
+	// DeleteGroup allows deleting consumer groups.
+	DeleteGroup *bool `cfg:"delete_group"`
+}
+
+func (f Features) SecurityEnabled() bool      { return enabled(f.Security) }
+func (f Features) CreateTopicEnabled() bool   { return enabled(f.CreateTopic) }
+func (f Features) DeleteTopicEnabled() bool   { return enabled(f.DeleteTopic) }
+func (f Features) AlterTopicEnabled() bool    { return enabled(f.AlterTopic) }
+func (f Features) DeleteRecordsEnabled() bool { return enabled(f.DeleteRecords) }
+func (f Features) DeleteGroupEnabled() bool   { return enabled(f.DeleteGroup) }
+
+func enabled(b *bool) bool { return b == nil || *b }
 
 // MCP is opt-in and read-only unless AllowWrites is explicitly enabled.
 // Cluster read_only remains a lower bound regardless of endpoint policy.

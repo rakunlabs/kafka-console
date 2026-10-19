@@ -474,4 +474,8 @@
   .presets { gap: 6px; }
   .field { display: grid; gap: 4px; }
   .chip { background: var(--surface-2); }
+  @media (max-width: 640px) {
+    .grid3 { grid-template-columns: minmax(0, 1fr); }
+    .ops { grid-template-columns: repeat(2, 1fr); }
+  }
 </style>

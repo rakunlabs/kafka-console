@@ -6,6 +6,20 @@ export type Cluster = {
   schema_registry: boolean
 }
 
+export type Features = {
+  security: boolean
+  create_topic: boolean
+  delete_topic: boolean
+  alter_topic: boolean
+  delete_records: boolean
+  delete_group: boolean
+}
+
+export type AppInfo = {
+  info: string
+  features: Features
+}
+
 export type Broker = {
   id: number
   host: string
@@ -60,6 +74,17 @@ export type TopicSummary = {
   size: number
   replicated_size: number
   cleanup_policy?: string
+}
+
+export type TopicPage = { topics: TopicSummary[]; total: number }
+
+export type TopicQuery = {
+  q?: string
+  internal?: boolean
+  sort?: 'name' | 'partitions' | 'messages' | 'size' | 'under_replicated'
+  desc?: boolean
+  offset?: number
+  limit?: number
 }
 
 export type Partition = {
@@ -139,7 +164,9 @@ export type SubjectSummary = {
   deleted: boolean
 }
 
-export type RegistryOverview = { mode: string; compatibility: string; types: string[]; subjects: SubjectSummary[] }
+export type RegistryOverview = { mode: string; compatibility: string; types: string[]; subjects: SubjectSummary[]; total: number }
+
+export type RegistryQuery = { q?: string; type?: string; deleted?: boolean; offset?: number; limit?: number }
 
 export type SchemaReference = { name: string; subject: string; version: number }
 
@@ -194,7 +221,12 @@ export type GroupSummary = {
   topics: string[]
   lag: number
   error?: string
+  unreadable?: string[]
 }
+
+export type GroupPage = { groups: GroupSummary[]; total: number }
+
+export type GroupQuery = { q?: string; sort?: 'name' | 'lag'; offset?: number; limit?: number }
 
 export type Member = { id: string; instance_id?: string; client_id: string; host: string }
 
@@ -209,6 +241,7 @@ export type PartitionLag = {
   client_id?: string
   host?: string
   error?: string
+  no_access?: boolean
 }
 
 export type GroupDetail = {
@@ -233,17 +266,76 @@ export type TopicConsumer = {
 
 export type ResetPlan = { partition: number; from: number; to: number; low: number; high: number }
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
-  // Relative: resolves against the page URL, so it follows the server base_path.
-  const res = await fetch(`api/v1${path}`, {
-    method,
-    headers: body === undefined ? undefined : { 'content-type': 'application/json' },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  })
+// Every read is tied to the page that started it. Navigating away aborts the
+// page's scope, so a slow listing or search the user left behind stops on
+// the server too (handlers pass the request context into Kafka).
+let pageScope = new AbortController()
+
+/** Abort every request of the current page and start a new scope. */
+export function leavePage() {
+  pageScope.abort(new DOMException('Left the page', 'AbortError'))
+  pageScope = new AbortController()
+}
+
+/** True for the error a fetch throws when its request was aborted. */
+export function isAbort(e: unknown): boolean {
+  return e instanceof DOMException && e.name === 'AbortError'
+}
+
+// Extra signal for the api.* calls started synchronously inside withSignal.
+let scoped: AbortSignal | undefined
+
+/**
+ * Bind the api.* calls that fn starts to signal, on top of the page scope,
+ * so one part of a page (a search, a list reload) can be cancelled on its
+ * own. Only calls made before fn's first await pick the signal up, so keep
+ * fn to a direct api call.
+ */
+export function withSignal<T>(signal: AbortSignal, fn: () => Promise<T>): Promise<T> {
+  const prev = scoped
+  scoped = signal
+  try {
+    return fn()
+  } finally {
+    scoped = prev
+  }
+}
+
+async function request<T>(method: string, path: string, body?: unknown, opts: { app?: boolean } = {}): Promise<T> {
+  // Reads belong to the page and stop with it. Writes are never aborted on
+  // navigation: the server may already be applying them, and the user would
+  // lose the result. App-wide reads (info, cluster list, names) outlive pages.
+  const page = method === 'GET' && !opts.app
+  const scope = pageScope.signal
+  const signals = [page ? scope : undefined, scoped].filter((s): s is AbortSignal => !!s)
+  const signal = signals.length > 1 ? AbortSignal.any(signals) : signals[0]
+  let res: Response
+  try {
+    // Relative: resolves against the page URL, so it follows the server base_path.
+    res = await fetch(`api/v1${path}`, {
+      method,
+      headers: body === undefined ? undefined : { 'content-type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal,
+    })
+  } catch (e) {
+    // Aborted because its page was left: the page is gone, so settle never.
+    // Its catch would only flash "aborted" over the next page, and its
+    // finally has nothing left to update. Other aborts (a Stop button, a
+    // newer search) reject normally so their own code can tell; see isAbort.
+    if (page && scope.aborted && isAbort(e)) return new Promise<T>(() => {})
+    throw e
+  }
 
   if (res.status === 204) return undefined as T
 
-  const text = await res.text()
+  let text: string
+  try {
+    text = await res.text()
+  } catch (e) {
+    if (page && scope.aborted && isAbort(e)) return new Promise<T>(() => {})
+    throw e
+  }
   let data: any = undefined
   try {
     data = text ? JSON.parse(text) : undefined
@@ -410,11 +502,12 @@ export const api = {
   importRecords: (c: string, t: string, body: ImportBody) =>
     request<ImportResult[]>('POST', `/clusters/${enc(c)}/topics/${enc(t)}/import`, body),
   checkFilter: (source: string) => request<{ problems: FilterProblem[] }>('POST', '/filter/check', { source }),
-  info: () => request<{ info: string }>('GET', '/info'),
-  clusters: () => request<Cluster[]>('GET', '/clusters'),
-  names: (c: string) => request<Names>('GET', `/clusters/${enc(c)}/names`),
+  info: () => request<AppInfo>('GET', '/info', undefined, { app: true }),
+  clusters: () => request<Cluster[]>('GET', '/clusters', undefined, { app: true }),
+  // Shared and cached across pages (⌘K, pickers), so not tied to one page.
+  names: (c: string) => request<Names>('GET', `/clusters/${enc(c)}/names`, undefined, { app: true }),
   overview: (c: string) => request<Overview>('GET', `/clusters/${enc(c)}/overview`),
-  topics: (c: string) => request<TopicSummary[]>('GET', `/clusters/${enc(c)}/topics`),
+  topics: (c: string, q: TopicQuery = {}) => request<TopicPage>('GET', `/clusters/${enc(c)}/topics?${query(q)}`),
   topic: (c: string, t: string) => request<TopicDetail>('GET', `/clusters/${enc(c)}/topics/${enc(t)}`),
   topicConsumers: (c: string, t: string) => request<TopicConsumer[]>('GET', `/clusters/${enc(c)}/topics/${enc(t)}/consumers`),
   createTopic: (c: string, body: { name: string; partitions: number; replication_factor: number; configs?: Record<string, string> }) =>
@@ -449,7 +542,7 @@ export const api = {
   alterQuota: (c: string, body: { entity: QuotaEntity[]; set?: Record<string, number>; remove?: string[] }) =>
     request<void>('POST', `/clusters/${enc(c)}/quotas`, body),
 
-  registry: (c: string, deleted = false) => request<RegistryOverview>('GET', `/clusters/${enc(c)}/schemas?${query({ deleted })}`),
+  registry: (c: string, q: RegistryQuery = {}) => request<RegistryOverview>('GET', `/clusters/${enc(c)}/schemas?${query(q)}`),
   subject: (c: string, s: string) => request<SubjectDetail>('GET', `/clusters/${enc(c)}/schemas/subjects/${enc(s)}`),
   createSchema: (c: string, body: { subject: string; type: string; schema: string; references?: SchemaReference[]; normalize?: boolean }) =>
     request<SchemaVersion>('POST', `/clusters/${enc(c)}/schemas`, body),
@@ -463,7 +556,7 @@ export const api = {
     request<void>('DELETE', `/clusters/${enc(c)}/schemas/subjects/${enc(s)}?${query({ permanent })}`),
   deleteSchemaVersion: (c: string, s: string, v: number, permanent: boolean) =>
     request<void>('DELETE', `/clusters/${enc(c)}/schemas/subjects/${enc(s)}/versions/${v}?${query({ permanent })}`),
-  groups: (c: string) => request<GroupSummary[]>('GET', `/clusters/${enc(c)}/groups`),
+  groups: (c: string, q: GroupQuery = {}) => request<GroupPage>('GET', `/clusters/${enc(c)}/groups?${query(q)}`),
   group: (c: string, g: string) => request<GroupDetail>('GET', `/clusters/${enc(c)}/groups/${enc(g)}`),
   createGroup: (c: string, body: { group: string; topic: string; offsets: { partition: number; offset: number }[] }) =>
     request<ResetPlan[]>('POST', `/clusters/${enc(c)}/groups`, body),

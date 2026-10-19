@@ -1,6 +1,8 @@
 <script lang="ts">
   import { api, type Cluster } from './lib/api'
+  import { app } from './lib/features.svelte'
   import { router, href, go } from './lib/router.svelte'
+  import { wide } from './lib/media.svelte'
   import Overview from './routes/Overview.svelte'
   import Topics from './routes/Topics.svelte'
   import Topic from './routes/Topic.svelte'
@@ -22,6 +24,7 @@
     ChevronsUpDown,
     Lock,
     TriangleAlert,
+    Menu,
     Sun,
     Moon,
     Monitor,
@@ -30,8 +33,6 @@
 
   let clusters = $state<Cluster[]>([])
   let error = $state('')
-  let info = $state('')
-  api.info().then((r) => (info = r.info)).catch(() => {})
 
   api
     .clusters()
@@ -49,7 +50,7 @@
     { section: 'topics', label: 'Topics', icon: Rows3 },
     { section: 'groups', label: 'Consumer groups', icon: Users },
     ...(current?.schema_registry ? [{ section: 'schemas', label: 'Schema Registry', icon: Braces }] : []),
-    { section: 'security', label: 'Security', icon: ShieldCheck },
+    ...(app.features.security ? [{ section: 'security', label: 'Security', icon: ShieldCheck }] : []),
   ])
   const activeSection = $derived(route.section === 'brokers' ? 'overview' : route.section)
 
@@ -70,12 +71,32 @@
   const mac = /Mac|iPhone|iPad/.test(navigator.platform)
 
   const nextTheme = () => (theme = theme === 'auto' ? 'dark' : theme === 'dark' ? 'light' : 'auto')
+
+  // Below lg the sidebar is a drawer behind the header's menu button.
+  let menuOpen = $state(false)
+  $effect(() => {
+    void route.cluster, route.section, route.name
+    menuOpen = false
+  })
+  $effect(() => {
+    if (wide.matches) menuOpen = false
+    document.documentElement.style.overflow = menuOpen ? 'hidden' : ''
+  })
 </script>
 
-<div class="grid min-h-screen grid-cols-[240px_minmax(0,1fr)] max-md:grid-cols-[minmax(0,1fr)]">
+<svelte:window onkeydown={(e) => e.key === 'Escape' && (menuOpen = false)} />
+
+<div class="grid min-h-screen grid-cols-[minmax(0,1fr)] lg:grid-cols-[240px_minmax(0,1fr)]">
+  {#if menuOpen}
+    <button class="scrim lg:hidden" aria-label="Close menu" onclick={() => (menuOpen = false)}></button>
+  {/if}
   <aside
-    class="sticky top-0 flex h-screen flex-col overflow-y-auto border-r border-line-strong bg-sidebar max-md:static max-md:h-auto max-md:border-r-0 max-md:border-b"
+    id="sidebar"
+    class="fixed inset-y-0 left-0 z-40 flex w-[min(280px,85vw)] flex-col overflow-y-auto border-r border-line-strong bg-sidebar transition-transform duration-200 lg:sticky lg:top-0 lg:z-auto lg:h-screen lg:w-auto lg:translate-x-0 lg:transition-none {menuOpen
+      ? 'translate-x-0 shadow-2xl'
+      : '-translate-x-full'}"
     class:prod-edge={current?.production}
+    inert={!wide.matches && !menuOpen}
   >
     <div class="flex h-14 items-center gap-2 border-b border-line-strong px-3.5">
       <a
@@ -86,8 +107,8 @@
         <Logo size={22} />
         kafka-console
       </a>
-      {#if info}
-        <span class="ml-auto truncate bg-[#fbff81] px-1.5 py-0.5 text-[11.5px] leading-tight font-semibold text-[#222220]" title={info}>{info}</span>
+      {#if app.info}
+        <span class="ml-auto truncate bg-[#fbff81] px-1.5 py-0.5 text-[11.5px] leading-tight font-semibold text-[#222220]" title={app.info}>{app.info}</span>
       {/if}
     </div>
 
@@ -129,7 +150,7 @@
       </button>
     </div>
 
-    <nav class="grid gap-0.5 px-2 py-2.5 max-md:grid-cols-2">
+    <nav class="grid gap-0.5 px-2 py-2.5">
       {#each nav as item (item.section)}
         {@const active = activeSection === item.section}
         <a
@@ -145,13 +166,7 @@
       {/each}
     </nav>
 
-    <div class="mt-auto border-t border-line-strong max-md:hidden">
-      {#if current}
-        <div class="grid gap-0.5 border-b border-line-strong px-3.5 py-3">
-          <span class="text-xs font-medium text-ink-3">Bootstrap servers</span>
-          {#each current.brokers as b (b)}<div class="font-mono text-[11px] break-all text-ink-3">{b}</div>{/each}
-        </div>
-      {/if}
+    <div class="mt-auto border-t border-line-strong">
       <div class="p-2">
         <button class="ghost w-full justify-start px-1.5 text-xs text-ink-2" onclick={nextTheme} title="Switch theme">
           <ThemeIcon size={14} />
@@ -163,14 +178,45 @@
 
   <main class="relative min-w-0">
     <Backdrop />
+    <header class="sticky top-0 z-30 flex h-12 items-center gap-1.5 border-b border-line-strong bg-sidebar px-2 lg:hidden">
+      <button
+        class="ghost px-2"
+        aria-label="Open menu"
+        aria-controls="sidebar"
+        aria-expanded={menuOpen}
+        onclick={() => (menuOpen = true)}
+      >
+        <Menu size={18} />
+      </button>
+      <a
+        href={route.cluster ? href(route.cluster, 'overview') : '#/'}
+        class="flex min-w-0 items-center gap-2 text-ink hover:no-underline"
+        title="Overview"
+      >
+        <Logo size={20} />
+        {#if current}
+          <span class="sq {current.production ? 'danger' : 'ok'}"></span>
+          <span class="truncate text-sm font-semibold">{current.name}</span>
+        {:else}
+          <span class="text-sm font-semibold">kafka-console</span>
+        {/if}
+      </a>
+      {#if app.info}
+        <span class="truncate bg-[#fbff81] px-1.5 py-0.5 text-[11px] leading-tight font-semibold text-[#222220]" title={app.info}>{app.info}</span>
+      {/if}
+      <span class="flex-1"></span>
+      <button class="ghost px-2" aria-label="Go to…" onclick={() => palette?.show()} disabled={!current}>
+        <Search size={18} />
+      </button>
+    </header>
     {#if current?.production}
-      <div class="relative z-[1] flex h-[34px] items-center gap-2 border-b border-danger-line bg-danger-soft px-8 text-[12.5px] text-danger max-md:px-4">
+      <div class="relative z-[1] flex min-h-[34px] items-center gap-2 border-b border-danger-line bg-danger-soft px-4 py-1.5 text-[12.5px] text-danger sm:px-6 lg:px-8">
         <TriangleAlert size={14} />
         <span>Production cluster <b>{current.name}</b>. Writes affect real data.</span>
       </div>
     {/if}
 
-    <div class="relative z-[1] max-w-[1440px] px-10 pt-7 pb-14 max-md:px-4 max-md:pt-5">
+    <div class="relative z-[1] max-w-[1440px] px-4 pt-5 pb-14 sm:px-6 lg:px-10 lg:pt-7">
       {#if error}
         <div class="error">{error}</div>
       {:else if !current}
@@ -191,8 +237,10 @@
             <Subject cluster={current} name={route.name} />
           {:else if route.section === 'schemas'}
             <Schemas cluster={current} />
-          {:else if route.section === 'security'}
+          {:else if route.section === 'security' && app.features.security}
             <Security cluster={current} />
+          {:else if route.section === 'security' && !app.loaded}
+            <div class="empty">Loading…</div>
           {:else}
             <Overview cluster={current} />
           {/if}
@@ -202,12 +250,15 @@
   </main>
 </div>
 
-{#if current}<CommandPalette bind:this={palette} cluster={current} {clusters} />{/if}
+{#if current}<CommandPalette bind:this={palette} cluster={current} {clusters} security={app.features.security} />{/if}
 
 <style>
   .goto { font-weight: 400; background: var(--surface); }
   .goto:hover:not(:disabled) { color: var(--text); }
   .goto kbd { font: 11px/1.5 var(--mono); padding: 0 5px; color: var(--text-2); background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: 2px; }
   .prod-edge { box-shadow: inset 0 3px 0 var(--danger); }
+  .scrim { position: fixed; inset: 0; z-index: 35; padding: 0; border: 0; border-radius: 0; background: rgb(0 0 0 / .35); cursor: default; }
+  .scrim:hover { background: rgb(0 0 0 / .35) !important; }
+  :global(html.sheet-open) header { display: none; }
   nav a.corners { --c: var(--text-2); --k: 6px; }
 </style>

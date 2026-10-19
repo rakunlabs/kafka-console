@@ -1,12 +1,17 @@
 <script lang="ts">
+  import { untrack } from 'svelte'
   import { api, type Cluster, type Overview } from '../lib/api'
   import { fmt, bytes } from '../lib/format'
   import { href } from '../lib/router.svelte'
-  import { ArrowRight, RefreshCw, Check } from '@lucide/svelte'
+  import { cached, remember } from '../lib/cache'
+  import { ArrowRight, RefreshCw, Check, Copy } from '@lucide/svelte'
 
   let { cluster }: { cluster: Cluster } = $props()
 
-  let data = $state<Overview>()
+  // The page remounts per cluster ({#key} in App), so the first value is the one.
+  const key = untrack(() => `overview:${cluster.name}`)
+  // A revisit shows the last result at once and refreshes behind it.
+  let data = $state<Overview | undefined>(cached(key))
   let error = $state('')
   let loading = $state(false)
 
@@ -15,13 +20,20 @@
     api
       .overview(cluster.name)
       .then((o) => {
-        data = o
+        data = remember(key, o)
         error = ''
       })
       .catch((e) => (error = e.message))
       .finally(() => (loading = false))
   }
   load()
+
+  let copied = $state(false)
+  function copyBootstrap() {
+    navigator.clipboard?.writeText(cluster.brokers.join(','))
+    copied = true
+    setTimeout(() => (copied = false), 1200)
+  }
 
   const health = $derived.by(() => {
     if (!data) return undefined
@@ -84,6 +96,13 @@
     <span class="spacer"></span>
     <button onclick={load} disabled={loading}>
       <RefreshCw size={14} class={loading ? 'animate-spin' : ''} />{loading ? 'Refreshing…' : 'Refresh'}
+    </button>
+  </div>
+  <div class="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-[13px]">
+    <span class="faint" title="The addresses this console connects to, from its configuration">Bootstrap servers</span>
+    {#each cluster.brokers as b (b)}<code class="break-all text-ink-2">{b}</code>{/each}
+    <button class="ghost small" onclick={copyBootstrap} title="Copy as a comma-separated list" aria-label="Copy bootstrap servers">
+      {#if copied}<Check size={13} />{:else}<Copy size={13} />{/if}
     </button>
   </div>
 </header>
@@ -165,8 +184,13 @@
     <table>
       <thead>
         <tr>
-          <th>ID</th><th>Host</th><th>Rack</th><th class="w-[22%] max-lg:hidden">Leader share</th>
-          <th class="num">Leaders</th><th class="num">Replicas</th><th>Version</th><th></th>
+          <th>ID</th><th>Host</th><th>Rack</th>
+          <th class="w-[22%] max-lg:hidden" title="How many partitions this broker leads, relative to the broker with the most. Producers and consumers talk to the leader, so even bars mean even load; one long bar means that broker does most of the work.">
+            <span class="help">Leader share</span>
+          </th>
+          <th class="num" title="Partitions whose leader is this broker. All reads and writes for a partition go through its leader."><span class="help">Leaders</span></th>
+          <th class="num" title="Partition copies stored on this broker, leaders and followers together."><span class="help">Replicas</span></th>
+          <th>Version</th><th></th>
         </tr>
       </thead>
       <tbody>
@@ -175,7 +199,7 @@
             <td class="mono"><a href={href(cluster.name, 'brokers', String(b.id))}>#{b.id}</a></td>
             <td class="mono">{b.host}<span class="faint">:{b.port}</span></td>
             <td class="muted">{b.rack ?? '—'}</td>
-            <td class="max-lg:hidden">
+            <td class="max-lg:hidden" title="{fmt(b.leaders)} of {fmt(data.partitions)} partitions ({data.partitions ? Math.round((b.leaders / data.partitions) * 100) : 0}%)">
               <span class="mt-[7px] block h-1.5 overflow-hidden rounded-[1px] bg-surface-2">
                 <span class="block h-full bg-ink-2" style:width="{(b.leaders / maxLeaders) * 100}%"></span>
               </span>
@@ -191,3 +215,7 @@
   </div>
 {/if}
 
+<style>
+  /* Dotted underline marks a header that explains itself on hover. */
+  .help { text-decoration: underline dotted var(--line-dash); text-underline-offset: 3px; cursor: help; }
+</style>

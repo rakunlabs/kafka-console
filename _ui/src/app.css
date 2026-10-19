@@ -333,6 +333,8 @@ tr:last-child td { border-bottom: 0; }
 :where(table:not(.manual) > tbody > tr:nth-child(even)) > td,
 :where(table.manual > tbody > tr.alt) > td { background: var(--stripe); }
 tbody tr:hover td { background: var(--row-hover); }
+/* A paged list reloading for a new filter or sort dims its old rows. */
+.panel.stale tbody { opacity: .55; transition: opacity .15s .1s; }
 
 .badge {
   display: inline-flex;
@@ -502,6 +504,26 @@ button.small { padding: 2px 8px; }
 th button.ghost { padding: 0; font-size: 12px; color: inherit; font-weight: 500; gap: 4px; }
 th button.ghost:hover:not(:disabled) { background: transparent; color: var(--text); }
 td .badge { margin-left: 6px; }
+td.num { white-space: nowrap; }
+
+/* Narrow screens: wide tables scroll inside their panel instead of pushing
+   the page sideways. The header is no longer sticky there, since the panel
+   becomes its scroll container. */
+@media (max-width: 1023.98px) {
+  .panel:has(> table) { overflow-x: auto; }
+  .panel > table { min-width: max-content; }
+  th, td { padding: 7px 10px; }
+  .grid2 { grid-template-columns: minmax(0, 1fr); }
+  h1 { font-size: 22px; }
+  h1.mono, h1 .mono { font-size: 18px; }
+  .filters input[type='search'] { width: 100%; }
+}
+
+/* iOS zooms into any focused field under 16px; keep forms usable without it. */
+@media (max-width: 639.98px) {
+  input:not([type='checkbox']):not([type='radio']), select, textarea { font-size: 16px; }
+  .tabs a { padding: 8px 10px; }
+}
 
 /* Thin progress track used for lag and share bars. */
 .track { display: block; height: 6px; background: var(--surface-2); border-radius: 1px; overflow: hidden; }

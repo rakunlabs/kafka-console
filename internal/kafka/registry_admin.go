@@ -41,13 +41,28 @@ type RegistryOverview struct {
 	Compatibility string           `json:"compatibility"`
 	Types         []string         `json:"types"`
 	Subjects      []SubjectSummary `json:"subjects"`
+	// Total counts every subject matching the search and type filter.
+	Total int `json:"total"`
 }
 
-func (c *Client) Registry(ctx context.Context, showDeleted bool) (*RegistryOverview, error) {
+// RegistryQuery selects one page of subjects. Versions and compatibility
+// are read for the returned page alone; a type filter needs every matching
+// subject's latest schema first.
+type RegistryQuery struct {
+	ShowDeleted bool
+	Search      string
+	Type        string
+	Offset      int
+	// Limit is the page size; 0 returns every matching subject.
+	Limit int
+}
+
+func (c *Client) Registry(ctx context.Context, q RegistryQuery) (*RegistryOverview, error) {
 	if err := c.requireRegistry(); err != nil {
 		return nil, err
 	}
 
+	showDeleted := q.ShowDeleted
 	base := ctx
 	if showDeleted {
 		ctx = sr.WithParams(ctx, sr.ShowDeleted)
@@ -80,6 +95,16 @@ func (c *Client) Registry(ctx context.Context, showDeleted bool) (*RegistryOverv
 
 	sort.Strings(names)
 
+	if search := strings.ToLower(strings.TrimSpace(q.Search)); search != "" {
+		matched := names[:0]
+		for _, n := range names {
+			if strings.Contains(strings.ToLower(n), search) {
+				matched = append(matched, n)
+			}
+		}
+		names = matched
+	}
+
 	active := map[string]bool{}
 	if showDeleted {
 		if subjects, err := c.registry.Subjects(base); err == nil {
@@ -89,7 +114,24 @@ func (c *Client) Registry(ctx context.Context, showDeleted bool) (*RegistryOverv
 		}
 	}
 
-	bySubject := c.subjectSummaries(ctx, names)
+	var bySubject map[string]*SubjectSummary
+	if q.Type != "" {
+		bySubject = c.subjectSummaries(ctx, names)
+		matched := names[:0]
+		for _, n := range names {
+			if s := bySubject[n]; s != nil && s.Type == q.Type {
+				matched = append(matched, n)
+			}
+		}
+		names = matched
+	}
+
+	out.Total = len(names)
+	names = pageOf(names, q.Offset, q.Limit)
+
+	if bySubject == nil {
+		bySubject = c.subjectSummaries(ctx, names)
+	}
 
 	compat := map[string]string{}
 	for _, r := range c.compatibilities(sr.WithParams(ctx, sr.DefaultToGlobal), names) {

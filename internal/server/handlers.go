@@ -385,8 +385,16 @@ func (s *Server) alterQuota(c *ada.Context) error {
 // ─── Schema registry ──────────────────────────────────────
 
 func (s *Server) schemaRegistry(c *ada.Context) error {
+	q := c.Request.URL.Query()
+	query := kafka.RegistryQuery{ShowDeleted: q.Get("deleted") == "true", Search: q.Get("q"), Type: q.Get("type")}
+
+	var err error
+	if query.Offset, query.Limit, err = pageParams(q); err != nil {
+		return err
+	}
+
 	return s.handle(c, func(cl *kafka.Client) (any, error) {
-		return cl.Registry(c.Request.Context(), c.Request.URL.Query().Get("deleted") == "true")
+		return cl.Registry(c.Request.Context(), query)
 	})
 }
 

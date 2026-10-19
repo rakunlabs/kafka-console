@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"io/fs"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/rakunlabs/ada"
 	"github.com/rakunlabs/ada/handler/folder"
+	mencoding "github.com/rakunlabs/ada/middleware/encoding"
 	mlog "github.com/rakunlabs/ada/middleware/log"
 	mrecover "github.com/rakunlabs/ada/middleware/recover"
 	mrequestid "github.com/rakunlabs/ada/middleware/requestid"
@@ -24,10 +26,36 @@ import (
 type Server struct {
 	registry *kafka.Registry
 	info     string
+	features features
+}
+
+// features tells the UI which optional parts to show.
+type features struct {
+	Security      bool `json:"security"`
+	CreateTopic   bool `json:"create_topic"`
+	DeleteTopic   bool `json:"delete_topic"`
+	AlterTopic    bool `json:"alter_topic"`
+	DeleteRecords bool `json:"delete_records"`
+	DeleteGroup   bool `json:"delete_group"`
+}
+
+func newFeatures(f config.Features) features {
+	return features{
+		Security:      f.SecurityEnabled(),
+		CreateTopic:   f.CreateTopicEnabled(),
+		DeleteTopic:   f.DeleteTopicEnabled(),
+		AlterTopic:    f.AlterTopicEnabled(),
+		DeleteRecords: f.DeleteRecordsEnabled(),
+		DeleteGroup:   f.DeleteGroupEnabled(),
+	}
 }
 
 func Start(ctx context.Context, cfg *config.Config, registry *kafka.Registry, ui fs.FS) error {
-	s := &Server{registry: registry, info: cfg.Info}
+	s := &Server{
+		registry: registry,
+		info:     cfg.Info,
+		features: newFeatures(cfg.Features),
+	}
 
 	server := ada.New()
 	server.Use(
@@ -35,6 +63,7 @@ func Start(ctx context.Context, cfg *config.Config, registry *kafka.Registry, ui
 		mserver.Middleware(config.ServiceName),
 		mrequestid.Middleware(),
 		mlog.Middleware(),
+		mencoding.Middleware(),
 	)
 	if err := mountMCP(server, cfg, registry); err != nil {
 		return err
@@ -59,13 +88,23 @@ func Start(ctx context.Context, cfg *config.Config, registry *kafka.Registry, ui
 	c.GET("/brokers/{broker}", s.broker)
 	c.PATCH("/brokers/{broker}/configs", s.alterBrokerConfigs)
 
+	// Switched-off features are not registered, so their paths fall through
+	// to the API's JSON 404: the operation is gone, not just refused.
 	c.GET("/topics", s.topics)
-	c.POST("/topics", s.createTopic)
+	if s.features.CreateTopic {
+		c.POST("/topics", s.createTopic)
+	}
 	c.GET("/topics/{topic}", s.topic)
-	c.DELETE("/topics/{topic}", s.deleteTopic)
-	c.PATCH("/topics/{topic}/configs", s.alterTopicConfigs)
-	c.POST("/topics/{topic}/partitions", s.addPartitions)
-	c.POST("/topics/{topic}/delete-records", s.deleteRecords)
+	if s.features.DeleteTopic {
+		c.DELETE("/topics/{topic}", s.deleteTopic)
+	}
+	if s.features.AlterTopic {
+		c.PATCH("/topics/{topic}/configs", s.alterTopicConfigs)
+		c.POST("/topics/{topic}/partitions", s.addPartitions)
+	}
+	if s.features.DeleteRecords {
+		c.POST("/topics/{topic}/delete-records", s.deleteRecords)
+	}
 	c.GET("/topics/{topic}/consumers", s.topicConsumers)
 	c.GET("/topics/{topic}/messages", s.messages)
 	c.GET("/topics/{topic}/messages/{partition}/{offset}", s.message)
@@ -78,19 +117,23 @@ func Start(ctx context.Context, cfg *config.Config, registry *kafka.Registry, ui
 	c.GET("/groups", s.groups)
 	c.POST("/groups", s.createGroup)
 	c.GET("/groups/{group}", s.group)
-	c.DELETE("/groups/{group}", s.deleteGroup)
+	if s.features.DeleteGroup {
+		c.DELETE("/groups/{group}", s.deleteGroup)
+	}
 	c.POST("/groups/{group}/reset", s.resetOffsets)
 	c.POST("/groups/{group}/topics", s.addGroupTopic)
 	c.POST("/groups/{group}/delete-offsets", s.deleteGroupOffsets)
 
-	c.GET("/acls", s.acls)
-	c.POST("/acls", s.createACLs)
-	c.POST("/acls/delete", s.deleteACL)
-	c.GET("/users", s.users)
-	c.POST("/users", s.upsertUser)
-	c.DELETE("/users/{user}", s.deleteUser)
-	c.GET("/quotas", s.quotas)
-	c.POST("/quotas", s.alterQuota)
+	if s.features.Security {
+		c.GET("/acls", s.acls)
+		c.POST("/acls", s.createACLs)
+		c.POST("/acls/delete", s.deleteACL)
+		c.GET("/users", s.users)
+		c.POST("/users", s.upsertUser)
+		c.DELETE("/users/{user}", s.deleteUser)
+		c.GET("/quotas", s.quotas)
+		c.POST("/quotas", s.alterQuota)
+	}
 
 	c.GET("/schemas", s.schemaRegistry)
 	c.POST("/schemas", s.createSchema)
@@ -109,7 +152,18 @@ func Start(ctx context.Context, cfg *config.Config, registry *kafka.Registry, ui
 	})
 
 	if ui != nil {
-		f, err := folder.New(&folder.Config{Index: true, SPA: true, PrefixPath: base})
+		f, err := folder.New(&folder.Config{
+			Index:      true,
+			SPA:        true,
+			PrefixPath: base,
+			// embed.FS has no modtime, so only a content hash can validate.
+			ETag: folder.ETagStrong,
+			CacheRegex: []*folder.RegexCacheStore{
+				// Vite content-hashed assets never change under the same name.
+				{Regex: `-[\w-]{8}\.(js|css|woff2?)$`, CacheControl: "public, max-age=31536000, immutable"},
+				{Regex: `.*`, CacheControl: "no-cache"},
+			},
+		})
 		if err != nil {
 			return fmt.Errorf("ui handler; %w", err)
 		}
@@ -139,7 +193,7 @@ type clusterInfo struct {
 }
 
 func (s *Server) appInfo(c *ada.Context) error {
-	return c.SendJSON(map[string]string{"info": s.info})
+	return c.SendJSON(map[string]any{"info": s.info, "features": s.features})
 }
 
 func (s *Server) clusters(c *ada.Context) error {
@@ -219,12 +273,55 @@ func (s *Server) topics(c *ada.Context) error {
 		return err
 	}
 
-	t, err := cl.Topics(c.Request.Context())
+	q := c.Request.URL.Query()
+	query := kafka.TopicQuery{
+		Search:   q.Get("q"),
+		Internal: q.Get("internal") == "true",
+		Sort:     q.Get("sort"),
+		Desc:     q.Get("desc") == "true",
+	}
+
+	switch query.Sort {
+	case "":
+		query.Sort = "name"
+	case "name", "partitions", "messages", "size", "under_replicated":
+	default:
+		return ada.WrapHTTPError(http.StatusBadRequest, fmt.Errorf("unknown sort %q", query.Sort))
+	}
+
+	if query.Offset, query.Limit, err = pageParams(q); err != nil {
+		return err
+	}
+
+	t, err := cl.Topics(c.Request.Context(), query)
 	if err != nil {
 		return fail(err)
 	}
 
 	return c.SendJSON(t)
+}
+
+// maxPage caps one page so a single request cannot ask for stats, lag or
+// versions of every item in a large cluster.
+const maxPage = 500
+
+// pageParams reads offset and limit; a missing or too large limit is maxPage.
+func pageParams(q url.Values) (offset, limit int, err error) {
+	for key, dst := range map[string]*int{"offset": &offset, "limit": &limit} {
+		if v := q.Get(key); v != "" {
+			n, err := strconv.Atoi(v)
+			if err != nil || n < 0 {
+				return 0, 0, ada.WrapHTTPError(http.StatusBadRequest, fmt.Errorf("%s must be a non-negative integer", key))
+			}
+			*dst = n
+		}
+	}
+
+	if limit == 0 || limit > maxPage {
+		limit = maxPage
+	}
+
+	return offset, limit, nil
 }
 
 func (s *Server) topicConsumers(c *ada.Context) error {
@@ -369,7 +466,18 @@ func (s *Server) groups(c *ada.Context) error {
 		return err
 	}
 
-	g, err := cl.Groups(c.Request.Context())
+	q := c.Request.URL.Query()
+	query := kafka.GroupQuery{Search: q.Get("q"), SortByLag: q.Get("sort") == "lag"}
+
+	if s := q.Get("sort"); s != "" && s != "name" && s != "lag" {
+		return ada.WrapHTTPError(http.StatusBadRequest, fmt.Errorf("unknown sort %q", s))
+	}
+
+	if query.Offset, query.Limit, err = pageParams(q); err != nil {
+		return err
+	}
+
+	g, err := cl.Groups(c.Request.Context(), query)
 	if err != nil {
 		return fail(err)
 	}

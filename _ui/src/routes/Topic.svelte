@@ -4,6 +4,9 @@
   import { Mail, Columns3, SlidersHorizontal, Send, Users, ArrowRight, Plus, Eraser, Trash2, RefreshCw } from '@lucide/svelte'
   import { href, go, router } from '../lib/router.svelte'
   import Modal from '../lib/Modal.svelte'
+  import Overflow from '../lib/Overflow.svelte'
+  import { narrow } from '../lib/media.svelte'
+  import { app } from '../lib/features.svelte'
   import { forgetNames } from '../lib/names'
   import ConfigTable from '../lib/ConfigTable.svelte'
   import Messages from './Messages.svelte'
@@ -180,6 +183,8 @@
   const rf = $derived(Math.max(0, ...(data?.partitions.map((p) => p.replicas.length) ?? [0])))
 
   const compacted = $derived((data?.configs ?? []).some((c) => c.key === 'cleanup.policy' && c.value?.includes('compact') && !c.value?.includes('delete')))
+  // The "⋯" menu would be empty when every management feature is off.
+  const hasManage = $derived(app.features.alter_topic || app.features.delete_records || app.features.delete_topic)
 
   // Delete
   let deleting = $state(false)
@@ -209,24 +214,39 @@
   {#if totals.urp > 0}<span class="badge warn">{totals.urp} under-replicated</span>{/if}
   <span class="spacer"></span>
   <button onclick={load} disabled={loading}><RefreshCw size={14} class={loading ? 'animate-spin' : ''} />Refresh</button>
-  <button disabled={cluster.read_only || !data} onclick={() => {
-    total = (data?.partitions.length ?? 0) + 1
-    growError = ''
-    growing = true
-  }}><Plus size={14} />Add partitions</button>
-  <button class="danger" disabled={cluster.read_only || !data || compacted}
-    title={compacted ? 'Records cannot be deleted from compact-only topics' : ''} onclick={() => {
-    trunc = { strategy: 'all', offset: 0, timestamp: '', partitions: '' }
-    truncError = ''
-    truncConfirm = ''
-    truncResult = undefined
-    truncating = true
-  }}><Eraser size={14} />Delete records…</button>
-  <button class="danger" disabled={cluster.read_only || !data} onclick={() => {
-    confirmName = ''
-    deleteError = ''
-    deleting = true
-  }}><Trash2 size={14} />Delete topic</button>
+  {#snippet manage()}
+  {#if app.features.alter_topic}
+    <button disabled={cluster.read_only || !data} onclick={() => {
+      total = (data?.partitions.length ?? 0) + 1
+      growError = ''
+      growing = true
+    }}><Plus size={14} />Add partitions</button>
+  {/if}
+  {#if app.features.delete_records}
+    <button class="danger" disabled={cluster.read_only || !data || compacted}
+      title={compacted ? 'Records cannot be deleted from compact-only topics' : ''} onclick={() => {
+      trunc = { strategy: 'all', offset: 0, timestamp: '', partitions: '' }
+      truncError = ''
+      truncConfirm = ''
+      truncResult = undefined
+      truncating = true
+    }}><Eraser size={14} />Delete records…</button>
+  {/if}
+  {#if app.features.delete_topic}
+    <button class="danger" disabled={cluster.read_only || !data} onclick={() => {
+      confirmName = ''
+      deleteError = ''
+      deleting = true
+    }}><Trash2 size={14} />Delete topic</button>
+  {/if}
+  {/snippet}
+  {#if hasManage}
+    {#if narrow.matches}
+      <Overflow label="Topic actions">{@render manage()}</Overflow>
+    {:else}
+      {@render manage()}
+    {/if}
+  {/if}
 </div>
 
 {#if error}
@@ -324,7 +344,7 @@
   {:else if tab === 'consumers'}
     <TopicConsumers {cluster} topic={name} />
   {:else if tab === 'config'}
-    <ConfigTable configs={data.configs ?? []} readOnly={cluster.read_only} save={saveConfigs} />
+    <ConfigTable configs={data.configs ?? []} readOnly={cluster.read_only || !app.features.alter_topic} save={saveConfigs} />
   {:else if tab === 'produce'}
     {#key editMessage}
       <Produce {cluster} topic={name} partitions={data.partitions.map((p) => p.id)} source={editMessage} onclear={() => (editMessage = undefined)} />
