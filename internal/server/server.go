@@ -779,7 +779,7 @@ func denied(err error) bool {
 	for _, e := range []error{
 		kerr.TopicAuthorizationFailed, kerr.GroupAuthorizationFailed, kerr.ClusterAuthorizationFailed,
 		kerr.TransactionalIDAuthorizationFailed, kerr.DelegationTokenAuthorizationFailed,
-		kerr.SaslAuthenticationFailed, kafka.ErrNoTopicAccess,
+		kerr.SaslAuthenticationFailed, kafka.ErrNoTopicAccess, kafka.ErrNoGroupAccess,
 	} {
 		if errors.Is(err, e) {
 			return true

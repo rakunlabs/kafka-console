@@ -41,9 +41,6 @@ type Overview struct {
 	// Partitions has one character per partition in id order: "o" ok,
 	// "u" under-replicated, "x" offline.
 	Problems []TopicHealth `json:"problems"`
-	// HiddenTopics counts topics the console may not describe; they are left
-	// out of every number above.
-	HiddenTopics int `json:"hidden_topics"`
 }
 
 type TopicHealth struct {
@@ -116,9 +113,11 @@ func (c *Client) Overview(ctx context.Context) (*Overview, error) {
 // countTopics fills topic, partition, leader and health counts from metadata.
 func (o *Overview) countTopics(meta kadm.Metadata, index map[int32]int) {
 	for _, t := range meta.Topics.Sorted() {
+		// A topic the console may not describe is left out. Brokers already
+		// omit such topics from a full listing, so no count of them would be
+		// reliable; one answered from the client cache still carries its
+		// refusal here.
 		if t.Err != nil {
-			o.HiddenTopics++
-
 			continue
 		}
 
@@ -844,6 +843,10 @@ type GroupDetail struct {
 func (c *Client) Group(ctx context.Context, name string) (*GroupDetail, error) {
 	lags, err := c.groupLag(ctx, name)
 	if err != nil {
+		if errors.Is(err, kerr.GroupAuthorizationFailed) {
+			return nil, fmt.Errorf("group %q; %w", name, ErrNoGroupAccess)
+		}
+
 		return nil, fmt.Errorf("describe group; %w", err)
 	}
 
@@ -853,6 +856,10 @@ func (c *Client) Group(ctx context.Context, name string) (*GroupDetail, error) {
 	}
 
 	if l.DescribeErr != nil {
+		if errors.Is(l.DescribeErr, kerr.GroupAuthorizationFailed) {
+			return nil, fmt.Errorf("group %q; %w", name, ErrNoGroupAccess)
+		}
+
 		return nil, fmt.Errorf("describe group; %w", l.DescribeErr)
 	}
 

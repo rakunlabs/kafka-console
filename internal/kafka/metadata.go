@@ -2,6 +2,8 @@ package kafka
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"sort"
 
 	"github.com/twmb/franz-go/pkg/kadm"
@@ -88,6 +90,26 @@ func (c *Client) metadata(ctx context.Context, topics ...string) (kadm.Metadata,
 	}
 
 	return m, nil
+}
+
+// topicDetail describes one topic by name: not found and no access are
+// told apart, so the UI can say which.
+func (c *Client) topicDetail(ctx context.Context, name string) (kadm.Metadata, kadm.TopicDetail, error) {
+	m, err := c.metadata(ctx, name)
+	if err != nil {
+		return kadm.Metadata{}, kadm.TopicDetail{}, fmt.Errorf("metadata; %w", err)
+	}
+
+	d, ok := m.Topics[name]
+
+	switch {
+	case !ok || errors.Is(d.Err, kerr.UnknownTopicOrPartition):
+		return m, d, fmt.Errorf("topic %q; %w", name, ErrNotFound)
+	case d.Err != nil:
+		return m, d, fmt.Errorf("topic %q; %w", name, d.Err)
+	}
+
+	return m, d, nil
 }
 
 // listTopics is metadata's topics. With no names it lists every topic the

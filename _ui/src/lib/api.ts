@@ -66,8 +66,6 @@ export type Overview = {
   has_registry: boolean
   // Only topics with an unhealthy partition; one char per partition, o/u/x.
   problems: { topic: string; partitions: string }[]
-  /** Topics the console may not describe; left out of every count. */
-  hidden_topics?: number
 }
 
 export type TopicName = { name: string; internal: boolean; partitions: number }

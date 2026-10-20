@@ -93,8 +93,8 @@ func TestOverviewSurvivesTopicAuthFailure(t *testing.T) {
 		t.Fatalf("overview failed: %v", err)
 	}
 
-	if o.Topics != 1 || o.HiddenTopics != 1 || o.Partitions != 2 {
-		t.Fatalf("topics=%d hidden=%d partitions=%d, want 1, 1, 2", o.Topics, o.HiddenTopics, o.Partitions)
+	if o.Topics != 1 || o.Partitions != 2 {
+		t.Fatalf("topics=%d partitions=%d, want 1 and 2", o.Topics, o.Partitions)
 	}
 
 	page, err := c.Topics(t.Context(), TopicQuery{Sort: "name"})

@@ -126,14 +126,12 @@ func copyRecord(src *kgo.Record, o replayOptions) *kgo.Record {
 // checkTarget confirms the target exists and, when partitions are kept, has
 // every partition that will be written to.
 func (c *Client) checkTarget(ctx context.Context, target string, keepPartition bool, partitions []int32) error {
-	details, err := c.admin.ListTopics(ctx, target)
-	if err != nil {
-		return fmt.Errorf("describe topic; %w", err)
-	}
-
-	td, ok := details[target]
-	if !ok || td.Err != nil {
+	_, td, err := c.topicDetail(ctx, target)
+	switch {
+	case errors.Is(err, ErrNotFound):
 		return ErrInvalid{fmt.Errorf("target topic %q does not exist", target)}
+	case err != nil:
+		return err
 	}
 
 	if keepPartition {

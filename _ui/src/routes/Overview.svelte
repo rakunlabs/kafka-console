@@ -4,7 +4,7 @@
   import { fmt, bytes } from '../lib/format'
   import { href } from '../lib/router.svelte'
   import { cached, remember } from '../lib/cache'
-  import { ArrowRight, RefreshCw, Check, Copy, Lock } from '@lucide/svelte'
+  import { ArrowRight, RefreshCw, Check, Copy } from '@lucide/svelte'
 
   let { cluster }: { cluster: Cluster } = $props()
 
@@ -93,7 +93,6 @@
   <div class="flex flex-wrap items-center gap-4 text-[13px]">
     {#if data?.cluster_id}<span class="mono faint min-w-0 break-all">cluster-id {data.cluster_id}</span>{/if}
     {#if data}<span class="faint">{data.brokers.length} {data.brokers.length === 1 ? 'broker' : 'brokers'} · controller #{data.controller}</span>{/if}
-    {#if data?.hidden_topics}<span class="inline-flex items-center gap-1.5 text-warn" title="The console's credentials may not describe these topics; they are left out of the counts below."><Lock size={13} />{fmt(data.hidden_topics)} {data.hidden_topics === 1 ? 'topic' : 'topics'} hidden (no access)</span>{/if}
     <span class="spacer"></span>
     <button onclick={load} disabled={loading}>
       <RefreshCw size={14} class={loading ? 'animate-spin' : ''} />{loading ? 'Refreshing…' : 'Refresh'}

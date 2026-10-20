@@ -15,6 +15,9 @@ import (
 // only these partitions carry the error.
 var ErrNoTopicAccess = errors.New("no access to this topic")
 
+// ErrNoGroupAccess is the console's principal lacking Describe on a group.
+var ErrNoGroupAccess = errors.New("no access to this group")
+
 // groupLag is kadm.Client.Lag without its all-or-nothing failure: kadm drops
 // the whole result when any one topic of any group is not authorized, so a
 // user who may see a group but not every topic it reads saw nothing at all.
@@ -222,11 +225,11 @@ func (c *Client) bounds(ctx context.Context, topic string, committed bool, atMil
 
 	switch {
 	case errS != nil:
-		return b, fmt.Errorf("list start offsets; %w", errS)
+		return b, fmt.Errorf("list start offsets; %w", accessErr(errS))
 	case errE != nil:
-		return b, fmt.Errorf("list end offsets; %w", errE)
+		return b, fmt.Errorf("list end offsets; %w", accessErr(errE))
 	case errT != nil:
-		return b, fmt.Errorf("list offsets by time; %w", errT)
+		return b, fmt.Errorf("list offsets by time; %w", accessErr(errT))
 	}
 
 	return b, nil

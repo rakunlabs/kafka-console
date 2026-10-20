@@ -496,7 +496,7 @@ func (c *Client) subjectTopics(ctx context.Context, subject string) []SubjectTop
 		names = append(names, t)
 	}
 
-	details, err := c.admin.ListTopics(ctx, names...)
+	details, _, err := c.listTopics(ctx, names...)
 	if err != nil {
 		return out
 	}

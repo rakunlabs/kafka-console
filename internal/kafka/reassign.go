@@ -58,14 +58,9 @@ func (c *Client) Reassign(ctx context.Context, topic string, req ReassignRequest
 		return nil, ErrInvalid{errors.New("no partitions given")}
 	}
 
-	meta, err := c.admin.Metadata(ctx, topic)
+	meta, t, err := c.topicDetail(ctx, topic)
 	if err != nil {
-		return nil, fmt.Errorf("metadata; %w", err)
-	}
-
-	t, ok := meta.Topics[topic]
-	if !ok || t.Err != nil {
-		return nil, fmt.Errorf("topic %q; %w", topic, ErrNotFound)
+		return nil, err
 	}
 
 	brokers := map[int32]bool{}
@@ -175,14 +170,9 @@ func equalReplicas(a, b []int32) bool {
 
 // Reassignments lists the topic's moves in progress.
 func (c *Client) Reassignments(ctx context.Context, topic string) ([]PartitionMove, error) {
-	meta, err := c.admin.Metadata(ctx, topic)
+	_, t, err := c.topicDetail(ctx, topic)
 	if err != nil {
-		return nil, fmt.Errorf("metadata; %w", err)
-	}
-
-	t, ok := meta.Topics[topic]
-	if !ok || t.Err != nil {
-		return nil, fmt.Errorf("topic %q; %w", topic, ErrNotFound)
+		return nil, err
 	}
 
 	set := kadm.TopicsSet{}
@@ -219,14 +209,9 @@ func (c *Client) ElectPreferredLeaders(ctx context.Context, topic string, partit
 
 	set := kadm.TopicsSet{}
 	if len(partitions) == 0 {
-		details, err := c.admin.ListTopics(ctx, topic)
+		_, d, err := c.topicDetail(ctx, topic)
 		if err != nil {
-			return nil, fmt.Errorf("describe topic; %w", err)
-		}
-
-		d, ok := details[topic]
-		if !ok || d.Err != nil {
-			return nil, fmt.Errorf("topic %q; %w", topic, ErrNotFound)
+			return nil, err
 		}
 
 		for p := range d.Partitions {
@@ -264,14 +249,9 @@ func (c *Client) ElectPreferredLeaders(ctx context.Context, topic string, partit
 // partition keeps the brokers it has unless they are over their share.
 // Racks are not considered. It only proposes; Reassign carries it out.
 func (c *Client) BalancePlan(ctx context.Context, topic string) ([]Reassignment, error) {
-	meta, err := c.admin.Metadata(ctx, topic)
+	meta, t, err := c.topicDetail(ctx, topic)
 	if err != nil {
-		return nil, fmt.Errorf("metadata; %w", err)
-	}
-
-	t, ok := meta.Topics[topic]
-	if !ok || t.Err != nil {
-		return nil, fmt.Errorf("topic %q; %w", topic, ErrNotFound)
+		return nil, err
 	}
 
 	if moving, err := c.Reassignments(ctx, topic); err == nil && len(moving) > 0 {

@@ -282,7 +282,8 @@ type BrokerDetail struct {
 }
 
 func (c *Client) Broker(ctx context.Context, id int32) (*BrokerDetail, error) {
-	meta, err := c.admin.Metadata(ctx)
+	// Brokers only: a topic the console may not describe must not fail it.
+	meta, err := c.admin.BrokerMetadata(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("metadata; %w", err)
 	}
