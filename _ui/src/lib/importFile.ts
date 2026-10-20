@@ -435,21 +435,26 @@ export class RecordReader {
     for (const row of rows) {
       if (!this.cols) {
         const head = row.map((h) => h.trim().toLowerCase())
-        this.cols = ['key', 'value', 'headers', 'partition', 'timestamp'].map((name) => head.indexOf(name))
+        this.cols = ['key', 'value', 'headers', 'partition', 'timestamp', 'key_encoding', 'value_encoding'].map((name) => head.indexOf(name))
         if (this.cols[1] < 0) {
           throw new FatalError('The CSV has no "value" column. The first row must name the columns: key, value, headers, partition, timestamp.')
         }
         continue
       }
-      const [k, v, h, p, ts] = this.cols
-      out.push(this.make(() => ({
-        // An empty key cell means no key; Export writes null keys that way.
-        key: k >= 0 && row[k] ? row[k] : null,
-        value: row[v] ?? '',
-        headers: h >= 0 ? headersOf(row[h]) : [],
-        partition: p >= 0 ? partitionOf(row[p]) : null,
-        timestamp: ts >= 0 ? timestampOf(row[ts]) : null,
-      })))
+      const [k, v, h, p, ts, ke, ve] = this.cols
+      out.push(this.make(() => {
+        const rec: ImportRecord = {
+          // An empty key cell means no key; Export writes null keys that way.
+          key: k >= 0 && row[k] ? row[k] : null,
+          value: row[v] ?? '',
+          headers: h >= 0 ? headersOf(row[h]) : [],
+          partition: p >= 0 ? partitionOf(row[p]) : null,
+          timestamp: ts >= 0 ? timestampOf(row[ts]) : null,
+        }
+        if (ke >= 0 && row[ke]?.trim() === 'base64' && rec.key !== null) rec.key_encoding = 'base64'
+        if (ve >= 0 && row[ve]?.trim() === 'base64') rec.value_encoding = 'base64'
+        return rec
+      }))
     }
     return out
   }

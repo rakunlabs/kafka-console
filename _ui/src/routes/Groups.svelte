@@ -55,20 +55,18 @@
       <tbody>
         {#each list.items as g (g.name)}
           <tr>
-            <td><a class="mono" href={href(cluster.name, 'groups', g.name)}>{g.name}</a></td>
+            <td class="grow"><a class="mono" href={href(cluster.name, 'groups', g.name)} title={g.name}>{g.name}</a></td>
             <td><span class="badge {stateBadge(g.state)}"><span class="sq {stateBadge(g.state) || 'idle'}"></span>{g.state || '—'}</span></td>
             <td class="num">{g.members}</td>
-            <td>
-              <div class="topics">
-                {#each g.topics as t (t)}
-                  {#if g.unreadable?.includes(t)}
-                    <span class="mono noaccess" title="No permission to read this topic's offsets; its lag is not counted"><Lock size={11} />{t}</span>
-                  {:else}
-                    <a class="mono" href={href(cluster.name, 'topics', t)}>{t}</a>
-                  {/if}
-                {/each}
-                {#if !g.topics.length}<span class="faint">—</span>{/if}
-              </div>
+            <td class="grow" title={g.topics.join(', ')}>
+              {#each g.topics as t (t)}
+                {#if g.unreadable?.includes(t)}
+                  <span class="mono noaccess" title="No permission to read this topic's offsets; its lag is not counted"><Lock size={11} />{t}</span>
+                {:else}
+                  <a class="mono" href={href(cluster.name, 'topics', t)}>{t}</a>
+                {/if}
+              {/each}
+              {#if !g.topics.length}<span class="faint">—</span>{/if}
               {#if g.error}<div class="gerr" title={g.error}>{g.error}</div>{/if}
             </td>
             <td class="num mono" class:lag={g.lag > 0}>
@@ -86,9 +84,9 @@
 {/if}
 
 <style>
-  .topics { display: flex; flex-wrap: wrap; gap: 4px 10px; }
-  .lagpill { display: inline-block; padding: 0 6px; background: var(--sel); border: 1px solid var(--cta-border); border-radius: 2px; font-weight: 600; }
-  .noaccess { display: inline-flex; align-items: center; gap: 3px; color: var(--text-3); cursor: help; }
+  td.grow > a + a, td.grow > a + .noaccess, td.grow > .noaccess + a, td.grow > .noaccess + .noaccess { margin-left: 10px; }
+  .lagpill { display: inline-block; padding: 0 6px; background: var(--sel); box-shadow: inset 0 0 0 1px var(--cta-border); border-radius: 2px; font-weight: 600; }
+  .noaccess { display: inline-flex; align-items: center; gap: 3px; color: var(--text-3); cursor: help; vertical-align: bottom; }
   .partial { margin-left: 4px; cursor: help; }
-  .gerr { margin-top: 3px; font-size: 12px; color: var(--danger); overflow-wrap: anywhere; }
+  .gerr { margin-top: 3px; font-size: 12px; color: var(--danger); overflow: hidden; text-overflow: ellipsis; }
 </style>

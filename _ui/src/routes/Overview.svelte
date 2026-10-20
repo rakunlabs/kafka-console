@@ -4,7 +4,7 @@
   import { fmt, bytes } from '../lib/format'
   import { href } from '../lib/router.svelte'
   import { cached, remember } from '../lib/cache'
-  import { ArrowRight, RefreshCw, Check, Copy } from '@lucide/svelte'
+  import { ArrowRight, RefreshCw, Check, Copy, Lock } from '@lucide/svelte'
 
   let { cluster }: { cluster: Cluster } = $props()
 
@@ -70,7 +70,7 @@
   <svelte:element
     this={link ? 'a' : 'div'}
     href={link}
-    class="group -mr-px grid gap-0.5 border-r border-line px-[18px] pt-4 pb-3.5 text-ink {link ? 'hover:bg-hover hover:no-underline' : ''}"
+    class="group -mr-px -mb-px grid gap-0.5 border-r border-b border-line px-[18px] pt-4 pb-3.5 text-ink {link ? 'hover:bg-hover hover:no-underline' : ''}"
   >
     <span class="flex items-center gap-1.5 text-[12.5px] text-ink-2">
       {label}
@@ -93,6 +93,7 @@
   <div class="flex flex-wrap items-center gap-4 text-[13px]">
     {#if data?.cluster_id}<span class="mono faint min-w-0 break-all">cluster-id {data.cluster_id}</span>{/if}
     {#if data}<span class="faint">{data.brokers.length} {data.brokers.length === 1 ? 'broker' : 'brokers'} · controller #{data.controller}</span>{/if}
+    {#if data?.hidden_topics}<span class="inline-flex items-center gap-1.5 text-warn" title="The console's credentials may not describe these topics; they are left out of the counts below."><Lock size={13} />{fmt(data.hidden_topics)} {data.hidden_topics === 1 ? 'topic' : 'topics'} hidden (no access)</span>{/if}
     <span class="spacer"></span>
     <button onclick={load} disabled={loading}>
       <RefreshCw size={14} class={loading ? 'animate-spin' : ''} />{loading ? 'Refreshing…' : 'Refresh'}
@@ -119,7 +120,7 @@
 {:else if !data}
   <div class="empty">Loading…</div>
 {:else}
-  <section class="corners mb-3.5 grid grid-cols-[repeat(auto-fit,minmax(160px,1fr))] overflow-hidden border border-line-strong bg-surface [--c:var(--text-2)] [--k:8px]">
+  <section class="corners mb-3.5 grid grid-cols-2 overflow-hidden border border-line-strong bg-surface [--c:var(--text-2)] [--k:8px] sm:grid-cols-3 2xl:grid-cols-6">
     {@render stat('Topics', fmt(data.topics), `+${fmt(data.internal_topics)} internal`, href(cluster.name, 'topics'))}
     {@render stat('Partitions', fmt(data.partitions), data.brokers.length ? `~${fmt(Math.round(data.partitions / data.brokers.length))} per broker` : '—')}
     {@render stat('Under-replicated', fmt(data.under_replicated), data.under_replicated > 0 ? 'replicas out of ISR' : 'healthy', undefined, data.under_replicated > 0 ? 'text-warn' : '')}
@@ -160,7 +161,7 @@
         <tbody>
           {#each shownProblems as t (t.topic)}
             <tr>
-              <td><a class="mono" href={href(cluster.name, 'topics', t.topic, { tab: 'partitions' })}>{t.topic}</a></td>
+              <td class="grow"><a class="mono" href={href(cluster.name, 'topics', t.topic, { tab: 'partitions' })} title={t.topic}>{t.topic}</a></td>
               <td class="num">{fmt(t.total)}</td>
               <td class="num">{#if t.offline.length}<span class="badge danger">{fmt(t.offline.length)}</span>{:else}<span class="faint">0</span>{/if}</td>
               <td class="num">{#if t.under.length}<span class="badge warn">{fmt(t.under.length)}</span>{:else}<span class="faint">0</span>{/if}</td>

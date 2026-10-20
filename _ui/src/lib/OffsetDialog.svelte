@@ -41,22 +41,29 @@
 
   // Fresh form on every open; a single partition starts from its current commit.
   let wasOpen = false
+  // Each open is a generation: a seed answering after the dialog closed,
+  // reopened for another partition, or after the user typed is dropped.
+  let generation = 0
+  let touched = false
   $effect(() => {
     if (open && !wasOpen) {
+      generation++
+      touched = false
       strategy = single ? 'offset' : 'latest'
       shift = -10
       timestamp = ''
       plan = undefined
       error = ''
       done = false
-      if (single) void seed()
+      if (single) void seed(generation)
     }
     wasOpen = open
   })
 
-  async function seed() {
+  async function seed(gen: number) {
     try {
       const p = await api.resetOffsets(cluster.name, group, { topic, partitions, strategy: 'shift', shift: 0, dry_run: true })
+      if (gen !== generation || !open || touched) return
       const row = p.partitions[0]
       if (row) offset = row.from >= 0 ? row.from : row.low
     } catch {}
@@ -150,7 +157,7 @@
 
   {#if strategy === 'offset'}
     <label>Offset
-      <input type="number" min="0" class="mono" bind:value={offset} />
+      <input type="number" min="0" class="mono" bind:value={offset} oninput={() => (touched = true)} />
       {#if !single}<span class="hint">Applied to every selected partition, clamped to each one's range.</span>{/if}
     </label>
   {:else if strategy === 'shift'}

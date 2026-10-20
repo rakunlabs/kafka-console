@@ -2,6 +2,15 @@ const nf = new Intl.NumberFormat()
 
 export const fmt = (n: number | null | undefined) => (n === null || n === undefined || n < 0 ? '—' : nf.format(n))
 
+// "0, 2, 5" -> [0, 2, 5]; empty means all partitions. A token that is not a
+// partition number makes the whole list invalid instead of silently turning
+// into partition 0 on the server.
+export function partitionList(text: string): number[] | undefined {
+  const parts = text.split(',').map((s) => s.trim()).filter(Boolean)
+  if (!parts.every((s) => /^\d+$/.test(s))) return undefined
+  return [...new Set(parts.map(Number))]
+}
+
 export function compact(n: number) {
   return new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 }).format(n)
 }

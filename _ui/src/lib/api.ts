@@ -66,6 +66,8 @@ export type Overview = {
   has_registry: boolean
   // Only topics with an unhealthy partition; one char per partition, o/u/x.
   problems: { topic: string; partitions: string }[]
+  /** Topics the console may not describe; left out of every count. */
+  hidden_topics?: number
 }
 
 export type TopicName = { name: string; internal: boolean; partitions: number }
@@ -390,14 +392,17 @@ export function tail(
   const url = `api/v1/clusters/${enc(c)}/topics/${enc(t)}/tail?${query(params)}`
   const es = new EventSource(url)
   let closed = false
+  // Set by the caller's close: nothing of this stream reaches it after.
+  let stopped = false
+  const probe = new AbortController()
   const close = () => {
     closed = true
     es.close()
   }
-  es.addEventListener('message', (e) => on.event(JSON.parse((e as MessageEvent).data)))
+  es.addEventListener('message', (e) => !stopped && on.event(JSON.parse((e as MessageEvent).data)))
   es.addEventListener('end', () => {
     close()
-    on.end()
+    if (!stopped) on.end()
   })
   es.addEventListener('error', (e) => {
     if (closed) return
@@ -405,7 +410,7 @@ export function tail(
     close()
     if (data) {
       try {
-        on.error(JSON.parse(data).error)
+        if (!stopped) on.error(JSON.parse(data).error)
         return
       } catch {}
     }
@@ -413,16 +418,19 @@ export function tail(
     // cannot read; fetch once to surface the message. A 200 means the stream
     // itself works (the error was the connection), so it is closed at once
     // instead of being left open as a second, unread tail.
-    const probe = new AbortController()
     fetch(url, { signal: probe.signal })
       .then((r) => (r.ok ? '' : r.json().then((j) => j.message ?? r.statusText)))
       .catch(() => '')
       .then((msg) => {
         probe.abort()
-        on.error(msg || 'Connection lost')
+        if (!stopped) on.error(msg || 'Connection lost')
       })
   })
-  return close
+  return () => {
+    stopped = true
+    probe.abort()
+    close()
+  }
 }
 
 export type ResendResult = {

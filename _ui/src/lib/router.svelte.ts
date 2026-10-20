@@ -9,10 +9,19 @@ export type Route = {
   query: URLSearchParams
 }
 
+// A malformed escape (a stray %) keeps the raw text instead of throwing.
+function decode(s: string) {
+  try {
+    return decodeURIComponent(s)
+  } catch {
+    return s
+  }
+}
+
 function parse(): Route {
   const raw = location.hash.replace(/^#\/?/, '')
   const [path, qs = ''] = raw.split('?')
-  const parts = path.split('/').filter(Boolean).map(decodeURIComponent)
+  const parts = path.split('/').filter(Boolean).map(decode)
 
   return {
     cluster: parts[0] ?? '',

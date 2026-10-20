@@ -51,7 +51,7 @@
       <tbody>
         {#each data.log_dirs as d (d.dir)}
           <tr>
-            <td class="mono">{d.dir}{#if d.error}<span class="badge danger">{d.error}</span>{/if}</td>
+            <td class="mono grow wrap">{d.dir}{#if d.error}<span class="badge danger">{d.error}</span>{/if}</td>
             <td class="num mono">{fmt(d.partitions)}</td>
             <td class="num mono">{bytes(d.size)}</td>
             <td class="disk">

@@ -26,7 +26,8 @@ api
     version = r.version ?? ''
     loaded = true
   })
-  .catch(() => {})
+  // Without /info the optional pages stay off, but stop waiting for it.
+  .catch(() => (loaded = true))
 
 export const app = {
   get features() {

@@ -101,9 +101,11 @@
       <tbody>
         {#each list.items as s (s.name)}
           <tr class:deleted={s.deleted}>
-            <td>
-              <a class="mono" href={href(cluster.name, 'schemas', s.name)}>{s.name}</a>
-              {#if s.deleted}<span class="badge danger">deleted</span>{/if}
+            <td class="grow">
+              <span class="cell">
+                <a class="mono" href={href(cluster.name, 'schemas', s.name)} title={s.name}>{s.name}</a>
+                {#if s.deleted}<span class="badge danger">deleted</span>{/if}
+              </span>
             </td>
             <td><span class="badge">{s.type || '—'}</span></td>
             <td class="num mono">{s.latest_version || '—'}</td>

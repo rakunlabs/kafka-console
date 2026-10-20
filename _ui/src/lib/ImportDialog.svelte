@@ -97,6 +97,12 @@
     clearResults()
   }
 
+  // A changed option invalidates the last check.
+  function recheck() {
+    clearResults()
+    phase = 'pick'
+  }
+
   function clearResults() {
     total = problemCount = written = skip = resumeAt = rewritten = readBytes = 0
     problems = []
@@ -193,7 +199,7 @@
   const finished = $derived(phase === 'done' && !error && !resumeAt)
 </script>
 
-<Modal title="Import messages into {topic}" bind:open width={720}>
+<Modal title="Import messages into {topic}" bind:open width={720} locked={phase === 'sending'}>
   {#if phase === 'pick' || phase === 'checking' || (phase === 'checked' && (problemCount || fatal))}
     <label class="drop" class:on={dragging}
       ondragover={(e) => { e.preventDefault(); dragging = true }}
@@ -210,7 +216,7 @@
     {#if file}
       <div class="grid2">
         <label>Format
-          <select bind:value={format} disabled={busy} onchange={clearResults}>
+          <select bind:value={format} disabled={busy} onchange={recheck}>
             <option value="json">JSON array</option>
             <option value="jsonl">JSON lines</option>
             <option value="csv">CSV with a header row</option>
@@ -219,7 +225,7 @@
         </label>
         {#if format === 'json' || format === 'jsonl'}
           <label>Each item is
-            <select bind:value={shape} disabled={busy} onchange={clearResults}>
+            <select bind:value={shape} disabled={busy} onchange={recheck}>
               <option value="record">A record (key, value, headers…)</option>
               <option value="value">The value</option>
             </select>
@@ -252,12 +258,12 @@
           </table>
         </div>
 
-        <label class="check"><input type="checkbox" bind:checked={keepPartition} disabled={busy} onchange={clearResults} /> Write each record to its partition
+        <label class="check"><input type="checkbox" bind:checked={keepPartition} disabled={busy} onchange={recheck} /> Write each record to its partition
           <span class="hint">{preview.partitions ? 'Off: the key decides the partition.' : 'The first records have no partition numbers; the key decides.'}</span></label>
-        <label class="check"><input type="checkbox" bind:checked={keepTimestamp} disabled={busy} onchange={clearResults} /> Keep timestamps from the file
+        <label class="check"><input type="checkbox" bind:checked={keepTimestamp} disabled={busy} onchange={recheck} /> Keep timestamps from the file
           <span class="hint">Off: records get the time they are written.</span></label>
         {#if preview.schemaIds}
-          <label class="check"><input type="checkbox" bind:checked={keepSchema} disabled={busy} onchange={clearResults} /> Encode with the schema IDs in the file
+          <label class="check"><input type="checkbox" bind:checked={keepSchema} disabled={busy} onchange={recheck} /> Encode with the schema IDs in the file
             <span class="hint">Values exported decoded from Avro, Protobuf or JSON Schema are encoded again with the same schema. Off: they are written as plain JSON text.</span></label>
         {/if}
         <label>Compression

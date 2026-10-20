@@ -210,7 +210,7 @@
   ]
 
   let quotaOpen = $state(false)
-  let quotaForm = $state({ type: 'client-id', name: '', isDefault: false, values: {} as Record<string, string> })
+  let quotaForm = $state({ type: 'client-id', name: '', isDefault: false, values: {} as Record<string, string | number | null>, had: [] as string[] })
   let quotaFormError = $state('')
 
   function openQuota(q?: Quota) {
@@ -220,6 +220,7 @@
       name: e?.name ?? '',
       isDefault: !!e && e.name === null,
       values: Object.fromEntries(quotaKeys.map((k) => [k.key, q?.values[k.key] !== undefined ? String(q.values[k.key]) : ''])),
+      had: Object.keys(q?.values ?? {}),
     }
     quotaFormError = ''
     quotaOpen = true
@@ -232,9 +233,11 @@
       const set: Record<string, number> = {}
       const remove: string[] = []
       for (const k of quotaKeys) {
-        const v = quotaForm.values[k.key]?.trim()
+        const v = String(quotaForm.values[k.key] ?? '').trim()
         if (v) set[k.key] = Number(v)
-        else remove.push(k.key)
+        // Only limits that exist are removed; brokers reject removing a key
+        // they do not support (Redpanda has no request_percentage).
+        else if (quotaForm.had.includes(k.key)) remove.push(k.key)
       }
       await api.alterQuota(cluster.name, {
         entity: [{ type: quotaForm.type, name: quotaForm.isDefault ? null : quotaForm.name }],
@@ -250,11 +253,15 @@
     }
   }
 
+  let quotaDelete = $state<Quota>()
+  let quotaDeleting = $state(false)
+
   async function removeQuota(q: Quota) {
     busy = true
     quotaError = ''
     try {
       await api.alterQuota(cluster.name, { entity: q.entity, remove: Object.keys(q.values) })
+      quotaDeleting = false
       loadQuotas()
     } catch (e: any) {
       quotaError = e.message
@@ -301,13 +308,15 @@
             <tr>
               <td class="mono">{a.principal}</td>
               <td class="mono faint">{a.host}</td>
-              <td>
-                <span class="faint small">{a.resource_type}</span>
-                {#if a.resource_type === 'TOPIC' && a.pattern_type === 'LITERAL' && a.resource_name !== '*'}
-                  <a class="mono" href={href(cluster.name, 'topics', a.resource_name)}>{a.resource_name}</a>
-                {:else}
-                  <span class="mono">{a.resource_name}</span>
-                {/if}
+              <td class="grow">
+                <span class="cell">
+                  <span class="faint small">{a.resource_type}</span>
+                  {#if a.resource_type === 'TOPIC' && a.pattern_type === 'LITERAL' && a.resource_name !== '*'}
+                    <a class="mono" href={href(cluster.name, 'topics', a.resource_name)} title={a.resource_name}>{a.resource_name}</a>
+                  {:else}
+                    <span class="mono" title={a.resource_name}>{a.resource_name}</span>
+                  {/if}
+                </span>
               </td>
               <td class="faint small">{a.pattern_type}</td>
               <td class="mono small">{a.operation}</td>
@@ -340,7 +349,7 @@
         <tbody>
           {#each users.slice(0, userShown) as u (u.name)}
             <tr>
-              <td class="mono">{u.name}</td>
+              <td class="mono grow" title={u.name}>{u.name}</td>
               <td>{#each u.mechanisms as m (m)}<span class="badge">{m}</span> {/each}</td>
               <td class="actions">
                 <button class="ghost small" disabled={cluster.read_only} onclick={() => openUser(u)}>Change password</button>
@@ -371,11 +380,11 @@
         <tbody>
           {#each quotas.slice(0, quotaShown) as q, i (i)}
             <tr>
-              <td class="mono">{entityLabel(q)}</td>
+              <td class="mono grow" title={entityLabel(q)}>{entityLabel(q)}</td>
               {#each quotaKeys as k (k.key)}<td class="num mono">{q.values[k.key] !== undefined ? fmt(q.values[k.key]) : '—'}</td>{/each}
               <td class="actions">
                 <button class="ghost small" disabled={cluster.read_only} onclick={() => openQuota(q)}>Edit</button>
-                <button class="ghost small danger" disabled={cluster.read_only || busy} onclick={() => removeQuota(q)}>Delete</button>
+                <button class="ghost small danger" disabled={cluster.read_only || busy} onclick={() => { quotaDelete = q; quotaDeleting = true }}>Delete</button>
               </td>
             </tr>
           {:else}
@@ -456,6 +465,17 @@
   {#snippet footer()}
     <button onclick={() => (userOpen = false)}>Cancel</button>
     <button class="primary" disabled={busy || !userForm.name.trim() || !userForm.password} onclick={saveUser}>Save</button>
+  {/snippet}
+</Modal>
+
+<Modal title="Delete quota" bind:open={quotaDeleting}>
+  {#if quotaDelete}
+    <p>Every limit set for <b class="mono">{entityLabel(quotaDelete)}</b> will be removed. Its clients fall back to the default quota, or to no limit.</p>
+  {/if}
+  {#if quotaError}<div class="error">{quotaError}</div>{/if}
+  {#snippet footer()}
+    <button onclick={() => (quotaDeleting = false)}>Cancel</button>
+    <button class="danger solid" disabled={busy} onclick={() => quotaDelete && removeQuota(quotaDelete)}>Delete</button>
   {/snippet}
 </Modal>
 

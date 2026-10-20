@@ -57,9 +57,9 @@
   --danger: #c4372f;
   --danger-soft: #fbeceb;
   --danger-border: #ebbab6;
-  --warn: #a8650c;
+  --warn: #985b0a;
   --warn-soft: #fbf1df;
-  --ok: #2d7d4f;
+  --ok: #276e45;
   --ok-soft: #e5f2ea;
   --focus: #222220;
   --stripe: #efefea;
@@ -116,9 +116,6 @@
     --ok-soft: #1a3024;
     --focus: #f2f65c;
     --stripe: #23231f;
-  --grid-line: rgb(232 232 228 / .045);
-  --cell-ink: rgb(232 232 228 / .05);
-  --cell-ink-strong: rgb(228 232 106 / .2);
     --grid-line: rgb(232 232 228 / .045);
     --cell-ink: rgb(232 232 228 / .05);
     --cell-ink-strong: rgb(228 232 106 / .2);
@@ -329,7 +326,19 @@ th {
   top: 0;
 }
 th.num { text-align: right; }
-td { padding: 8px 12px; border-bottom: 1px solid var(--border); vertical-align: top; font-variant-numeric: tabular-nums; }
+/* Cells stay on one line so every row of a table keeps the same height at
+   any width. The column holding free-length text (a name, a value) is marked
+   .grow: it takes the remaining width and ends in an ellipsis instead of
+   wrapping. A table that still does not fit scrolls inside its panel. */
+td { padding: 8px 12px; border-bottom: 1px solid var(--border); vertical-align: top; font-variant-numeric: tabular-nums; white-space: nowrap; }
+td[colspan], td.empty { white-space: normal; }
+td.grow { width: 100%; min-width: 14rem; max-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* Values a reader needs whole (config values, error text) wrap instead. */
+td.grow.wrap { white-space: normal; overflow-wrap: anywhere; }
+/* A name and its badges in one cut cell: the name shrinks, the badges stay. */
+.cell { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.cell > :first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.cell > .badge { flex: none; margin-left: 0; }
 tr:last-child td { border-bottom: 0; }
 /* Zebra rows. :where() keeps this at zero specificity so hover, selection and
    any page's own row colours win. Tables whose rows are not one-per-record
@@ -399,6 +408,8 @@ h1.crumbed .mono { overflow-wrap: anywhere; }
 }
 .head h1 { overflow-wrap: anywhere; margin-right: 4px; }
 .head > .faint { font-size: 14px; }
+/* Page actions wrap as one group, so a button never ends up alone on a line. */
+.head > .acts { display: flex; flex-wrap: wrap; gap: 8px; }
 .summary {
   display: flex;
   flex-wrap: wrap;
@@ -510,14 +521,14 @@ button.small { padding: 2px 8px; }
 th button.ghost { padding: 0; font-size: 12px; color: inherit; font-weight: 500; gap: 4px; }
 th button.ghost:hover:not(:disabled) { background: transparent; color: var(--text); }
 td .badge { margin-left: 6px; }
+td > .badge:first-child { margin-left: 0; }
 td.num { white-space: nowrap; }
 
-/* Narrow screens: wide tables scroll inside their panel instead of pushing
-   the page sideways. The header is no longer sticky there, since the panel
-   becomes its scroll container. */
+/* Narrow screens: a table wider than its panel scrolls inside it instead of
+   pushing the page sideways. The header is no longer sticky there, since the
+   panel becomes its scroll container. */
 @media (max-width: 1023.98px) {
   .panel:has(> table) { overflow-x: auto; }
-  .panel > table { min-width: max-content; }
   th, td { padding: 7px 10px; }
   .grid2 { grid-template-columns: minmax(0, 1fr); }
   h1 { font-size: 22px; }
@@ -525,10 +536,10 @@ td.num { white-space: nowrap; }
   .filters input[type='search'] { width: 100%; }
 }
 
-/* Phones: a page title with actions takes its own line, so the actions sit
-   together below it instead of one of them wrapping alone. */
+/* Phones: the actions take their own line below the title (and its count or
+   badges), so they sit together instead of one of them wrapping alone. */
 @media (max-width: 639.98px) {
-  .head:has(> h1 + .spacer, > h1 ~ button) > h1 { flex-basis: 100%; }
+  .head > .spacer { flex-basis: 100%; height: 0; }
 }
 
 /* iOS zooms into any focused field under 16px; keep forms usable without it. */
@@ -555,7 +566,7 @@ td.num { white-space: nowrap; }
 .markdown pre { background: var(--surface-2); padding: 10px 12px; border-radius: var(--radius); overflow-x: auto; margin: 0 0 10px; }
 .markdown pre code { background: none; padding: 0; }
 .markdown table { border-collapse: collapse; margin: 0 0 10px; }
-.markdown th, .markdown td { border: 1px solid var(--border); padding: 4px 8px; }
+.markdown th, .markdown td { border: 1px solid var(--border); padding: 4px 8px; white-space: normal; }
 .markdown blockquote { border-left: 3px solid var(--border-strong); padding-left: 12px; color: var(--text-2); margin: 0 0 10px; }
 .markdown a { text-decoration: underline; }
 }

@@ -112,9 +112,11 @@
       <tbody>
         {#each list.items as t (t.name)}
           <tr>
-            <td>
-              <a class="mono" href={href(cluster.name, 'topics', t.name)}>{t.name}</a>
-              {#if t.internal}<span class="badge">internal</span>{/if}
+            <td class="grow">
+              <span class="cell">
+                <a class="mono" href={href(cluster.name, 'topics', t.name)} title={t.name}>{t.name}</a>
+                {#if t.internal}<span class="badge">internal</span>{/if}
+              </span>
             </td>
             <td class="num">{t.partitions}</td>
             <td class="num">{t.replication_factor}</td>

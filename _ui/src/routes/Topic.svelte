@@ -1,6 +1,6 @@
 <script lang="ts">
   import { api, type Cluster, type TopicDetail, type Message } from '../lib/api'
-  import { fmt, bytes, duration, sizeIEC } from '../lib/format'
+  import { fmt, bytes, duration, sizeIEC, partitionList } from '../lib/format'
   import { Mail, Columns3, SlidersHorizontal, Send, Users, ArrowRight, Plus, Eraser, Trash2, RefreshCw, ShieldCheck, ArrowRightLeft, BookOpen } from '@lucide/svelte'
   import { href, go, router } from '../lib/router.svelte'
   import Modal from '../lib/Modal.svelte'
@@ -103,6 +103,21 @@
   let trunc = $state({ strategy: 'all', offset: 0, timestamp: '', partitions: '' })
   let truncError = $state('')
   let truncConfirm = $state('')
+  const truncParts = $derived(partitionList(trunc.partitions))
+  const truncValid = $derived(
+    trunc.strategy === 'all' ||
+      (trunc.strategy === 'offset' && Number.isInteger(trunc.offset) && trunc.offset >= 0) ||
+      (trunc.strategy === 'timestamp' && !!trunc.timestamp && !Number.isNaN(new Date(trunc.timestamp).getTime())),
+  )
+  // Says in words what the button is about to do.
+  const truncSummary = $derived.by(() => {
+    const where = truncParts?.length
+      ? `${truncParts.length === 1 ? 'partition' : 'partitions'} ${truncParts.join(', ')}`
+      : `all ${data?.partitions.length ?? ''} partitions`.replace('  ', ' ')
+    if (trunc.strategy === 'all') return `Every record in ${where} will be deleted; the topic itself stays.`
+    if (trunc.strategy === 'offset') return `Records before offset ${fmt(Number(trunc.offset) || 0)} in ${where} will be deleted.`
+    return `Records written before ${trunc.timestamp ? new Date(trunc.timestamp).toLocaleString() : 'the chosen time'} in ${where} will be deleted.`
+  })
   let truncResult = $state<{ partition: number; low_watermark: number; error?: string }[]>()
 
   async function truncate() {
@@ -113,7 +128,7 @@
         strategy: trunc.strategy,
         offset: trunc.strategy === 'offset' ? Number(trunc.offset) : undefined,
         timestamp: trunc.strategy === 'timestamp' && trunc.timestamp ? new Date(trunc.timestamp).getTime() : undefined,
-        partitions: trunc.partitions.split(',').map((s) => s.trim()).filter(Boolean).map(Number),
+        partitions: truncParts ?? [],
       })
       load()
     } catch (e: any) {
@@ -226,6 +241,7 @@
   {#if data?.internal}<span class="badge">internal</span>{/if}
   {#if totals.urp > 0}<span class="badge warn">{totals.urp} under-replicated</span>{/if}
   <span class="spacer"></span>
+  <div class="acts">
   <button onclick={load} disabled={loading}><RefreshCw size={14} class={loading ? 'animate-spin' : ''} />Refresh</button>
   {#snippet manage()}
   {#if app.features.alter_topic}
@@ -260,6 +276,7 @@
       {@render manage()}
     {/if}
   {/if}
+  </div>
 </div>
 
 <!-- A failed refresh keeps what is shown (and a running live tail in
@@ -299,12 +316,12 @@
 
   {#if settings.length}
     <a
-      class="mb-3 flex flex-wrap overflow-hidden border border-line-strong bg-surface text-ink transition-colors hover:border-ink-3 hover:bg-hover hover:no-underline"
+      class="mb-3 grid grid-cols-[repeat(auto-fill,minmax(190px,1fr))] overflow-hidden border border-line-strong bg-surface text-ink transition-colors hover:border-ink-3 hover:bg-hover hover:no-underline"
       href={href(cluster.name, 'topics', name, { tab: 'config' })}
       title="Open topic config"
     >
       {#each settings as st (st.key)}
-        <div class="-mr-px -mb-px flex min-w-[150px] flex-1 items-baseline gap-2 border-r border-b border-line px-3.5 py-2"
+        <div class="-mr-px -mb-px flex min-w-0 items-baseline gap-2 border-r border-b border-line px-3.5 py-2"
           title={st.note ? `${st.label}: ${st.value} ${st.note}` : undefined}>
           <span class="flex items-center gap-1.5 text-xs whitespace-nowrap text-ink-3">
             {st.label}
@@ -403,7 +420,11 @@
 
 <Modal title="Delete records" bind:open={truncating} width={520}>
   {#if truncResult}
-    <div class="ok">Records deleted. New start offsets:</div>
+    {#if truncResult.some((r) => !r.error)}
+      <div class="ok">Records deleted. New start offsets:</div>
+    {:else}
+      <div class="error">No records were deleted.</div>
+    {/if}
     <div class="panel">
       <table>
         <thead><tr><th class="num">P</th><th class="num">New low</th><th></th></tr></thead>
@@ -415,31 +436,38 @@
       </table>
     </div>
   {:else}
-    <p>All records <b>before</b> the target offset in the selected partitions will be permanently deleted. This cannot be undone.</p>
     <div class="grid2">
       <label>Range to delete
         <select bind:value={trunc.strategy}>
-          <option value="all">All existing records</option>
-          <option value="offset">Up to this offset</option>
-          <option value="timestamp">Up to this time</option>
+          <option value="all">Everything (empty the topic)</option>
+          <option value="offset">Records before an offset</option>
+          <option value="timestamp">Records before a time</option>
         </select>
       </label>
       {#if trunc.strategy === 'offset'}
-        <label>Offset <input type="number" min="0" bind:value={trunc.offset} /></label>
+        <label>Offset <input type="number" min="0" step="1" bind:value={trunc.offset} aria-invalid={!truncValid} /></label>
       {:else if trunc.strategy === 'timestamp'}
-        <label>Time <input type="datetime-local" step="1" bind:value={trunc.timestamp} /></label>
+        <label>Time <input type="datetime-local" step="1" bind:value={trunc.timestamp} aria-invalid={!truncValid} /></label>
       {:else}
         <div></div>
       {/if}
     </div>
-    <label>Partitions (empty = all) <input placeholder="0, 1, 2" bind:value={trunc.partitions} /></label>
+    <label>Partitions (empty = all) <input placeholder="0, 1, 2" bind:value={trunc.partitions} aria-invalid={!truncParts} /></label>
+    {#if !truncParts}<div class="error small">Use partition numbers separated by commas, e.g. 0, 1, 2.</div>{/if}
+    {#if truncParts}
+      <p class="trunc-what">{truncSummary} This cannot be undone.</p>
+    {/if}
     <label>Type the topic name to confirm <input bind:value={truncConfirm} class="mono" /></label>
   {/if}
   {#if truncError}<div class="error">{truncError}</div>{/if}
   {#snippet footer()}
     <button onclick={() => (truncating = false)}>{truncResult ? 'Close' : 'Cancel'}</button>
     {#if !truncResult}
-      <button class="danger solid" disabled={busy || truncConfirm !== name} onclick={truncate}>{busy ? 'Deleting…' : 'Delete records'}</button>
+      <button class="danger solid" disabled={busy || truncConfirm !== name || !truncParts || !truncValid} onclick={truncate}>{busy ? 'Deleting…' : trunc.strategy === 'all' ? 'Delete all records' : 'Delete records'}</button>
     {/if}
   {/snippet}
 </Modal>
+
+<style>
+  .trunc-what { padding: 8px 10px; font-size: 13px; color: var(--danger); background: var(--danger-soft); border: 1px solid var(--danger-border); border-radius: var(--radius); }
+</style>

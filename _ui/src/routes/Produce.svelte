@@ -53,12 +53,18 @@
   }
   loadSubjects()
 
+  // Subjects can change faster than the registry answers; only the answer
+  // for the subject still selected is applied.
+  let schemaReq = 0
   async function loadSchema() {
+    const seq = ++schemaReq
+    const want = subject
     schema = undefined
     message = ''
-    if (!subject) return
+    if (!want) return
     try {
-      const d = await api.subject(cluster.name, subject)
+      const d = await api.subject(cluster.name, want)
+      if (seq !== schemaReq || want !== subject) return
       schema = d.versions.find((v) => !v.deleted)
       message = schema?.messages?.[0] ?? ''
     } catch {}

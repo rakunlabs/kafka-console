@@ -14,6 +14,8 @@
   let filter = $state('')
   let onlyOverrides = $state(true)
   let editing = $state('')
+  // The key whose Reset waits for a second click.
+  let resetting = $state('')
   let draft = $state('')
   let busy = $state(false)
   let error = $state('')
@@ -79,11 +81,11 @@
       {#each rows as c (c.key)}
         <tr>
           <td class="mono">{c.key}</td>
-          <td class="mono val">
+          <td class="mono grow wrap">
             {#if editing === c.key}
               <form class="row" onsubmit={(e) => { e.preventDefault(); run([{ key: c.key, value: draft, op: 'set' }]) }}>
                 <!-- svelte-ignore a11y_autofocus -->
-                <input class="mono grow" bind:value={draft} autofocus onkeydown={(e) => e.key === 'Escape' && (editing = '')} />
+                <input class="mono flex-1" bind:value={draft} autofocus onkeydown={(e) => e.key === 'Escape' && (editing = '')} />
                 <button class="primary small" type="submit" disabled={busy}>Save</button>
                 <button class="small" type="button" onclick={() => (editing = '')}>Cancel</button>
               </form>
@@ -95,10 +97,18 @@
           <td class="faint">{c.source}</td>
           <td class="actions">
             {#if !readOnly && editing !== c.key}
-              <button class="ghost small" onclick={() => edit(c)}>Edit</button>
-              {#if isOverride(c)}
-                <button class="ghost small" disabled={busy} title="Remove the dynamic value and revert to the default"
-                  onclick={() => run([{ key: c.key, op: 'delete' }])}>Reset</button>
+              {#if resetting === c.key}
+                <span class="confirm">
+                  <span class="small">Remove this override?</span>
+                  <button class="danger solid small" disabled={busy} onclick={() => run([{ key: c.key, op: 'delete' }]).then(() => (resetting = ''))}>Reset</button>
+                  <button class="small" disabled={busy} onclick={() => (resetting = '')}>Keep</button>
+                </span>
+              {:else}
+                <button class="ghost small" onclick={() => edit(c)}>Edit</button>
+                {#if isOverride(c)}
+                  <button class="ghost small" disabled={busy} title="Remove the dynamic value and revert to the default"
+                    onclick={() => { resetting = c.key; error = '' }}>Reset</button>
+                {/if}
               {/if}
             {/if}
           </td>
@@ -112,8 +122,7 @@
 
 <style>
   .error { margin-bottom: 12px; }
-  .val { overflow-wrap: anywhere; }
   .hint { margin-left: 8px; font-family: var(--font); font-size: 12px; }
-  .grow { flex: 1; }
   .actions { white-space: nowrap; text-align: right; width: 1%; padding-block: 5px; }
+  .confirm { display: inline-flex; align-items: center; gap: 6px; color: var(--danger); }
 </style>

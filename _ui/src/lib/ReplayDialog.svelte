@@ -165,7 +165,7 @@
   const span = (r: ReplayRange) => (r.end > r.start ? `${fmt(r.start)} – ${fmt(r.end - 1)}` : 'nothing')
 </script>
 
-<Modal title="Replay a range" bind:open width={680}>
+<Modal title="Replay a range" bind:open width={680} locked={phase === 'running'}>
   {#if phase === 'edit' || phase === 'counting'}
     <p class="lead">
       Copies every record in the range, oldest first per partition, with key, value and headers byte for byte.

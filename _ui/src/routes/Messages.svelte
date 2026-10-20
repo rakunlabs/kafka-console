@@ -234,7 +234,16 @@
     if (!result || !incoming.length) return
     const add = incoming.reverse()
     incoming = []
-    result = { ...result, messages: [...add, ...result.messages].slice(0, liveCap) }
+    const all = [...add, ...result.messages]
+    result = { ...result, messages: all.slice(0, liveCap) }
+    // Rows past the cap are gone: they can no longer be selected, resent
+    // or flashed, so nothing may keep pointing at them.
+    if (all.length > liveCap) {
+      const kept = new Set(result.messages.map(mkey))
+      for (const k of fresh) if (!kept.has(k)) fresh.delete(k)
+      if ([...picked].some((k) => !kept.has(k))) picked = new Set([...picked].filter((k) => kept.has(k)))
+      if (selected && !kept.has(mkey(selected))) selected = undefined
+    }
   }
 
   function startLive() {
@@ -255,7 +264,7 @@
     stop = tail(cluster.name, topic, {
       start,
       partitions: partition,
-      offset: start === 'offset' ? offset : undefined,
+      offset: start === 'offset' ? offset : start === 'last' ? lastN : undefined,
       timestamp: start === 'timestamp' && timestamp ? new Date(timestamp).getTime() : undefined,
       filter: showFilter ? filter : undefined,
       q: search.trim() || undefined,
@@ -277,9 +286,13 @@
       },
       error: (msg) => {
         error = msg
+        stop = undefined
         live = false
       },
-      end: () => (live = false),
+      end: () => {
+        stop = undefined
+        live = false
+      },
     })
   }
 
@@ -314,9 +327,12 @@
         const s = v === null || v === undefined ? '' : String(v)
         return /[",\n]/.test(s) ? `"${s.replaceAll('"', '""')}"` : s
       }
-      const rows = [['partition', 'offset', 'timestamp', 'key', 'value', 'headers']]
+      // Binary keys and values are base64 text; the encoding columns tell
+      // Import to decode them back to the original bytes.
+      const rows = [['partition', 'offset', 'timestamp', 'key', 'value', 'headers', 'key_encoding', 'value_encoding']]
       for (const m of result.messages) {
-        rows.push([String(m.partition), String(m.offset), m.timestamp, m.key ?? '', m.value ?? '', JSON.stringify(m.headers)])
+        rows.push([String(m.partition), String(m.offset), m.timestamp, m.key ?? '', m.value ?? '', JSON.stringify(m.headers),
+          m.key_encoding === 'base64' ? 'base64' : '', m.value_encoding === 'base64' ? 'base64' : ''])
       }
       body = rows.map((r) => r.map(esc).join(',')).join('\n')
       type = 'text/csv'
@@ -422,9 +438,10 @@
 
   let copied = $state(false)
   function copy(text: string) {
-    navigator.clipboard?.writeText(text)
-    copied = true
-    setTimeout(() => (copied = false), 1200)
+    navigator.clipboard?.writeText(text).then(() => {
+      copied = true
+      setTimeout(() => (copied = false), 1200)
+    }, () => {})
   }
 
   // j/k (or arrows) walk the list without leaving the detail pane.
@@ -439,6 +456,8 @@
   }
   function onkey(e: KeyboardEvent) {
     // Esc stops a running read wherever focus is, even in the search box.
+    // Another dialog (a modal, the command palette) owns the keys while open.
+    if (document.querySelector('dialog[open]')) return
     if (e.key === 'Escape' && loading && !resending && !replaying && !importing) {
       e.preventDefault()
       stopReading()
@@ -446,6 +465,10 @@
     }
     const t = e.target as HTMLElement
     if (resending || replaying || importing || t.closest('input, textarea, select, [contenteditable], dialog') || e.metaKey || e.ctrlKey || e.altKey) return
+    // Arrows walk the list only once a message is open; otherwise they
+    // scroll the page, and on a control (a button, a link) keep their use.
+    const arrow = e.key === 'ArrowDown' || e.key === 'ArrowUp'
+    if (arrow && (!selected || (t.closest('button, a') && !t.closest('.list, .detail')))) return
     if (e.key === 'j' || e.key === 'ArrowDown') { e.preventDefault(); step(1) }
     else if (e.key === 'k' || e.key === 'ArrowUp') { e.preventDefault(); step(-1) }
     else if (e.key === 'Escape') selected = undefined
@@ -699,7 +722,8 @@
             {@const open = !narrow.matches && expanded.has(mkey(m))}
             {@const k = hit(m.key ?? '—')}
             {@const v = hit(preview(m))}
-            <tr id="m-{m.partition}-{m.offset}" class:alt={i % 2 === 1} class:sel={selected === m} class:bad={!!m.decode_error} class:opened={open} class:picked={picked.has(mkey(m))} onclick={() => (selected = m)} use:arrived={mkey(m)}>
+            <tr id="m-{m.partition}-{m.offset}" class:alt={i % 2 === 1} class:sel={selected === m} class:bad={!!m.decode_error} class:opened={open} class:picked={picked.has(mkey(m))} onclick={() => (selected = m)}
+              tabindex="0" aria-selected={selected === m} onkeydown={(e) => { if ((e.key === 'Enter' || e.key === ' ') && e.target === e.currentTarget) { e.preventDefault(); selected = m } }} use:arrived={mkey(m)}>
               {#if !cluster.read_only}
                 <td class="pk"><input type="checkbox" checked={picked.has(mkey(m))} onclick={(e) => e.stopPropagation()}
                   onchange={() => pick(m)} aria-label="Select message {m.partition}:{m.offset}" /></td>
@@ -934,6 +958,7 @@
   .list { max-height: calc(100vh - 300px); overflow: auto; }
   .list table { table-layout: fixed; }
   .list tr { cursor: pointer; }
+  .list tr:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
   .list tr.sel td { background: var(--sel); }
   .list tr.bad td:first-child { box-shadow: inset 2px 0 0 var(--danger); }
   /* A message that just arrived over live tail lights up in the highlight

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { api, type Cluster, type GroupDetail, type ResetPlan } from '../lib/api'
-  import { fmt, stateBadge } from '../lib/format'
+  import { fmt, stateBadge, partitionList } from '../lib/format'
   import { href, go } from '../lib/router.svelte'
   import PartitionOffsets from '../lib/PartitionOffsets.svelte'
   import Modal from '../lib/Modal.svelte'
@@ -78,17 +78,15 @@
     resetting = true
   }
 
+  const resetParts = $derived(partitionList(reset.partitions))
+
   function body(dry: boolean) {
     return {
       topic: reset.topic,
       strategy: reset.strategy,
       offset: reset.strategy === 'offset' ? Number(reset.offset) : undefined,
       timestamp: reset.strategy === 'timestamp' && reset.timestamp ? new Date(reset.timestamp).getTime() : undefined,
-      partitions: reset.partitions
-        .split(',')
-        .map((s) => s.trim())
-        .filter(Boolean)
-        .map(Number),
+      partitions: resetParts ?? [],
       dry_run: dry,
     }
   }
@@ -162,6 +160,7 @@
   <h1 class="crumbed"><a class="parent" href={href(cluster.name, 'groups')}>Consumer groups</a><span class="sep" aria-hidden="true">/</span><span class="mono">{name}</span></h1>
   {#if data}<span class="badge {stateBadge(data.state)}"><span class="sq {stateBadge(data.state) || 'idle'}"></span>{data.state}</span>{/if}
   <span class="spacer"></span>
+  <div class="acts">
   <button onclick={load} disabled={loading}><RefreshCw size={14} class={loading ? 'animate-spin' : ''} />Refresh</button>
   <button disabled={cluster.read_only || !data} title={cluster.read_only ? 'This cluster is read-only' : ''} onclick={() => (addingTopic = true)}><Plus size={14} />Add topic</button>
   {#if app.features.delete_group}
@@ -169,6 +168,7 @@
       title={data && data.members.length > 0 ? 'Cannot delete a group with active members' : ''}
       onclick={() => { deleteError = ''; deleting = true }}><Trash2 size={14} />Delete group</button>
   {/if}
+  </div>
 </div>
 
 {#if error && !data}
@@ -196,10 +196,14 @@
         {#if t.rows.some((r) => r.lag > 0) && byTopic.length > 1}<LagEta read={() => reading(t.topic)} />{/if}
       {/if}
       <span class="spacer"></span>
+      <span class="acts">
       <button disabled={cluster.read_only || denied} title={denied ? 'No permission to read this topic' : ''} onclick={() => openReset(t.topic)}><RotateCcw size={14} />Reset all partitions…</button>
+      {#if app.features.delete_group}
       <button class="danger" disabled={cluster.read_only || (data?.members.length ?? 0) > 0}
         title={(data?.members.length ?? 0) > 0 ? 'Cannot delete offsets for a group with active members' : 'Deletes committed offsets for this topic'}
         onclick={() => { dropError = ''; dropTopic = t.topic; dropping = true }}>Delete offsets</button>
+      {/if}
+      </span>
     </div>
     {#if denied}
       <div class="panel noaccess">
@@ -225,7 +229,7 @@
       <thead><tr><th>Client ID</th><th>Host</th><th>Member ID</th></tr></thead>
       <tbody>
         {#each data.members as m (m.id)}
-          <tr><td class="mono">{m.client_id}</td><td class="mono">{m.host}</td><td class="mono faint small">{m.id}</td></tr>
+          <tr><td class="mono">{m.client_id}</td><td class="mono">{m.host}</td><td class="mono faint small grow" title={m.id}>{m.id}</td></tr>
         {:else}
           <tr><td colspan="3" class="faint">No active members.</td></tr>
         {/each}
@@ -262,7 +266,8 @@
       <div></div>
     {/if}
   </div>
-  <label>Partitions (empty = all) <input placeholder="0, 1, 2" bind:value={reset.partitions} oninput={() => (plan = undefined)} /></label>
+  <label>Partitions (empty = all) <input placeholder="0, 1, 2" bind:value={reset.partitions} oninput={() => (plan = undefined)} aria-invalid={!resetParts} /></label>
+  {#if !resetParts}<div class="error small">Use partition numbers separated by commas, e.g. 0, 1, 2.</div>{/if}
 
   {#if plan}
     <div class="panel plan">
@@ -287,8 +292,8 @@
   {#snippet footer()}
     <button onclick={() => (resetting = false)}>{done ? 'Close' : 'Cancel'}</button>
     {#if !done}
-      <button onclick={preview} disabled={busy}>Preview</button>
-      <button class="danger solid" disabled={busy || !plan || (data?.members.length ?? 0) > 0} onclick={apply}>Apply</button>
+      <button onclick={preview} disabled={busy || !resetParts}>Preview</button>
+      <button class="danger solid" disabled={busy || !plan || !resetParts || (data?.members.length ?? 0) > 0} onclick={apply}>Apply</button>
     {/if}
   {/snippet}
 </Modal>
@@ -312,7 +317,9 @@
 </Modal>
 
 <style>
-  .thead { display: flex; align-items: center; gap: 10px; margin: 18px 0 8px; }
+  .thead { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; margin: 18px 0 8px; }
+  .thead h2 { min-width: 0; overflow-wrap: anywhere; }
+  .acts { display: flex; flex-wrap: wrap; gap: 8px; }
   .noaccess { padding: 12px 14px; font-size: 13px; color: var(--text-2); }
   .mtop { margin: 24px 0 8px; }
   .lagnum { background: var(--sel); padding: 0 4px; }

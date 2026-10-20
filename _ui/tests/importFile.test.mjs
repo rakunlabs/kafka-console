@@ -145,3 +145,15 @@ test('readFile streams a Blob in chunks', async () => {
   assert.equal(n, 5000)
   assert.equal(bytes, blob.size)
 })
+
+test('reads the encoding columns of a CSV export, so binary payloads stay binary', () => {
+  const csv = 'partition,offset,timestamp,key,value,headers,key_encoding,value_encoding\n0,1,1760000000000,AAE=,/w==,[],base64,base64\n0,2,1760000000000,,text,[],,\n'
+  const { records, problems } = parseFile(csv, 'csv', 'record')
+  assert.deepEqual(problems, [])
+  assert.equal(records[0].key_encoding, 'base64')
+  assert.equal(records[0].value_encoding, 'base64')
+  assert.equal(records[0].value, '/w==')
+  assert.equal(records[1].key, null)
+  assert.equal(records[1].key_encoding, undefined)
+  assert.equal(records[1].value_encoding, undefined)
+})

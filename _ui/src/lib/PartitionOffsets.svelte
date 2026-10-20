@@ -135,7 +135,7 @@
   tr:hover .edit, .edit:focus-visible { opacity: 1; color: var(--text); }
   .edit:hover:not(:disabled) { background: var(--cta); border-color: var(--cta-border); color: var(--cta-text); opacity: 1; }
   tbody tr.picked td { background: var(--sel); }
-  .lagpill { display: inline-block; padding: 0 6px; background: var(--sel); border: 1px solid var(--cta-border); border-radius: 2px; font-weight: 600; }
+  .lagpill { display: inline-block; padding: 0 6px; line-height: 18px; vertical-align: top; background: var(--sel); box-shadow: inset 0 0 0 1px var(--cta-border); border-radius: 2px; font-weight: 600; }
   .selbar {
     display: flex;
     flex-wrap: wrap;

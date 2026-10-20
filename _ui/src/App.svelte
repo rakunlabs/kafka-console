@@ -34,16 +34,41 @@
   let clusters = $state<Cluster[]>([])
   let error = $state('')
 
+  // The last cluster opened, so a bare URL returns to it.
+  const lastKey = 'kc.cluster'
+  const store = {
+    get: () => {
+      try {
+        return localStorage.getItem(lastKey)
+      } catch {
+        return null
+      }
+    },
+    set: (v: string) => {
+      try {
+        localStorage.setItem(lastKey, v)
+      } catch {
+        // Storage blocked or full: only the convenience is lost.
+      }
+    },
+  }
+
   api
     .clusters()
     .then((c) => {
       clusters = c
-      if (!router.route.cluster && c.length) go(c[0].name)
+      if (!router.route.cluster && c.length) {
+        const last = store.get()
+        go(c.some((x) => x.name === last) ? last! : c[0].name)
+      }
     })
     .catch((e) => (error = e.message))
 
   const route = $derived(router.route)
   const current = $derived(clusters.find((c) => c.name === route.cluster))
+  $effect(() => {
+    if (current) store.set(current.name)
+  })
 
   const nav = $derived([
     { section: 'overview', label: 'Overview', icon: LayoutDashboard },
@@ -180,7 +205,7 @@
     <Backdrop />
     <header class="sticky top-0 z-30 flex h-12 items-center gap-1.5 border-b border-line-strong bg-sidebar px-2 lg:hidden">
       <button
-        class="ghost px-2"
+        class="ghost size-10 justify-center px-0"
         aria-label="Open menu"
         aria-controls="sidebar"
         aria-expanded={menuOpen}
@@ -205,7 +230,7 @@
         <span class="truncate bg-[#fbff81] px-1.5 py-0.5 text-[11px] leading-tight font-semibold text-[#222220]" title={app.info}>{app.info}</span>
       {/if}
       <span class="flex-1"></span>
-      <button class="ghost px-2" aria-label="Go to…" onclick={() => palette?.show()} disabled={!current}>
+      <button class="ghost size-10 justify-center px-0" aria-label="Go to…" onclick={() => palette?.show()} disabled={!current}>
         <Search size={18} />
       </button>
     </header>

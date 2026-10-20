@@ -8,7 +8,8 @@
     width = 480,
     children,
     footer,
-  }: { title: string; open: boolean; width?: number; children: Snippet; footer?: Snippet } = $props()
+    locked = false,
+  }: { title: string; open: boolean; width?: number; children: Snippet; footer?: Snippet; /** Work is running: Esc and the close button do nothing. */ locked?: boolean } = $props()
 
   let dialog: HTMLDialogElement
 
@@ -18,11 +19,11 @@
   })
 </script>
 
-<dialog bind:this={dialog} onclose={() => (open = false)} style:width="{width}px">
+<dialog bind:this={dialog} oncancel={(e) => locked && e.preventDefault()} onclose={() => (open = false)} style:width="{width}px">
   {#if open}
     <header>
       <h2>{title}</h2>
-      <button class="ghost px-1.5" aria-label="Close" onclick={() => (open = false)}><X size={16} /></button>
+      <button class="ghost px-1.5" aria-label="Close" disabled={locked} onclick={() => (open = false)}><X size={16} /></button>
     </header>
     <div class="body">{@render children()}</div>
     {#if footer}<footer>{@render footer()}</footer>{/if}
