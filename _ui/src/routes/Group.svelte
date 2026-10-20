@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Pending from '../lib/Pending.svelte'
   import { api, type Cluster, type GroupDetail, type ResetPlan } from '../lib/api'
   import { fmt, stateBadge, partitionList } from '../lib/format'
   import { href, go } from '../lib/router.svelte'
@@ -173,7 +174,7 @@
 {#if error && !data}
   <div class="error">{error}</div>
 {:else if !data}
-  <div class="empty">Loading…</div>
+  <div class="empty"><Pending /></div>
 {:else}
   {#if error}<div class="error mb-3">{error}</div>{/if}
   <div class="summary">
@@ -271,7 +272,7 @@
   {#if plan}
     <div class="panel plan">
       <table>
-        <thead><tr><th class="num">P</th><th class="num">Current</th><th class="num">New</th><th class="num">Diff</th></tr></thead>
+        <thead><tr><th class="num" title="Partition"><abbr>P</abbr></th><th class="num">Current</th><th class="num">New</th><th class="num">Diff</th></tr></thead>
         <tbody>
           {#each plan as p (p.partition)}
             <tr>

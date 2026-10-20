@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Pending from './Pending.svelte'
   import { untrack } from 'svelte'
   import { api, type ACL, type Cluster } from './api'
   import { href } from './router.svelte'
@@ -26,7 +27,7 @@
 {#if error}
   <div class="error">{error}</div>
 {:else if !acls}
-  <div class="empty">Loading…</div>
+  <div class="empty"><Pending /></div>
 {:else}
   <div class="panel overflow-x-auto">
     <table>

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Pending from '../lib/Pending.svelte'
   import { api, type Cluster, type SubjectDetail } from '../lib/api'
   import { href, go, router } from '../lib/router.svelte'
   import Modal from '../lib/Modal.svelte'
@@ -134,7 +135,7 @@
 {#if error && !data}
   <div class="error">{error}</div>
 {:else if !data || !current}
-  <div class="empty">Loading…</div>
+  <div class="empty"><Pending /></div>
 {:else}
   {#if error}<div class="error mb-3">{error}</div>{/if}
   <div class="summary">

@@ -81,7 +81,7 @@
             <input type="checkbox" checked={allOn} indeterminate={someOn} onchange={toggleAll} aria-label="Select all partitions" />
           </th>
         {/if}
-        <th class="num">P</th><th>Progress</th>
+        <th class="num" title="Partition"><abbr>P</abbr></th><th>Progress</th>
         {#if showLow}<th class="num">Low</th>{/if}
         <th class="num">Committed</th><th class="num">High</th><th class="num">Lag</th><th>Client</th><th>Host</th>
         {#if editable}<th><span class="sr-only">Change offset</span></th>{/if}
@@ -129,7 +129,7 @@
   .pt td { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .ck { padding-right: 0; }
   .ck input { display: block; margin: 2px 0 0 2px; }
-  td.ck { padding-top: 9px; }
+  td.ck { padding-top: calc(var(--cell-y) + 1px); }
   .act { padding: 4px 8px; text-align: right; }
   .edit { padding: 4px 6px; color: var(--text-3); opacity: .55; }
   tr:hover .edit, .edit:focus-visible { opacity: 1; color: var(--text); }

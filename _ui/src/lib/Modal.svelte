@@ -19,7 +19,7 @@
   })
 </script>
 
-<dialog bind:this={dialog} oncancel={(e) => locked && e.preventDefault()} onclose={() => (open = false)} style:width="{width}px">
+<dialog bind:this={dialog} class="ticks" oncancel={(e) => locked && e.preventDefault()} onclose={() => (open = false)} style:width="{width}px">
   {#if open}
     <header>
       <h2>{title}</h2>

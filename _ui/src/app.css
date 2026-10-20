@@ -77,6 +77,9 @@
   --syn-var: #4f39f6;
 
   --radius: 3px;
+  /* Table cell padding, shared by every table. */
+  --cell-y: 4px;
+  --cell-x: 10px;
   --font: 'IBM Plex Sans Variable', system-ui, -apple-system, 'Segoe UI', sans-serif;
   --mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, monospace;
 
@@ -294,10 +297,23 @@ label { display: grid; gap: 4px; font-size: 12px; font-weight: 500; color: var(-
   border-radius: var(--radius);
 }
 
-/* Langfuse-style corner ticks drawn on a box's four corners. */
+/* Langfuse-style corner ticks drawn on a box's four corners. .corners paints
+   them as the box's background; .ticks lays them over the content instead,
+   for boxes whose children have backgrounds of their own (a header bar, a
+   footer). A .ticks box must be positioned and must not scroll itself. */
 .corners {
   --c: var(--text-3);
   --k: 7px;
+}
+.ticks { --c: var(--text-2); --k: 7px; }
+.ticks::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+}
+.corners, .ticks::after {
   background-image:
     linear-gradient(var(--c), var(--c)), linear-gradient(var(--c), var(--c)),
     linear-gradient(var(--c), var(--c)), linear-gradient(var(--c), var(--c)),
@@ -322,7 +338,7 @@ th {
   font-size: 12px;
   font-weight: 500;
   color: var(--text-3);
-  padding: 8px 12px;
+  padding: var(--cell-y) var(--cell-x);
   border-bottom: 1px solid var(--border-strong);
   background: var(--surface-2);
   white-space: nowrap;
@@ -334,7 +350,7 @@ th.num { text-align: right; }
    any width. The column holding free-length text (a name, a value) is marked
    .grow: it takes the remaining width and ends in an ellipsis instead of
    wrapping. A table that still does not fit scrolls inside its panel. */
-td { padding: 8px 12px; border-bottom: 1px solid var(--border); vertical-align: top; font-variant-numeric: tabular-nums; white-space: nowrap; }
+td { padding: var(--cell-y) var(--cell-x); border-bottom: 1px solid var(--border); vertical-align: top; font-variant-numeric: tabular-nums; white-space: nowrap; }
 td[colspan], td.empty { white-space: normal; }
 td.grow { width: 100%; min-width: 14rem; max-width: 0; overflow: hidden; text-overflow: ellipsis; }
 /* Values a reader needs whole (config values, error text) wrap instead. */
@@ -352,6 +368,9 @@ tr:last-child td { border-bottom: 0; }
 tbody tr:hover td { background: var(--row-hover); }
 /* A paged list reloading for a new filter or sort dims its old rows. */
 .panel.stale tbody { opacity: .55; transition: opacity .15s .1s; }
+/* A box inside a dialog is already inside a box: a quieter edge keeps the
+   two from stacking into a double frame. */
+dialog .panel { border-color: var(--border); }
 
 .badge {
   display: inline-flex;
@@ -392,6 +411,20 @@ tbody tr:hover td { background: var(--row-hover); }
   white-space: pre-wrap;
 }
 .empty { padding: 32px; text-align: center; color: var(--text-2); }
+/* Nothing to show: a 2×2 cell with one cell lit, from the backdrop's grid.
+   A loading state (.pending) brings its own marker instead. */
+.empty:not(:has(.pending, svg))::before {
+  content: '';
+  display: block;
+  width: 21px;
+  height: 21px;
+  margin: 0 auto 12px;
+  border: 1px dashed var(--line-dash);
+  background:
+    linear-gradient(var(--cta), var(--cta)) top right / 10px 10px no-repeat,
+    linear-gradient(var(--line-dash), var(--line-dash)) center / 1px 100% no-repeat,
+    linear-gradient(var(--line-dash), var(--line-dash)) center / 100% 1px no-repeat;
+}
 .row { display: flex; gap: 8px; align-items: center; }
 .spacer { flex: 1; }
 
@@ -431,8 +464,12 @@ h1.crumbed .mono { overflow-wrap: anywhere; }
 .tabs {
   display: flex;
   gap: 2px;
-  /* The line is a shadow, not a border: the active tab's underline covers
-     it without reaching outside the box, which would make it scroll. */
+  /* The bar is a tinted strip; the active tab is a card standing on its
+     bottom line. The line is a shadow, not a border: the active tab's
+     underline covers it without reaching outside the box, which would make
+     it scroll. */
+  padding: 0;
+  background: var(--surface-2);
   box-shadow: inset 0 -1px 0 var(--border-strong);
   margin-bottom: 18px;
   overflow-x: auto;
@@ -443,17 +480,26 @@ h1.crumbed .mono { overflow-wrap: anywhere; }
   align-items: center;
   gap: 7px;
   white-space: nowrap;
-  padding: 8px 12px;
+  padding: 7px 12px;
   color: var(--text-2);
   font-weight: 500;
   border-bottom: 2px solid transparent;
 }
-.tabs a:hover { color: var(--text); text-decoration: none; background: var(--row-hover); }
-.tabs a.active { color: var(--text); border-bottom-color: var(--text); }
+/* Hover only darkens the text: a filled hover would read stronger than the
+   active tab. The active tab takes the selection's yellow tint, a frame and a
+   solid underline, so it reads as picked at a glance. */
+.tabs a:hover { color: var(--text); text-decoration: none; }
+.tabs a:not(.active):hover { box-shadow: inset 0 -2px 0 var(--border-strong); }
+.tabs a.active {
+  color: var(--text);
+  border-bottom-color: var(--text);
+  background: var(--sel);
+  box-shadow: inset 1px 0 0 var(--border-strong), inset -1px 0 0 var(--border-strong);
+}
 .tabs a.active svg { color: var(--text); }
 .tabs a svg { color: var(--text-3); }
-.tabs .count { font-size: 11px; font-weight: 600; line-height: 1.5; padding: 0 5px; border-radius: 2px; background: var(--surface-2); color: var(--text-2); font-variant-numeric: tabular-nums; }
-.tabs a.active .count { background: var(--sel); color: var(--text); }
+.tabs .count { font-size: 11px; font-weight: 600; line-height: 1.5; padding: 0 5px; border-radius: 2px; background: var(--surface); color: var(--text-2); font-variant-numeric: tabular-nums; }
+.tabs a.active .count { background: var(--cta); color: var(--cta-text); }
 
 .filters { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; margin-bottom: 12px; }
 .filters input[type='search'] { width: 320px; max-width: 100%; }
@@ -529,6 +575,9 @@ input[type='checkbox']:focus-visible, input[type='radio']:focus-visible { outlin
 button.small { padding: 2px 8px; }
 th button.ghost { padding: 0; font-size: 12px; color: inherit; font-weight: 500; gap: 4px; }
 th button.ghost:hover:not(:disabled) { background: transparent; color: var(--text); }
+/* An abbreviated column header (P, RF, ISR): a dotted underline says the
+   header's title spells it out. */
+th abbr { text-decoration: underline dotted var(--line-dash); text-underline-offset: 3px; cursor: help; }
 td .badge { margin-left: 6px; }
 td > .badge:first-child { margin-left: 0; }
 td.num { white-space: nowrap; }
@@ -538,7 +587,6 @@ td.num { white-space: nowrap; }
    panel becomes its scroll container. */
 @media (max-width: 1023.98px) {
   .panel:has(> table) { overflow-x: auto; }
-  th, td { padding: 7px 10px; }
   .grid2 { grid-template-columns: minmax(0, 1fr); }
   h1 { font-size: 20px; }
   h1.mono, h1 .mono { font-size: 18px; }
@@ -554,7 +602,7 @@ td.num { white-space: nowrap; }
 /* iOS zooms into any focused field under 16px; keep forms usable without it. */
 @media (max-width: 639.98px) {
   input:not([type='checkbox']):not([type='radio']), select, textarea { font-size: 16px; }
-  .tabs a { padding: 8px 10px; }
+  .tabs a { padding: 7px 10px; }
 }
 
 /* Thin progress track used for lag and share bars. */

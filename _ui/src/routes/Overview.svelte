@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Pending from '../lib/Pending.svelte'
   import { untrack } from 'svelte'
   import { api, type Cluster, type Overview } from '../lib/api'
   import { fmt, bytes } from '../lib/format'
@@ -117,9 +118,10 @@
 {#if error}
   <div class="error">{error}</div>
 {:else if !data}
-  <div class="empty">Loading…</div>
+  <div class="empty"><Pending /></div>
 {:else}
-  <section class="corners mb-3.5 grid grid-cols-2 overflow-hidden border border-line-strong bg-surface [--c:var(--text-2)] [--k:8px] sm:grid-cols-3 2xl:grid-cols-6">
+  <div class="ticks relative mb-8 overflow-hidden border border-line-strong bg-surface [--k:8px]">
+  <section class="grid grid-cols-2 sm:grid-cols-3 2xl:grid-cols-6">
     {@render stat('Topics', fmt(data.topics), `+${fmt(data.internal_topics)} internal`, href(cluster.name, 'topics'))}
     {@render stat('Partitions', fmt(data.partitions), data.brokers.length ? `~${fmt(Math.round(data.partitions / data.brokers.length))} per broker` : '—')}
     {@render stat('Under-replicated', fmt(data.under_replicated), data.under_replicated > 0 ? 'replicas out of ISR' : 'healthy', undefined, data.under_replicated > 0 ? 'text-warn' : '')}
@@ -131,7 +133,7 @@
   {#if data.has_registry}
     <a
       href={href(cluster.name, 'schemas')}
-      class="mb-8 flex flex-wrap items-center gap-2.5 border border-line-strong bg-surface px-3.5 py-2.5 text-[13px] text-ink hover:border-cta-line hover:bg-sel hover:no-underline"
+      class="-mt-px flex flex-wrap items-center gap-2.5 border-t border-dashed border-line-dash bg-bg px-[18px] py-2.5 text-[13px] text-ink hover:bg-sel hover:no-underline"
     >
       <span class="sq ok"></span>
       <span>Schema Registry connected</span>
@@ -139,16 +141,15 @@
       <span class="spacer"></span>
       <span class="inline-flex items-center gap-1.5 font-medium">Browse subjects <ArrowRight size={14} /></span>
     </a>
-  {:else}
-    <div class="mb-8"></div>
   {/if}
+  </div>
 
   <div class="mb-2.5 flex items-baseline gap-2">
     <h2>Partition health</h2>
     {#if problems.length}<span class="faint">{fmt(problems.length)} {problems.length === 1 ? 'topic needs' : 'topics need'} attention</span>{/if}
   </div>
   {#if !problems.length}
-    <div class="panel mb-8 flex items-center gap-2.5 px-4 py-3 text-[13px]">
+    <div class="mb-8 flex items-center gap-2.5 border-y border-dashed border-line-dash px-1 py-2.5 text-[13px]">
       <span class="sq ok"></span>
       <span>All {fmt(data.partitions)} partitions across {fmt(data.topics + data.internal_topics)} topics have a leader and a full ISR.</span>
       <Check size={14} class="text-ok" />

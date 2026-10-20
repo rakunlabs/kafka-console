@@ -245,7 +245,7 @@
     {@const shown = phase === 'counted' ? counted : ev}
     <div class="panel tbl">
       <table>
-        <thead><tr><th class="num">P</th><th>Offsets</th><th class="num">Offsets in range</th></tr></thead>
+        <thead><tr><th class="num" title="Partition"><abbr>P</abbr></th><th>Offsets</th><th class="num">Offsets in range</th></tr></thead>
         <tbody>
           {#each plan as r (r.partition)}
             <tr><td class="num mono">{r.partition}</td><td class="mono">{span(r)}</td><td class="num mono">{fmt(r.end - r.start)}</td></tr>

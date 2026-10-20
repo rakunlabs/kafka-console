@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Pending from './lib/Pending.svelte'
   import { api, type Cluster } from './lib/api'
   import { app } from './lib/features.svelte'
   import { router, href, go } from './lib/router.svelte'
@@ -110,7 +111,7 @@
 
 <svelte:window onkeydown={(e) => e.key === 'Escape' && (menuOpen = false)} />
 
-<div class="grid min-h-screen grid-cols-[minmax(0,1fr)] lg:grid-cols-[240px_minmax(0,1fr)]" class:tinted={!!current?.color} style:--cluster={current?.color}>
+<div class="grid min-h-screen grid-cols-[minmax(0,1fr)] lg:grid-cols-[216px_minmax(0,1fr)]" class:tinted={!!current?.color} style:--cluster={current?.color}>
   {#if menuOpen}
     <button class="scrim lg:hidden" aria-label="Close menu" onclick={() => (menuOpen = false)}></button>
   {/if}
@@ -232,11 +233,11 @@
       </button>
     </header>
 
-    <div class="relative z-[1] max-w-[1440px] px-4 pt-5 pb-14 sm:px-6 lg:px-10 lg:pt-7">
+    <div class="relative z-[1] max-w-[1920px] px-3 pt-4 pb-12 sm:px-4 lg:px-6 lg:pt-5">
       {#if error}
         <div class="error">{error}</div>
       {:else if !current}
-        <div class="empty">{clusters.length ? 'Cluster not found.' : 'Loading…'}</div>
+        <div class="empty">{#if clusters.length}Cluster not found.{:else}<Pending />{/if}</div>
       {:else}
         {#key `${route.cluster}/${route.section}/${route.name}`}
           {#if route.section === 'topics' && route.name}

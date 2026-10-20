@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Pending from '../lib/Pending.svelte'
   import { untrack } from 'svelte'
   import { api, type Cluster, type RegistryOverview, type RegistryQuery, type SubjectSummary } from '../lib/api'
   import { fmt } from '../lib/format'
@@ -114,14 +115,14 @@
             <td class="faint small">{s.compatibility ?? '—'}</td>
           </tr>
         {:else}
-          <tr><td colspan="6" class="empty">{list.loading ? 'Loading…' : search.trim() || typeFilter || contextFilter ? 'No subjects match your filters.' : 'No schemas registered.'}</td></tr>
+          <tr><td colspan="6" class="empty">{#if list.loading}<Pending />{:else}{search.trim() || typeFilter || contextFilter ? 'No subjects match your filters.' : 'No schemas registered.'}{/if}</td></tr>
         {/each}
       </tbody>
     </table>
     <MorePages shown={list.items.length} total={list.total} step={list.size} busy={list.more || list.loading} onmore={list.loadMore} />
   </div>
 {:else}
-  <div class="empty">Loading…</div>
+  <div class="empty"><Pending /></div>
 {/if}
 
 <Modal title="Global compatibility" bind:open={compatOpen}>

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Pending from './Pending.svelte'
   import { untrack } from 'svelte'
   import { api, type Cluster, type TopicDoc } from './api'
   import { showTime } from './viewer'
@@ -27,7 +28,7 @@
     No documentation for this topic yet. Add <code>{topic}.md</code> to the cluster's docs directory.
   </div>
 {:else if !doc}
-  <div class="empty">Loading…</div>
+  <div class="empty"><Pending /></div>
 {:else}
   <article class="panel doc markdown">
     <!-- eslint-disable-next-line svelte/no-at-html-tags -- rendered server-side without raw HTML -->

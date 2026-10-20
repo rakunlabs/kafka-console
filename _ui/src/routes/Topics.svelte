@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Pending from '../lib/Pending.svelte'
   import { untrack } from 'svelte'
   import { api, type Cluster, type TopicQuery, type TopicSummary } from '../lib/api'
   import { fmt, bytes } from '../lib/format'
@@ -101,7 +102,7 @@
         <tr>
           <th><button class="ghost th" onclick={() => sort('name')}>Name {#if sortKey === 'name'}{#if sortDesc}<ArrowDown size={12} />{:else}<ArrowUp size={12} />{/if}{/if}</button></th>
           <th class="num"><button class="ghost th" onclick={() => sort('partitions')}>Partitions {#if sortKey === 'partitions'}{#if sortDesc}<ArrowDown size={12} />{:else}<ArrowUp size={12} />{/if}{/if}</button></th>
-          <th class="num">RF</th>
+          <th class="num" title="Replication factor: copies of each partition"><abbr>RF</abbr></th>
           <th class="num"><button class="ghost th" onclick={() => sort('messages')} title="Reads offsets of every matching topic; slower on large clusters">Messages {#if sortKey === 'messages'}{#if sortDesc}<ArrowDown size={12} />{:else}<ArrowUp size={12} />{/if}{/if}</button></th>
           <th class="num"><button class="ghost th" onclick={() => sort('size')} title="Reads log sizes of every matching topic; slower on large clusters">Size {#if sortKey === 'size'}{#if sortDesc}<ArrowDown size={12} />{:else}<ArrowUp size={12} />{/if}{/if}</button></th>
           <th>Cleanup</th>
@@ -127,7 +128,7 @@
             </td>
           </tr>
         {:else}
-          <tr><td colspan="7" class="empty">{list.loading ? 'Loading…' : search.trim() ? 'No topics match your search.' : 'This cluster has no topics.'}</td></tr>
+          <tr><td colspan="7" class="empty">{#if list.loading}<Pending />{:else}{search.trim() ? 'No topics match your search.' : 'This cluster has no topics.'}{/if}</td></tr>
         {/each}
       </tbody>
     </table>

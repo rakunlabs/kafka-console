@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Pending from '../lib/Pending.svelte'
   import { api, type ACL, type Cluster, type Quota, type User } from '../lib/api'
   import { fmt } from '../lib/format'
   import { href, router } from '../lib/router.svelte'
@@ -326,7 +327,7 @@
               </td>
             </tr>
           {:else}
-            <tr><td colspan="7" class="empty">{aclLoading ? 'Loading…' : 'No ACLs defined.'}</td></tr>
+            <tr><td colspan="7" class="empty">{#if aclLoading}<Pending />{:else}No ACLs defined.{/if}</td></tr>
           {/each}
         </tbody>
       </table>
@@ -357,7 +358,7 @@
               </td>
             </tr>
           {:else}
-            <tr><td colspan="3" class="empty">{userLoading ? 'Loading…' : 'No SCRAM users.'}</td></tr>
+            <tr><td colspan="3" class="empty">{#if userLoading}<Pending />{:else}No SCRAM users.{/if}</td></tr>
           {/each}
         </tbody>
       </table>
@@ -388,7 +389,7 @@
               </td>
             </tr>
           {:else}
-            <tr><td colspan={quotaKeys.length + 2} class="empty">{quotaLoading ? 'Loading…' : 'No quotas defined.'}</td></tr>
+            <tr><td colspan={quotaKeys.length + 2} class="empty">{#if quotaLoading}<Pending />{:else}No quotas defined.{/if}</td></tr>
           {/each}
         </tbody>
       </table>

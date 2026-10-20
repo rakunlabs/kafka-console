@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Pending from '../lib/Pending.svelte'
   import { api, type BrokerDetail, type Cluster, type ConfigChange } from '../lib/api'
   import { bytes, fmt } from '../lib/format'
   import { href } from '../lib/router.svelte'
@@ -34,7 +35,7 @@
 {#if error}
   <div class="error">{error}</div>
 {:else if !data}
-  <div class="empty">Loading…</div>
+  <div class="empty"><Pending /></div>
 {:else}
   <div class="summary">
     <span class="mono">{data.host}:{data.port}</span>

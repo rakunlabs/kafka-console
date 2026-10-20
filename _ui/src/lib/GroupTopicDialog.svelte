@@ -233,7 +233,7 @@
           <tr>
             <th class="ck"><input type="checkbox" checked={allOn} indeterminate={!allOn && chosen.length > 0}
               onchange={() => (rows = rows.map((r) => ({ ...r, on: !allOn })))} aria-label="Include all partitions" /></th>
-            <th class="num">P</th><th class="num">Range</th><th class="num">Start offset</th><th class="num">Backlog</th>
+            <th class="num" title="Partition"><abbr>P</abbr></th><th class="num">Range</th><th class="num">Start offset</th><th class="num">Backlog</th>
           </tr>
         </thead>
         <tbody>

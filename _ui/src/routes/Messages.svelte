@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy, untrack } from 'svelte'
   import { api, tail, messageStream, isAbort, rawURL, type Cluster, type ConsumeResult, type Message } from '../lib/api'
+  import Pending from '../lib/Pending.svelte'
   import { fmt } from '../lib/format'
   import { prefs, loadColumns, saveColumns } from '../lib/prefs.svelte'
   import ViewSettings from '../lib/ViewSettings.svelte'
@@ -309,14 +310,17 @@
 
   const hasMore = $derived(!live && !!result && result.stopped_by !== 'live' && (loadingMore || (!loading && Object.keys(result.next ?? {}).length > 0)))
 
+  // Exports the picked messages when any are picked, otherwise every message
+  // shown, in list order either way.
   function exportMessages(kind: 'json' | 'csv') {
     if (!result) return
+    const list = pickedMessages.length ? pickedMessages : result.messages
     let body: string
     let type: string
     if (kind === 'json') {
       // JSON values are spliced in as their text: parsing them would round
       // large integers, and Import reads this file back.
-      body = '[\n' + result.messages.map((m) => {
+      body = '[\n' + list.map((m) => {
         const raw = rawJSON(m)
         const rest = JSON.stringify({ ...m, value: raw === undefined ? m.value : null }, null, 2)
         return '  ' + (raw === undefined ? rest : rest.replace(/"value": null/, () => `"value": ${raw}`)).replaceAll('\n', '\n  ')
@@ -330,7 +334,7 @@
       // Binary keys and values are base64 text; the encoding columns tell
       // Import to decode them back to the original bytes.
       const rows = [['partition', 'offset', 'timestamp', 'key', 'value', 'headers', 'key_encoding', 'value_encoding']]
-      for (const m of result.messages) {
+      for (const m of list) {
         rows.push([String(m.partition), String(m.offset), m.timestamp, m.key ?? '', m.value ?? '', JSON.stringify(m.headers),
           m.key_encoding === 'base64' ? 'base64' : '', m.value_encoding === 'base64' ? 'base64' : ''])
       }
@@ -546,8 +550,23 @@
     let longest = 3
     for (const m of result?.messages ?? []) longest = Math.max(longest, (m.key ?? '—').length)
     const px = Math.max(96, Math.ceil(longest * 7.6) + 30)
-    return `${Math.min(px, selected ? 240 : 380)}px`
+    return Math.min(px, selected ? 200 : 380)
   })
+  const timeWidth = $derived(prefs.time === 'relative' || prefs.time === 'unix' ? 130 : prefs.time === 'utc' ? 210 : 200)
+
+  // The list's columns have fixed widths, so it needs at least their sum (plus
+  // room for the value preview) before the detail can sit beside it. When the
+  // split is narrower than both, the detail goes below the list instead of
+  // overlapping it.
+  const detailMin = 380
+  let splitWidth = $state(0)
+  const listMin = $derived(
+    (cluster.read_only ? 0 : 34) + 40 + 44 + 84 + timeWidth + keyWidth + (showColumns ? columns.length * 140 : 0) + 160,
+  )
+  const stacked = $derived(narrow.matches || splitWidth < listMin + 12 + detailMin)
+  // Too narrow for the side-by-side split but wider than a phone, the detail
+  // slides over the list from the right instead of opening below it.
+  const drawer = $derived(!narrow.matches && stacked)
 
   // Last: load() resets state declared throughout this script before its
   // first await.
@@ -682,8 +701,9 @@
           <button class="ghost small" onclick={() => (importing = true)} title="Write records from a JSON, CSV or text file"><Upload size={13} />Import…</button>
         {/if}
         {#if result?.messages.length}
-          <button class="ghost small" onclick={() => exportMessages('json')}><Download size={13} />{narrow.matches ? 'Export JSON' : 'JSON'}</button>
-          <button class="ghost small" onclick={() => exportMessages('csv')}><Download size={13} />{narrow.matches ? 'Export CSV' : 'CSV'}</button>
+          {@const what = pickedMessages.length ? `the ${fmt(pickedMessages.length)} selected messages` : `all ${fmt(result.messages.length)} messages shown`}
+          <button class="ghost small" title="Download {what} as JSON" onclick={() => exportMessages('json')}><Download size={13} />{narrow.matches ? 'Export JSON' : 'JSON'}{#if pickedMessages.length} ({pickedMessages.length}){/if}</button>
+          <button class="ghost small" title="Download {what} as CSV" onclick={() => exportMessages('csv')}><Download size={13} />{narrow.matches ? 'Export CSV' : 'CSV'}{#if pickedMessages.length} ({pickedMessages.length}){/if}</button>
         {/if}
       {/snippet}
       {#if narrow.matches}
@@ -695,7 +715,8 @@
     {/if}
   </div>
 
-  <div class="split" class:open={!!selected}>
+  <div class="split" class:open={!!selected} class:stacked bind:clientWidth={splitWidth}
+    style:--list-min="{listMin}px" style:--detail-min="{detailMin}px">
     <div class="panel list">
       <table class="manual">
         <colgroup>
@@ -703,8 +724,8 @@
           {#if narrow.matches}
             <col />
           {:else}
-            <col style:width="40px" /><col style:width="44px" /><col style:width="84px" /><col style:width={prefs.time === 'relative' || prefs.time === 'unix' ? '130px' : prefs.time === 'utc' ? '210px' : '200px'} />
-            <col style:width={keyWidth} />
+            <col style:width="40px" /><col style:width="44px" /><col style:width="84px" /><col style:width="{timeWidth}px" />
+            <col style:width="{keyWidth}px" />
             {#if showColumns}{#each columns as c (c)}<col style:width="140px" />{/each}{/if}
             <col />
           {/if}
@@ -725,7 +746,7 @@
                   </button>
                 {/if}
               </th>
-              <th class="num">P</th><th class="num">Offset</th><th>Time</th><th>Key</th>
+              <th class="num" title="Partition"><abbr>P</abbr></th><th class="num">Offset</th><th>Time</th><th>Key</th>
               {#if showColumns}{#each columns as c (c)}<th class="mono vcol" title="value.{c}">{c}</th>{/each}{/if}
               <th>Value</th>
             {/if}
@@ -745,7 +766,7 @@
               {#if narrow.matches}
                 <td class="card">
                   <div class="card-meta mono">
-                    <span>P{m.partition}</span><span>#{m.offset}</span>
+                    <span title="Partition {m.partition}">P{m.partition}</span><span title="Offset {m.offset}">#{m.offset}</span>
                     <span class="faint">{when(m.timestamp)}</span>
                   </div>
                   <div class="mono key">{k[0]}{#if k[1]}<mark>{k[1]}</mark>{/if}{k[2]}</div>
@@ -795,7 +816,7 @@
               </tr>
             {/if}
           {:else}
-            <tr><td colspan={cols} class="empty">{live ? 'Waiting for new messages…' : loading ? 'Reading…' : 'No messages found.'}</td></tr>
+            <tr><td colspan={cols} class="empty">{#if live}<Pending label="Waiting for new messages…" />{:else if loading}<Pending label="Reading…" />{:else}No messages found.{/if}</td></tr>
           {/each}
         </tbody>
       </table>
@@ -813,30 +834,29 @@
     </div>
 
     {#if selected}
-      <div class="panel detail" class:sheet role={sheet ? 'dialog' : undefined} aria-modal={sheet ? 'true' : undefined}
-        aria-label={sheet ? `Message ${selected.partition}:${selected.offset}` : undefined}>
+      <div class="panel detail" class:sheet class:drawer role={sheet || drawer ? 'dialog' : undefined} aria-modal={sheet ? 'true' : undefined}
+        aria-label={sheet || drawer ? `Message ${selected.partition}:${selected.offset}` : undefined}>
         <div class="dhead">
-          <div class="grid">
-            <b>Partition {selected.partition} · Offset {fmt(selected.offset)}</b>
-            <span class="faint mono" title={other(selected.timestamp)}>{when(selected.timestamp)}</span>
+          <div class="dtop">
+            <div class="dtitle">
+              <b><span class="faint">Partition</span> {selected.partition} <span class="faint">·</span> <span class="faint">Offset</span> <span class="mono">{fmt(selected.offset)}</span></b>
+              <span class="faint mono time" title={other(selected.timestamp)}>{when(selected.timestamp)}</span>
+            </div>
+            <div class="seg" role="group" aria-label="Walk messages">
+              <button title="Previous (k)" aria-label="Previous message" onclick={() => step(-1)}><ChevronUp size={15} /></button>
+              <button title="Next (j)" aria-label="Next message" onclick={() => step(1)}><ChevronDown size={15} /></button>
+            </div>
+            <button class="ghost icon" title="Close (Esc)" aria-label="Close" onclick={() => (selected = undefined)}><X size={16} /></button>
           </div>
-          <span class="spacer"></span>
-          <button class="ghost small" title="Previous (k)" aria-label="Previous message" onclick={() => step(-1)}><ChevronUp size={15} /></button>
-          <button class="ghost small" title="Next (j)" aria-label="Next message" onclick={() => step(1)}><ChevronDown size={15} /></button>
-          {#snippet msgActions()}
-            {#if !cluster.read_only}
-              <button class="ghost small" disabled={editing} title="Open this message in Produce" onclick={() => selected && edit(selected)}><Pencil size={13} />{editing ? 'Loading…' : 'Edit & resend'}</button>
-              <button class="ghost small" title="Resend this message" onclick={() => selected && resend([selected])}><Repeat size={13} />Resend…</button>
-            {/if}
-          {/snippet}
-          {#if sheet && !cluster.read_only}
-            <Overflow label="Message actions">{@render msgActions()}</Overflow>
-          {:else}
-            {@render msgActions()}
+          {#if !cluster.read_only}
+            <div class="dacts">
+              <button class="small" disabled={editing} title="Open this message in Produce" onclick={() => selected && edit(selected)}><Pencil size={13} />{editing ? 'Loading…' : 'Edit & resend'}</button>
+              <button class="small" title="Resend this message byte for byte" onclick={() => selected && resend([selected])}><Repeat size={13} />Resend…</button>
+            </div>
           {/if}
-          <button class="ghost small" title="Close (Esc)" aria-label="Close" onclick={() => (selected = undefined)}>{#if sheet}<X size={16} />{:else}Close{/if}</button>
         </div>
 
+        <div class="dbody">
         {#if selected.decode_error}
           <section><div class="error small-err">Schema decoding failed: {selected.decode_error}</div></section>
         {/if}
@@ -889,11 +909,12 @@
             <div class="faint">No headers.</div>
           {/if}
         </section>
+        </div>
       </div>
     {/if}
   </div>
 {:else if loading}
-  <div class="empty">Reading…</div>
+  <div class="empty"><Pending label="Reading…" /></div>
 {/if}
 
 <style>
@@ -969,7 +990,7 @@
   .meta { font-size: 13px; margin-bottom: 8px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; min-height: 26px; }
   .err { color: var(--danger); font-size: 12px; }
   .split { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; align-items: start; }
-  .split.open { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .split.open:not(.stacked) { grid-template-columns: minmax(var(--list-min), 1fr) minmax(var(--detail-min), 1fr); }
   .list > table { min-width: 0; }
   /* The list grows with its rows and the page scrolls; the header row sticks
      under the top edge (under the app header below lg) while reading. */
@@ -977,6 +998,9 @@
   .list thead th { top: var(--stick); z-index: 2; }
   .list tbody tr { scroll-margin-top: calc(var(--stick) + 40px); scroll-margin-bottom: 12px; }
   @media (max-width: 1023.98px) { .list { --stick: 48px; } }
+  /* Between phone and lg the panel scrolls sideways, so it is the header's
+     sticky container and the offset would push the header onto the rows. */
+  @media (min-width: 640px) and (max-width: 1023.98px) { .list thead th { position: static; } }
   .list table { table-layout: fixed; }
   .list tr { cursor: pointer; }
   .list tr:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
@@ -997,21 +1021,42 @@
   .time { overflow: hidden; text-overflow: ellipsis; }
   .key, .val { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .val { color: var(--text-2); }
-  .detail { position: sticky; top: 12px; max-height: calc(100vh - 24px); overflow: auto; overscroll-behavior: contain; }
-  .dhead { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 10px 12px; border-bottom: 1px solid var(--border-strong); background: var(--surface-2); position: sticky; top: 0; z-index: 1; }
+  /* The header stays put; the body under it scrolls. */
+  .detail { position: sticky; top: 12px; max-height: calc(100vh - 24px); display: flex; flex-direction: column; overflow: hidden; }
+  .dbody { flex: 1 1 auto; min-height: 0; overflow: auto; overscroll-behavior: contain; }
+  /* Header: who the message is, how to walk and close, on one line that
+     never wraps; the write actions sit on their own row under it. */
+  .dhead { flex: none; display: grid; grid-template-columns: minmax(0, 1fr); border-bottom: 1px solid var(--border-strong); background: var(--surface-2); }
+  .dtop { display: flex; align-items: center; gap: 8px; padding: 4px 4px 4px 12px; }
+  /* Title and time on one baseline; the time gives way first when narrow. */
+  .dtitle { display: flex; align-items: baseline; gap: 10px; flex: 1; min-width: 0; }
+  .dtitle > * { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dtitle b { flex: none; max-width: 100%; font-weight: 600; }
+  .dtitle b .faint { font-weight: 400; }
+  .dtitle b .mono { font-size: 14px; font-weight: 600; }
+  .dtitle .time { flex: 0 1 auto; min-width: 0; font-size: 12px; }
+  .seg { display: flex; flex: none; }
+  .seg button { padding: 2px 5px; border-radius: 0; color: var(--text-2); background: var(--surface); }
+  .seg button + button { margin-left: -1px; }
+  .seg button:first-child { border-radius: var(--radius) 0 0 var(--radius); }
+  .seg button:last-child { border-radius: 0 var(--radius) var(--radius) 0; }
+  .seg button:hover:not(:disabled) { color: var(--text); }
+  .icon { flex: none; padding: 3px; color: var(--text-2); }
+  .icon:hover:not(:disabled) { color: var(--text); }
+  .dacts { display: flex; flex-wrap: wrap; gap: 6px; padding: 4px 12px; border-top: 1px dashed var(--line-dash); }
   section { padding: 12px; border-bottom: 1px solid var(--border); }
   section:last-child { border-bottom: 0; }
   .label { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 500; color: var(--text-2); margin-bottom: 6px; }
   .headers td { padding: 4px 8px; font-size: 12px; }
 
   .pk { padding-right: 0; }
-  td.pk { padding-top: 9px; }
+  td.pk { padding-top: calc(var(--cell-y) + 1px); }
   .pk input { display: block; margin: 0 0 0 2px; }
   .list tr.picked td { background: var(--sel); }
   .pickbar { display: inline-flex; align-items: center; gap: 6px; padding: 1px 4px 1px 10px; margin-right: 6px; color: var(--text); background: var(--sel); border: 1px solid var(--cta-border); border-radius: var(--radius); }
   .pickbar b { font-weight: 600; }
   .tog { width: 1%; padding-right: 0; }
-  td.tog { padding-top: 7px; }
+  td.tog { padding-top: calc(var(--cell-y) - 1px); }
   .xbtn {
     width: 20px;
     height: 20px;
@@ -1034,10 +1079,24 @@
   .inl-meta code { font-size: 12px; }
   .hdr { display: inline-flex; gap: 4px; font: 12px var(--mono); padding: 0 6px; border: 1px solid var(--border); border-radius: 2px; }
 
-  @media (max-width: 1100px) {
-    .split.open { grid-template-columns: minmax(0, 1fr); }
-    .detail { position: static; }
+  /* The drawer leaves the list's left side visible, so rows stay clickable
+     and j/k keep walking it; under lg it starts below the app header. */
+  .detail.drawer {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 32;
+    width: min(560px, calc(100vw - 64px));
+    max-height: none;
+    border-width: 0 0 0 1px;
+    border-radius: 0;
+    box-shadow: -12px 0 32px rgb(0 0 0 / .18);
+    animation: drawer-in .18s cubic-bezier(.16, 1, .3, 1);
   }
+  @keyframes drawer-in { from { transform: translateX(24px); opacity: 0; } }
+  @media (max-width: 1023.98px) { .detail.drawer { top: 48px; } }
+  @media (prefers-reduced-motion: reduce) { .detail.drawer { animation: none; } }
 
   /* Phones. The field strip becomes a two-column grid with search on its own
      row, the actions fill the width, rows are two-line cards, and the
@@ -1075,9 +1134,9 @@
       overscroll-behavior: contain;
       padding-bottom: env(safe-area-inset-bottom);
     }
-    .sheet .dhead { padding: 10px 8px 10px 14px; flex-wrap: nowrap; }
-    .sheet .dhead .grid { min-width: 0; }
-    .sheet .dhead .grid > * { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .sheet .dhead button.small { padding: 6px 8px; }
+    .sheet .dtop { padding: 10px 8px 10px 14px; }
+    .sheet .dacts { padding-inline: 14px; }
+    .sheet .seg button { padding: 6px 9px; }
+    .sheet .icon { padding: 7px; }
   }
 </style>

@@ -5,7 +5,8 @@
   import { detectFormat, RecordReader, FatalError, type FileFormat, type ItemShape, type Item } from './importFile'
   import { checkFile, sendFile, type SendResult } from './importer'
   import Modal from './Modal.svelte'
-  import { FileUp, Check, Square, ListChecks, Send, StepForward } from '@lucide/svelte'
+  import ValueView from './ValueView.svelte'
+  import { FileUp, Check, Square, ListChecks, Send, StepForward, Plus, Minus } from '@lucide/svelte'
 
   // Writes records from a file to this topic: a console export (JSON or CSV),
   // JSON lines, or one value per line. The file is read in a stream, twice:
@@ -114,6 +115,7 @@
     if (!f) return
     clearResults()
     file = f
+    expanded = new Set()
     head = await f.slice(0, headBytes).text()
     format = detectFormat(f.name, head)
     shape = format === 'lines' ? 'value' : 'record'
@@ -194,6 +196,14 @@
   }
 
   const pct = $derived(file?.size ? Math.min(100, Math.round((readBytes / file.size) * 100)) : 0)
+
+  // Preview rows opened to show the whole value, by item number.
+  let expanded = $state(new Set<number>())
+  function toggle(item: number) {
+    const next = new Set(expanded)
+    if (!next.delete(item)) next.add(item)
+    expanded = next
+  }
   const short = (v: string | null) => (v === null ? 'null' : v.length > 80 ? v.slice(0, 80) + '…' : v)
   const valid = $derived(total - problemCount)
   const finished = $derived(phase === 'done' && !error && !resumeAt)
@@ -238,11 +248,23 @@
       {#if preview.items.length}
         <p class="faint small">First items of the file:</p>
         <div class="panel tbl">
-          <table>
-            <thead><tr><th class="num">#</th>{#if keepPartition}<th class="num">P</th>{/if}<th>Key</th><th>Value</th><th class="num">Headers</th></tr></thead>
+          <table class="manual">
+            <colgroup>
+              <col style:width="32px" /><col style:width="48px" />{#if keepPartition}<col style:width="48px" />{/if}<col style:width="28%" /><col /><col style:width="76px" />
+            </colgroup>
+            <thead><tr><th class="tog"></th><th class="num">#</th>{#if keepPartition}<th class="num" title="Partition"><abbr>P</abbr></th>{/if}<th>Key</th><th>Value</th><th class="num">Headers</th></tr></thead>
             <tbody>
-              {#each preview.items as it (it.item)}
-                <tr>
+              {#each preview.items as it, i (it.item)}
+                {@const isOpen = !!it.record && expanded.has(it.item)}
+                <tr class:alt={i % 2 === 1} class:opened={isOpen}>
+                  <td class="tog">
+                    {#if it.record}
+                      <button type="button" class="xbtn" class:on={isOpen} aria-expanded={isOpen}
+                        aria-label={isOpen ? `Collapse item ${it.item}` : `Show item ${it.item}`} onclick={() => toggle(it.item)}>
+                        {#if isOpen}<Minus size={12} strokeWidth={2.2} />{:else}<Plus size={12} strokeWidth={2.2} />{/if}
+                      </button>
+                    {/if}
+                  </td>
                   <td class="num mono">{it.item}</td>
                   {#if it.record}
                     {#if keepPartition}<td class="num mono">{it.record.partition ?? '—'}</td>{/if}
@@ -253,6 +275,24 @@
                     <td colspan={keepPartition ? 4 : 3} class="err cut">{it.problem}</td>
                   {/if}
                 </tr>
+                {#if isOpen && it.record}
+                  {@const r = it.record}
+                  <tr class="xrow" class:alt={i % 2 === 1}>
+                    <td></td>
+                    <td colspan={keepPartition ? 5 : 4}>
+                      <div class="inl">
+                        <div class="inl-meta">
+                          {#if r.key !== null}<span class="faint">key</span><code>{r.key}</code>{/if}
+                          {#if r.key_encoding === 'base64' || r.value_encoding === 'base64'}<span class="badge">base64</span>{/if}
+                          {#if keepSchema && (r.key_schema || r.value_schema)}<span class="badge accent">schema</span>{/if}
+                          {#if keepTimestamp && r.timestamp != null}<span class="faint">{new Date(r.timestamp).toISOString()}</span>{/if}
+                          {#each r.headers as h, j (j)}<span class="hdr"><span class="faint">{h.key}</span>{h.value}</span>{/each}
+                        </div>
+                        <ValueView text={r.value} maxHeight={260} />
+                      </div>
+                    </td>
+                  </tr>
+                {/if}
               {/each}
             </tbody>
           </table>
@@ -352,9 +392,22 @@
   .error ul { margin: 6px 0 0 18px; padding: 0; }
   .sum { display: flex; align-items: center; gap: 6px; font-size: 14px; }
   .sum b { font-weight: 600; }
-  .tbl { max-height: 200px; overflow: auto; }
+  .tbl { max-height: 420px; overflow: auto; }
   .tbl table { table-layout: fixed; }
   .cut { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tog { padding-right: 0; }
+  td.tog { padding-top: calc(var(--cell-y) - 1px); }
+  .xbtn { width: 20px; height: 20px; padding: 0; justify-content: center; border-radius: 2px; color: var(--text-2); }
+  .xbtn.on { background: var(--cta); border-color: var(--cta-border); color: var(--cta-text); }
+  .xbtn.on:hover:not(:disabled) { background: var(--cta-hover); }
+  tr.opened td { border-bottom-color: transparent; }
+  tr.xrow td { padding-top: 0; }
+  tbody tr.xrow:hover td { background: transparent; }
+  tbody tr.xrow.alt:hover td { background: var(--stripe); }
+  .inl { display: grid; gap: 6px; padding-bottom: 6px; min-width: 0; }
+  .inl-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; font-size: 12px; }
+  .inl-meta code { font-size: 12px; overflow-wrap: anywhere; }
+  .hdr { display: inline-flex; gap: 4px; font: 12px var(--mono); padding: 0 6px; border: 1px solid var(--border); border-radius: 2px; }
   .donemsg { display: flex; align-items: center; gap: 6px; font-size: 14px; color: var(--ok); }
   .donemsg b, .donemsg a { color: var(--text); }
   .progress { display: grid; gap: 6px; font-size: 13px; }

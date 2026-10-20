@@ -62,6 +62,8 @@
     z-index: 0;
     pointer-events: none;
     overflow: hidden;
+    /* Kept faint so it reads as texture, not as content. */
+    opacity: .55;
   }
   .grid {
     position: absolute;

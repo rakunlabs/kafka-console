@@ -177,7 +177,7 @@
   {#if plan}
     <div class="panel plan">
       <table>
-        <thead><tr><th class="num">P</th><th class="num">Range</th><th class="num">Current</th><th class="num">New</th><th class="num">Change</th></tr></thead>
+        <thead><tr><th class="num" title="Partition"><abbr>P</abbr></th><th class="num">Range</th><th class="num">Current</th><th class="num">New</th><th class="num">Change</th></tr></thead>
         <tbody>
           {#each plan as p (p.partition)}
             <tr class:same={p.from === p.to}>

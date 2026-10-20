@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Pending from './Pending.svelte'
   import { untrack } from 'svelte'
   import { api, type Cluster, type Partition, type PartitionMove, type ReassignResult } from './api'
   import Modal from './Modal.svelte'
@@ -145,10 +146,10 @@
       {/each}
     </div>
 
-    {#if !rows.length && busy}<div class="empty">Loading…</div>{/if}
+    {#if !rows.length && busy}<div class="empty"><Pending /></div>{/if}
     <div class="panel tbl">
       <table>
-        <thead><tr><th class="num">P</th><th>Now</th><th>Replicas</th></tr></thead>
+        <thead><tr><th class="num" title="Partition"><abbr>P</abbr></th><th>Now</th><th>Replicas</th></tr></thead>
         <tbody>
           {#each rows as r (r.partition)}
             {@const why = problem(r)}

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Pending from '../lib/Pending.svelte'
   import { api, type Cluster, type TopicConsumer } from '../lib/api'
   import { fmt, stateBadge } from '../lib/format'
   import { href } from '../lib/router.svelte'
@@ -83,7 +84,7 @@
 {#if error}
   <div class="error">{error}</div>
 {:else if !groups}
-  <div class="empty">Loading…</div>
+  <div class="empty"><Pending /></div>
 {:else if !groups.length}
   <div class="panel empty">
     <Users size={20} class="mx-auto mb-2 text-ink-3" />

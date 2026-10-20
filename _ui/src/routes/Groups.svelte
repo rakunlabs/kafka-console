@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Pending from '../lib/Pending.svelte'
   import { untrack } from 'svelte'
   import { api, type Cluster, type GroupQuery, type GroupSummary } from '../lib/api'
   import { fmt, stateBadge } from '../lib/format'
@@ -75,7 +76,7 @@
             </td>
           </tr>
         {:else}
-          <tr><td colspan="5" class="empty">{list.loading ? 'Loading…' : search.trim() ? 'No groups match your search.' : 'No consumer groups found.'}</td></tr>
+          <tr><td colspan="5" class="empty">{#if list.loading}<Pending />{:else}{search.trim() ? 'No groups match your search.' : 'No consumer groups found.'}{/if}</td></tr>
         {/each}
       </tbody>
     </table>

@@ -173,7 +173,7 @@
 
 <svelte:window onkeydown={global} />
 
-<dialog bind:this={dialog} class="palette" onclose={() => (open = false)} onclick={(e) => e.target === dialog && close()} aria-label="Go to">
+<dialog bind:this={dialog} class="palette ticks" onclose={() => (open = false)} onclick={(e) => e.target === dialog && close()} aria-label="Go to">
   {#if open}
     <div class="search">
       <Search size={16} />

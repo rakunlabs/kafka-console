@@ -1,4 +1,5 @@
 <script lang="ts">
+  import Pending from '../lib/Pending.svelte'
   import { api, type Cluster, type TopicDetail, type Message } from '../lib/api'
   import { fmt, bytes, duration, sizeIEC, partitionList } from '../lib/format'
   import { Mail, Columns3, SlidersHorizontal, Send, Users, ArrowRight, Plus, Eraser, Trash2, RefreshCw, ShieldCheck, ArrowRightLeft, BookOpen } from '@lucide/svelte'
@@ -174,8 +175,6 @@
     if (isr !== undefined) out.push({ key: 'min.insync.replicas', label: 'Min in-sync replicas', value: String(isr) })
     const comp = cfg.get('compression.type')?.value
     if (comp) out.push({ key: 'compression.type', label: 'Compression', value: comp })
-    const ts = cfg.get('message.timestamp.type')?.value
-    if (ts) out.push({ key: 'message.timestamp.type', label: 'Timestamp', value: ts === 'CreateTime' ? 'Create time' : ts === 'LogAppendTime' ? 'Log append time' : ts })
     return out
   })
   // Partition map: fill shows each partition's share of the topic's messages
@@ -283,13 +282,16 @@
 {#if error && !data}
   <div class="error">{error}</div>
 {:else if !data}
-  <div class="empty">Loading…</div>
+  <div class="empty"><Pending /></div>
 {:else}
   {#if error}<div class="error mb-3">{error}</div>{/if}
   <!-- Compact stat strip: label left, value right. The one qualifier worth
        keeping (replication, replicated size) sits beside the label; plain
        explanations moved to tooltips. -->
-  <section class="corners mb-3 grid grid-cols-[repeat(auto-fit,minmax(170px,1fr))] overflow-hidden border border-line-strong bg-surface [--c:var(--text-2)] [--k:7px]">
+  <!-- Stats and the key settings share one frame: the settings row is the
+       stats' footnote, not a box of its own. -->
+  <div class="ticks relative mb-5 overflow-hidden border border-line-strong bg-surface">
+  <section class="grid grid-cols-[repeat(auto-fit,minmax(170px,1fr))]">
     {#each [
       { label: 'Messages', value: fmt(totals.messages), help: 'Sum of high minus low watermark across partitions' },
       { label: 'Partitions', value: fmt(data.partitions.length), aside: `RF ${rf}`, help: `Replication factor ${rf}` },
@@ -315,12 +317,12 @@
 
   {#if settings.length}
     <a
-      class="mb-3 grid grid-cols-[repeat(auto-fill,minmax(190px,1fr))] overflow-hidden border border-line-strong bg-surface text-ink transition-colors hover:border-ink-3 hover:bg-hover hover:no-underline"
+      class="grid grid-cols-[repeat(auto-fill,minmax(190px,1fr))] border-t border-dashed border-line-dash bg-bg text-ink transition-colors hover:bg-hover hover:no-underline"
       href={href(cluster.name, 'topics', name, { tab: 'config' })}
       title="Open topic config"
     >
       {#each settings as st (st.key)}
-        <div class="-mr-px -mb-px flex min-w-0 items-baseline gap-2 border-r border-b border-line px-3.5 py-2"
+        <div class="-mr-px flex min-w-0 items-baseline gap-2 border-r border-line px-3.5 py-2"
           title={st.note ? `${st.label}: ${st.value} ${st.note}` : undefined}>
           <span class="flex items-center gap-1.5 text-xs whitespace-nowrap text-ink-3">
             {st.label}
@@ -332,8 +334,7 @@
       {/each}
     </a>
   {/if}
-
-  <div class="mb-5"></div>
+  </div>
 
   <div class="tabs" role="tablist">
     {#each tabs as t (t.id)}
@@ -342,7 +343,7 @@
   </div>
 
   {#if tab === 'partitions'}
-    <div class="panel mb-3 flex flex-wrap items-center gap-x-6 gap-y-2 px-4 py-3">
+    <div class="mb-3 flex flex-wrap items-center gap-x-6 gap-y-2">
       <PartitionMap cells={partitionCells} size={data.partitions.length > 120 ? 10 : 16} />
       <span class="text-[13px] text-ink-2">
         Fill = messages relative to the busiest partition.
@@ -358,7 +359,7 @@
     <div class="panel">
       <table>
         <thead>
-          <tr><th class="num">Partition</th><th class="num">Leader</th><th>Replicas</th><th>ISR</th><th class="num">Low</th><th class="num">High</th><th class="num">Messages</th><th class="num">Size</th></tr>
+          <tr><th class="num">Partition</th><th class="num">Leader</th><th>Replicas</th><th title="In-sync replicas: the replicas fully caught up with the leader"><abbr>ISR</abbr></th><th class="num">Low</th><th class="num">High</th><th class="num">Messages</th><th class="num">Size</th></tr>
         </thead>
         <tbody>
           {#each data.partitions.slice(0, partitionsShown) as p (p.id)}
@@ -368,7 +369,7 @@
               <td class="mono">{p.replicas.join(', ')}</td>
               <td class="mono">
                 {p.isr.join(', ')}
-                {#if p.isr.length < p.replicas.length}<span class="badge warn">URP</span>{/if}
+                {#if p.isr.length < p.replicas.length}<span class="badge warn" title="Under-replicated partition: fewer in-sync replicas than replicas">URP</span>{/if}
               </td>
               <td class="num mono">{fmt(p.low)}</td>
               <td class="num mono">{fmt(p.high)}</td>
@@ -426,7 +427,7 @@
     {/if}
     <div class="panel">
       <table>
-        <thead><tr><th class="num">P</th><th class="num">New low</th><th></th></tr></thead>
+        <thead><tr><th class="num" title="Partition"><abbr>P</abbr></th><th class="num">New low</th><th></th></tr></thead>
         <tbody>
           {#each truncResult as r (r.partition)}
             <tr><td class="num mono">{r.partition}</td><td class="num mono">{fmt(r.low_watermark)}</td><td>{#if r.error}<span class="badge danger">{r.error}</span>{/if}</td></tr>
