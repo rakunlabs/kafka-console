@@ -535,6 +535,15 @@
 
   const cols = $derived((cluster.read_only ? 0 : 1) + (narrow.matches ? 3 : 6) + (showColumns ? columns.length : 0))
 
+  // The key column fits the longest key shown, so keys read whole; the value
+  // preview takes what is left. Capped so the value never gets squeezed out.
+  const keyWidth = $derived.by(() => {
+    let longest = 3
+    for (const m of result?.messages ?? []) longest = Math.max(longest, (m.key ?? '—').length)
+    const px = Math.max(96, Math.ceil(longest * 7.6) + 30)
+    return `${Math.min(px, selected ? 240 : 380)}px`
+  })
+
   // Last: load() resets state declared throughout this script before its
   // first await.
   load()
@@ -690,7 +699,7 @@
             <col />
           {:else}
             <col style:width="40px" /><col style:width="44px" /><col style:width="84px" /><col style:width={prefs.time === 'relative' || prefs.time === 'unix' ? '130px' : prefs.time === 'utc' ? '210px' : '200px'} />
-            <col style:width={selected ? '120px' : '170px'} />
+            <col style:width={keyWidth} />
             {#if showColumns}{#each columns as c (c)}<col style:width="140px" />{/each}{/if}
             <col />
           {/if}
@@ -748,7 +757,7 @@
                 <td class="num mono">{m.partition}</td>
                 <td class="num mono">{m.offset}</td>
                 <td class="mono nowrap time" title={other(m.timestamp)}>{when(m.timestamp)}</td>
-                <td class="mono key">{k[0]}{#if k[1]}<mark>{k[1]}</mark>{/if}{k[2]}</td>
+                <td class="mono key" title={m.key ?? undefined}>{k[0]}{#if k[1]}<mark>{k[1]}</mark>{/if}{k[2]}</td>
                 {#if showColumns}{#each columns as c (c)}{@const f = field(m, c)}<td class="mono vcol" title={f}>{f}</td>{/each}{/if}
                 <td class="mono val">{v[0]}{#if v[1]}<mark>{v[1]}</mark>{/if}{v[2]}</td>
               {/if}
@@ -955,7 +964,12 @@
   .split { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; align-items: start; }
   .split.open { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
   .list > table { min-width: 0; }
-  .list { max-height: calc(100vh - 300px); overflow: auto; }
+  /* The list grows with its rows and the page scrolls; the header row sticks
+     under the top edge (under the app header below lg) while reading. */
+  .list { --stick: 0px; }
+  .list thead th { top: var(--stick); z-index: 2; }
+  .list tbody tr { scroll-margin-top: calc(var(--stick) + 40px); scroll-margin-bottom: 12px; }
+  @media (max-width: 1023.98px) { .list { --stick: 48px; } }
   .list table { table-layout: fixed; }
   .list tr { cursor: pointer; }
   .list tr:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
@@ -976,7 +990,7 @@
   .time { overflow: hidden; text-overflow: ellipsis; }
   .key, .val { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .val { color: var(--text-2); }
-  .detail { position: sticky; top: 12px; max-height: calc(100vh - 300px); overflow: auto; }
+  .detail { position: sticky; top: 12px; max-height: calc(100vh - 24px); overflow: auto; overscroll-behavior: contain; }
   .dhead { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 10px 12px; border-bottom: 1px solid var(--border-strong); background: var(--surface-2); position: sticky; top: 0; z-index: 1; }
   section { padding: 12px; border-bottom: 1px solid var(--border); }
   section:last-child { border-bottom: 0; }
@@ -1036,7 +1050,7 @@
     .meta { gap: 6px; }
     .pickbar { order: 1; width: 100%; margin: 0; justify-content: space-between; }
 
-    .list { max-height: none; overflow: visible; }
+    .list { overflow: visible; }
     .card { display: grid; gap: 2px; min-width: 0; padding-block: 9px; }
     .card-meta { display: flex; gap: 10px; font-size: 11.5px; color: var(--text-2); }
     .card-meta .faint { margin-left: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

@@ -35,13 +35,13 @@
 
 :root {
   /* Warm paper neutrals, one yellow highlight, ink-blue links. */
-  --bg: #f6f6f3;
-  --sidebar: #edede8;
-  --surface: #fbfbf9;
-  --surface-2: #edede8;
-  --border: #dcdcd5;
-  --border-strong: #cfcfc9;
-  --line-dash: #bebeb6;
+  --bg: #fdfdfb;
+  --sidebar: #f1f1ec;
+  --surface: #ffffff;
+  --surface-2: #f3f3ef;
+  --border: #e6e6e0;
+  --border-strong: #d8d8d1;
+  --line-dash: #c8c8c0;
   --text: #222220;
   --text-2: #50504b;
   --text-3: #6b6b66;
@@ -62,11 +62,11 @@
   --ok: #276e45;
   --ok-soft: #e5f2ea;
   --focus: #222220;
-  --stripe: #efefea;
-  --grid-line: rgb(34 34 32 / .055);
-  --cell-ink: rgb(34 34 32 / .05);
-  --cell-ink-strong: rgb(214 220 40 / .32);
-  --row-hover: #e6e6df;
+  --stripe: #f8f8f5;
+  --grid-line: rgb(34 34 32 / .045);
+  --cell-ink: rgb(34 34 32 / .04);
+  --cell-ink-strong: rgb(214 220 40 / .28);
+  --row-hover: #f0f0ea;
   --syn-key: #2b5c8a;
   --syn-str: #2d7d4f;
   --syn-num: #a8650c;
@@ -478,15 +478,20 @@ input[type='checkbox']:checked, input[type='checkbox']:indeterminate, input[type
   border-color: var(--cta-text);
 }
 input[type='checkbox']::after, input[type='radio']::after { content: ''; display: block; }
+/* The tick is a mask drawn on the box's own 12px grid, so it sits optically
+   centred instead of hanging off a rotated border corner. */
 input[type='checkbox']:checked::after {
-  width: 8px;
-  height: 4px;
-  margin-top: -2px;
-  border-left: 2px solid var(--cta-text);
-  border-bottom: 2px solid var(--cta-text);
-  transform: rotate(-45deg);
+  width: 12px;
+  height: 12px;
+  background: var(--cta-text);
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2.6 6.3 4.9 8.6 9.4 3.6' fill='none' stroke='%23000' stroke-width='1.9' stroke-linecap='square'/%3E%3C/svg%3E") center / 12px 12px no-repeat;
 }
-input[type='checkbox']:indeterminate::after { width: 8px; height: 2px; background: var(--cta-text); }
+input[type='checkbox']:indeterminate::after {
+  width: 12px;
+  height: 12px;
+  background: var(--cta-text);
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M3 6h6' fill='none' stroke='%23000' stroke-width='1.9' stroke-linecap='square'/%3E%3C/svg%3E") center / 12px 12px no-repeat;
+}
 input[type='radio']:checked::after { width: 6px; height: 6px; background: var(--cta-text); }
 input[type='checkbox']:disabled, input[type='radio']:disabled { opacity: .45; cursor: not-allowed; }
 input[type='checkbox']:focus-visible, input[type='radio']:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
