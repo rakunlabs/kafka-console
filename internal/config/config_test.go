@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestFeaturesDefaultOn(t *testing.T) {
 	on, off := true, false
@@ -59,5 +62,28 @@ func TestValidateProtobufAndDocs(t *testing.T) {
 		if err := check(tc.c); (err == nil) != tc.ok {
 			t.Errorf("%s: err %v, want ok=%v", name, err, tc.ok)
 		}
+	}
+}
+
+func TestClusterNamesOrder(t *testing.T) {
+	at := func(n int) *int { return &n }
+
+	c := &Config{Clusters: map[string]*Cluster{
+		"local":   {},
+		"prod":    {Order: at(1)},
+		"staging": {Order: at(2)},
+		"dev":     {},
+		"perf":    {Order: at(2)},
+		"neg":     {Order: at(-1)},
+	}}
+
+	got := strings.Join(c.ClusterNames(), ",")
+	if want := "neg,prod,perf,staging,dev,local"; got != want {
+		t.Fatalf("order %s, want %s", got, want)
+	}
+
+	plain := &Config{Clusters: map[string]*Cluster{"b": {}, "a": {}, "c": {}}}
+	if got := strings.Join(plain.ClusterNames(), ","); got != "a,b,c" {
+		t.Fatalf("without order %s, want a,b,c", got)
 	}
 }

@@ -117,6 +117,8 @@ clusters:
 
   prod:
     brokers: ["kafka-1.prod:9093", "kafka-2.prod:9093"]
+    order: 1             # list position, lowest first; unset ones follow by name.
+                         # The first cluster opens for someone who has not picked one.
     production: true     # red banner and warnings in the UI
     read_only: true      # refuses produce, topic changes, offset resets
     description: |       # Markdown, shown in a box on the cluster overview

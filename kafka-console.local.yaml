@@ -20,6 +20,7 @@ server:
 clusters:
   local:
     brokers: ["localhost:19092"]
+    # order: 1   # list position, lowest first; the first cluster opens by default
     schema_registry:
       urls: ["http://localhost:18081"]
     description: |   # Markdown, shown in a box on the cluster overview

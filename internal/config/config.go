@@ -111,6 +111,10 @@ type Server struct {
 
 type Cluster struct {
 	Brokers []string `cfg:"brokers"`
+	// Order places the cluster in the UI's list, lowest first; clusters
+	// without one follow, by name. The first cluster is the one the UI
+	// opens for someone who has not picked one yet.
+	Order *int `cfg:"order"`
 	// ReadOnly refuses every write: produce, topic create/delete, offset reset.
 	ReadOnly bool `cfg:"read_only"`
 	// Production only changes how the UI presents the cluster.
@@ -402,14 +406,36 @@ func normalizeBasePath(p string) string {
 	return "/" + p
 }
 
-// ClusterNames returns the configured cluster names in a stable order.
+// ClusterNames returns the configured cluster names in display order: by
+// order (lowest first; unset sorts after every set value), then by name.
+// The first one is what the UI opens for someone who has not picked one.
 func (c *Config) ClusterNames() []string {
 	names := make([]string, 0, len(c.Clusters))
 	for name := range c.Clusters {
 		names = append(names, name)
 	}
 
-	sort.Strings(names)
+	rank := func(name string) (int, bool) {
+		if cl := c.Clusters[name]; cl != nil && cl.Order != nil {
+			return *cl.Order, true
+		}
+
+		return 0, false
+	}
+
+	sort.Slice(names, func(i, j int) bool {
+		a, aSet := rank(names[i])
+		b, bSet := rank(names[j])
+
+		switch {
+		case aSet != bSet:
+			return aSet
+		case aSet && a != b:
+			return a < b
+		}
+
+		return names[i] < names[j]
+	})
 
 	return names
 }
