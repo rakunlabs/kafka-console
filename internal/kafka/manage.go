@@ -2,6 +2,7 @@ package kafka
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -105,7 +106,8 @@ func (c *Client) AddPartitions(ctx context.Context, topic string, total int) err
 type DeleteRecordsRequest struct {
 	// Partitions empty means all.
 	Partitions []int32 `json:"partitions"`
-	// Strategy is all (up to the high watermark), offset or timestamp.
+	// Strategy is all (up to the high watermark), offset or timestamp. It
+	// has no default: an empty request must not mean "delete everything".
 	Strategy  string `json:"strategy"`
 	Offset    int64  `json:"offset"`
 	Timestamp int64  `json:"timestamp"`
@@ -120,6 +122,26 @@ type DeletedRecords struct {
 func (c *Client) DeleteRecords(ctx context.Context, topic string, req DeleteRecordsRequest) ([]DeletedRecords, error) {
 	if err := c.requireWritable(); err != nil {
 		return nil, err
+	}
+
+	switch req.Strategy {
+	case "all", "offset", "timestamp":
+	case "":
+		return nil, ErrInvalid{fmt.Errorf("strategy is required: all, offset or timestamp")}
+	default:
+		return nil, ErrInvalid{fmt.Errorf("unknown strategy %q", req.Strategy)}
+	}
+
+	// Kafka reads -1 as "up to the high watermark": a negative offset
+	// would delete whole partitions.
+	if req.Strategy == "offset" && req.Offset < 0 {
+		return nil, ErrInvalid{fmt.Errorf("offset must not be negative")}
+	}
+
+	for _, p := range req.Partitions {
+		if p < 0 {
+			return nil, ErrInvalid{fmt.Errorf("partition %d is not valid", p)}
+		}
 	}
 
 	ends, err := c.admin.ListEndOffsets(ctx, topic)
@@ -140,9 +162,22 @@ func (c *Client) DeleteRecords(ctx context.Context, topic string, req DeleteReco
 	}
 
 	offsets := kadm.Offsets{}
+	found := map[int32]bool{}
+
+	var lookupErr error
 
 	ends.Each(func(e kadm.ListedOffset) {
-		if e.Topic != topic || e.Err != nil || (len(wanted) > 0 && !wanted[e.Partition]) {
+		if e.Topic != topic || (len(wanted) > 0 && !wanted[e.Partition]) {
+			return
+		}
+
+		found[e.Partition] = true
+
+		// A partition whose end is unknown is not touched: guessing could
+		// delete more than asked.
+		if e.Err != nil || e.Offset < 0 {
+			lookupErr = errors.Join(lookupErr, fmt.Errorf("partition %d: end offset unknown; %v", e.Partition, e.Err))
+
 			return
 		}
 
@@ -152,32 +187,54 @@ func (c *Client) DeleteRecords(ctx context.Context, topic string, req DeleteReco
 		case "offset":
 			target = min(req.Offset, e.Offset)
 		case "timestamp":
-			if t, ok := atTime.Lookup(topic, e.Partition); ok && t.Err == nil && t.Offset >= 0 {
-				target = t.Offset
+			// Without the offset at that time the partition is skipped
+			// rather than truncated to its end.
+			t, ok := atTime.Lookup(topic, e.Partition)
+			if !ok || t.Err != nil || t.Offset < 0 {
+				var cause error
+				if ok {
+					cause = t.Err
+				}
+
+				lookupErr = errors.Join(lookupErr, fmt.Errorf("partition %d: offset at that time unknown; %v", e.Partition, cause))
+
+				return
 			}
+
+			target = min(t.Offset, e.Offset)
 		}
 
 		offsets.AddOffset(topic, e.Partition, target, -1)
 	})
 
+	for p := range wanted {
+		if !found[p] {
+			return nil, ErrInvalid{fmt.Errorf("topic %q has no partition %d", topic, p)}
+		}
+	}
+
+	// All or nothing: a partial delete of a requested set is harder to
+	// reason about than a refusal the user can retry.
+	if lookupErr != nil {
+		return nil, fmt.Errorf("nothing deleted; %w", lookupErr)
+	}
+
 	if len(offsets) == 0 {
 		return nil, ErrInvalid{fmt.Errorf("no partitions selected")}
 	}
 
-	switch req.Strategy {
-	case "", "all", "offset", "timestamp":
-	default:
-		return nil, ErrInvalid{fmt.Errorf("unknown strategy %q", req.Strategy)}
-	}
-
 	resp, err := c.admin.DeleteRecords(ctx, offsets)
-	if err != nil {
+	if err != nil && len(resp) == 0 {
 		return nil, fmt.Errorf("delete records; %w", err)
 	}
 
 	var out []DeletedRecords
 
+	got := map[int32]bool{}
+
 	resp.Each(func(r kadm.DeleteRecordsResponse) {
+		got[r.Partition] = true
+
 		d := DeletedRecords{Partition: r.Partition, LowWatermark: r.LowWatermark}
 		if r.Err != nil {
 			d.Error = r.Err.Error()
@@ -185,6 +242,18 @@ func (c *Client) DeleteRecords(ctx context.Context, topic string, req DeleteReco
 
 		out = append(out, d)
 	})
+
+	// Partitions whose broker request failed as a whole are reported as
+	// failed, so the user sees which ones were and were not truncated.
+	if err != nil {
+		for _, ps := range offsets {
+			for p := range ps {
+				if !got[p] {
+					out = append(out, DeletedRecords{Partition: p, LowWatermark: -1, Error: err.Error()})
+				}
+			}
+		}
+	}
 
 	sort.Slice(out, func(i, j int) bool { return out[i].Partition < out[j].Partition })
 

@@ -6,6 +6,7 @@ server:
   port: "8080"
   # base_path: /kafka   # serve under a prefix behind a reverse proxy
   # user_header: X-User # header your auth proxy sets; logged on every write as "user"
+  # trusted_proxies: ["10.0.0.0/8"]   # only these may set user_header and X-Forwarded-For
 
 # features:              # every feature is on unless set to false (see README)
 #   security: false      # ACL, SCRAM user and quota pages

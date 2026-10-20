@@ -947,6 +947,12 @@ func (c *Client) Produce(ctx context.Context, topic string, req ProduceRequest) 
 
 	out, err := producer.ProduceSync(ctx, rec).First()
 	if err != nil {
+		// The manual partitioner refuses a partition the topic lacks; that
+		// is a bad request, not a broker failure.
+		if req.Partition != nil && strings.Contains(err.Error(), "invalid record partitioning choice") {
+			return nil, ErrInvalid{fmt.Errorf("topic %q has no partition %d", topic, *req.Partition)}
+		}
+
 		return nil, fmt.Errorf("produce; %w", err)
 	}
 
@@ -981,6 +987,10 @@ func (c *Client) produceRecord(ctx context.Context, topic string, req ProduceReq
 	}
 
 	if req.Partition != nil {
+		if *req.Partition < 0 {
+			return nil, ErrInvalid{fmt.Errorf("partition %d is not valid", *req.Partition)}
+		}
+
 		rec.Partition = *req.Partition
 	}
 

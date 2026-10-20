@@ -327,11 +327,17 @@ func (c *Client) subjectSummaries(ctx context.Context, names []string) map[strin
 
 	sem := make(chan struct{}, registryParallel)
 
-	for _, n := range names {
-		if out[n] != nil {
-			continue
-		}
+	// Collected before any goroutine starts: they write out, and reading
+	// it alongside them is a data race the runtime aborts on.
+	var missing []string
 
+	for _, n := range names {
+		if out[n] == nil {
+			missing = append(missing, n)
+		}
+	}
+
+	for _, n := range missing {
 		wg.Add(1)
 
 		go func() {

@@ -41,6 +41,9 @@ type Overview struct {
 	// Partitions has one character per partition in id order: "o" ok,
 	// "u" under-replicated, "x" offline.
 	Problems []TopicHealth `json:"problems"`
+	// HiddenTopics counts topics the console may not describe; they are left
+	// out of every number above.
+	HiddenTopics int `json:"hidden_topics"`
 }
 
 type TopicHealth struct {
@@ -49,7 +52,7 @@ type TopicHealth struct {
 }
 
 func (c *Client) Overview(ctx context.Context) (*Overview, error) {
-	meta, err := c.admin.Metadata(ctx)
+	meta, err := c.metadata(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("metadata; %w", err)
 	}
@@ -113,6 +116,12 @@ func (c *Client) Overview(ctx context.Context) (*Overview, error) {
 // countTopics fills topic, partition, leader and health counts from metadata.
 func (o *Overview) countTopics(meta kadm.Metadata, index map[int32]int) {
 	for _, t := range meta.Topics.Sorted() {
+		if t.Err != nil {
+			o.HiddenTopics++
+
+			continue
+		}
+
 		if t.IsInternal {
 			o.InternalTopics++
 		} else {
@@ -215,7 +224,7 @@ type TopicPage struct {
 }
 
 func (c *Client) Topics(ctx context.Context, q TopicQuery) (*TopicPage, error) {
-	details, err := c.admin.ListTopicsWithInternal(ctx)
+	details, _, err := c.listTopics(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list topics; %w", err)
 	}
@@ -383,14 +392,17 @@ func (e ErrConflict) Error() string { return e.Err.Error() }
 func (e ErrConflict) Unwrap() error { return e.Err }
 
 func (c *Client) Topic(ctx context.Context, name string) (*TopicDetail, error) {
-	details, err := c.admin.ListTopicsWithInternal(ctx, name)
+	details, _, err := c.listTopics(ctx, name)
 	if err != nil {
 		return nil, fmt.Errorf("describe topic; %w", err)
 	}
 
 	d, ok := details[name]
-	if !ok || d.Err != nil {
+	switch {
+	case !ok || errors.Is(d.Err, kerr.UnknownTopicOrPartition):
 		return nil, fmt.Errorf("topic %q; %w", name, ErrNotFound)
+	case d.Err != nil:
+		return nil, fmt.Errorf("topic %q; %w", name, d.Err)
 	}
 
 	out := &TopicDetail{Name: name, ID: d.ID.String(), Internal: d.IsInternal, Size: -1, ReplicatedSize: -1}
@@ -630,7 +642,7 @@ func (c *Client) Names(ctx context.Context) (*Names, error) {
 		wg      sync.WaitGroup
 	)
 
-	wg.Go(func() { details, err = c.admin.ListTopicsWithInternal(ctx) })
+	wg.Go(func() { details, _, err = c.listTopics(ctx) })
 	wg.Go(func() {
 		if listed, err := c.admin.ListGroups(ctx); err == nil {
 			out.Groups = listed.Groups()
@@ -1064,27 +1076,62 @@ func (c *Client) ResetOffsets(ctx context.Context, group string, req ResetReques
 
 	wanted := map[int32]bool{}
 	for _, p := range req.Partitions {
+		if p < 0 {
+			return nil, ErrInvalid{fmt.Errorf("partition %d is not valid", p)}
+		}
+
 		wanted[p] = true
 	}
 
-	var startList []kadm.ListedOffset
+	if req.Strategy == "offset" && req.Offset < 0 {
+		return nil, ErrInvalid{fmt.Errorf("offset must not be negative")}
+	}
+
+	// A partition whose bounds could not be read (a leader moving, say)
+	// fails the reset: committing -1 or skipping it silently would both
+	// leave the group somewhere the user did not ask for.
+	var (
+		startList []kadm.ListedOffset
+		boundErr  error
+	)
+
 	starts.Each(func(o kadm.ListedOffset) {
-		if o.Topic == req.Topic && o.Err == nil {
-			startList = append(startList, o)
+		if o.Topic != req.Topic || o.Partition < 0 || (len(wanted) > 0 && !wanted[o.Partition]) {
+			return
 		}
+
+		if o.Err != nil || o.Offset < 0 {
+			boundErr = errors.Join(boundErr, fmt.Errorf("partition %d: start offset unknown; %v", o.Partition, o.Err))
+
+			return
+		}
+
+		startList = append(startList, o)
 	})
 	sort.Slice(startList, func(i, j int) bool { return startList[i].Partition < startList[j].Partition })
+
+	found := map[int32]bool{}
+	for _, s := range startList {
+		found[s.Partition] = true
+	}
+
+	for p := range wanted {
+		if !found[p] && boundErr == nil {
+			return nil, ErrInvalid{fmt.Errorf("topic %q has no partition %d", req.Topic, p)}
+		}
+	}
 
 	var plan []ResetPlan
 
 	offsets := make(kadm.Offsets)
 
 	for _, s := range startList {
-		if len(wanted) > 0 && !wanted[s.Partition] {
+		e, ok := ends.Lookup(req.Topic, s.Partition)
+		if !ok || e.Err != nil || e.Offset < 0 {
+			boundErr = errors.Join(boundErr, fmt.Errorf("partition %d: end offset unknown; %v", s.Partition, e.Err))
+
 			continue
 		}
-
-		e, _ := ends.Lookup(req.Topic, s.Partition)
 
 		var target int64
 
@@ -1096,11 +1143,23 @@ func (c *Client) ResetOffsets(ctx context.Context, group string, req ResetReques
 		case "offset":
 			target = min(max(req.Offset, s.Offset), e.Offset)
 		case "timestamp":
+			// kadm gives the end offset when nothing is that new; an
+			// error means the offset at that time is unknown.
 			t, ok := atTime.Lookup(req.Topic, s.Partition)
-			if !ok || t.Err != nil || t.Offset < 0 {
-				target = e.Offset
-			} else {
-				target = t.Offset
+			if !ok || t.Err != nil {
+				var cause error
+				if ok {
+					cause = t.Err
+				}
+
+				boundErr = errors.Join(boundErr, fmt.Errorf("partition %d: offset at that time unknown; %v", s.Partition, cause))
+
+				continue
+			}
+
+			target = e.Offset
+			if t.Offset >= 0 {
+				target = min(t.Offset, e.Offset)
 			}
 		case "shift":
 			// Needs the committed offset, resolved below.
@@ -1124,6 +1183,14 @@ func (c *Client) ResetOffsets(ctx context.Context, group string, req ResetReques
 
 		plan = append(plan, ResetPlan{Partition: s.Partition, From: from, To: target, Low: s.Offset, High: e.Offset})
 		offsets.AddOffset(req.Topic, s.Partition, target, -1)
+	}
+
+	if boundErr != nil {
+		return nil, fmt.Errorf("nothing changed; %w", boundErr)
+	}
+
+	if len(plan) == 0 {
+		return nil, fmt.Errorf("topic %q; %w", req.Topic, ErrNotFound)
 	}
 
 	if req.DryRun {
@@ -1200,6 +1267,11 @@ func (c *Client) AddGroupTopic(ctx context.Context, req CreateGroupRequest) ([]R
 	g, ok := described[req.Group]
 	if !ok || g.State == "Dead" {
 		return nil, fmt.Errorf("group %q; %w", req.Group, ErrNotFound)
+	}
+
+	// A failed describe lists no members; that is not "idle".
+	if g.Err != nil {
+		return nil, fmt.Errorf("describe group; %w", g.Err)
 	}
 
 	if len(g.Members) > 0 {

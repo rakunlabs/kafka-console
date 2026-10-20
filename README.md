@@ -103,6 +103,7 @@ server:
   port: "8080"
   # base_path: /kafka    # serve under a sub-path behind a reverse proxy
   # user_header: X-User  # header your auth proxy sets; logged on every write
+  # trusted_proxies: ["10.0.0.0/8"]  # only these may set user_header and X-Forwarded-For
 
 # features:              # every feature is on unless set to false; see Features below
 #   create_topic: false
@@ -122,7 +123,7 @@ clusters:
       **Production** cluster. Owner: platform team.
       Runbook: [wiki](https://wiki.example.com/kafka-prod)
     tls:
-      enabled: true
+      enabled: true      # on by default when any other tls field is set; false forces plaintext
       ca_file: /etc/kafka/ca.pem
       # cert_file / key_file for mTLS, insecure_skip_verify
     sasl:

@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -45,9 +46,12 @@ type Client struct {
 }
 
 func New(name string, cfg *config.Cluster) (*Client, error) {
-	options := []kgo.Opt{kgo.SeedBrokers(cfg.Brokers...)}
+	options := []kgo.Opt{
+		kgo.SeedBrokers(cfg.Brokers...),
+		kgo.WithHooks(listenerHook{cluster: name, tls: cfg.TLS.On()}),
+	}
 
-	if cfg.TLS != nil && cfg.TLS.Enabled {
+	if cfg.TLS.On() {
 		t, err := tlsConfig(cfg.TLS)
 		if err != nil {
 			return nil, err
@@ -69,6 +73,10 @@ func New(name string, cfg *config.Cluster) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("connect to %v; %w", cfg.Brokers, err)
 	}
+
+	// The effective TLS and SASL setting, so a listener mismatch ("tls alert
+	// record", "invalid large response") can be checked against the log.
+	slog.Info("cluster connection", "cluster", name, "brokers", cfg.Brokers, "tls", cfg.TLS.On(), "sasl", cfg.SASL != nil)
 
 	c := &Client{
 		Name:    name,
@@ -111,7 +119,7 @@ func registryClient(s *config.SchemaRegistry) (*sr.Client, error) {
 	opts := []sr.ClientOpt{sr.URLs(s.URLs...), sr.UserAgent(config.ServiceName)}
 
 	transport := http.DefaultTransport.(*http.Transport).Clone()
-	if s.TLS != nil && s.TLS.Enabled {
+	if s.TLS.On() {
 		t, err := tlsConfig(s.TLS)
 		if err != nil {
 			return nil, fmt.Errorf("schema registry; %w", err)

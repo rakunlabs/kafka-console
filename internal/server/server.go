@@ -83,7 +83,12 @@ func Start(ctx context.Context, cfg *config.Config, registry *kafka.Registry, ui
 
 	root := server.Group(base)
 
-	api := root.Group("/api/v1", limitBody, auditWrites(cfg.Server.UserHeader))
+	proxies, err := parseProxies(cfg.Server.TrustedProxies)
+	if err != nil {
+		return fmt.Errorf("server.trusted_proxies; %w", err)
+	}
+
+	api := root.Group("/api/v1", sameOrigin, limitBody, auditWrites(cfg.Server.UserHeader, proxies...))
 	api.GET("/info", s.appInfo)
 	api.GET("/clusters", s.clusters)
 	api.POST("/filter/check", s.checkFilter)
@@ -133,10 +138,11 @@ func Start(ctx context.Context, cfg *config.Config, registry *kafka.Registry, ui
 	c.GET("/groups/{group}", s.group)
 	if s.features.DeleteGroup {
 		c.DELETE("/groups/{group}", s.deleteGroup)
+		// Same Group DELETE ACL in Kafka as deleting the group.
+		c.POST("/groups/{group}/delete-offsets", s.deleteGroupOffsets)
 	}
 	c.POST("/groups/{group}/reset", s.resetOffsets)
 	c.POST("/groups/{group}/topics", s.addGroupTopic)
-	c.POST("/groups/{group}/delete-offsets", s.deleteGroupOffsets)
 
 	if s.features.Security {
 		c.GET("/acls", s.acls)
@@ -261,6 +267,10 @@ func fail(err error) error {
 		return ada.WrapHTTPError(http.StatusGatewayTimeout, err)
 	default:
 		// Kafka errors carry no secrets and the operator needs them.
+		if hint := kafka.ExplainConnErr(err); hint != "" {
+			return ada.WrapHTTPError(http.StatusBadGateway, fmt.Errorf("%w; %s", err, hint))
+		}
+
 		return ada.WrapHTTPError(http.StatusBadGateway, err)
 	}
 }
@@ -413,15 +423,36 @@ func (s *Server) messages(c *ada.Context) error {
 
 	q := c.Request.URL.Query()
 
+	ints := map[string]int64{}
+	for _, key := range []string{"offset", "timestamp", "limit", "max_scan", "timeout"} {
+		v := q.Get(key)
+		if v == "" {
+			continue
+		}
+
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || (key != "timestamp" && n < 0) {
+			return ada.WrapHTTPError(http.StatusBadRequest, fmt.Errorf("%s must be a non-negative integer", key))
+		}
+
+		ints[key] = n
+	}
+
+	switch q.Get("start") {
+	case "", "newest", "oldest", "offset", "timestamp", "last":
+	default:
+		return ada.WrapHTTPError(http.StatusBadRequest, fmt.Errorf("unknown start %q", q.Get("start")))
+	}
+
 	req := kafka.ConsumeRequest{
 		Start:     q.Get("start"),
-		Offset:    queryInt(q.Get("offset")),
-		Timestamp: queryInt(q.Get("timestamp")),
-		Limit:     int(queryInt(q.Get("limit"))),
-		MaxScan:   int(queryInt(q.Get("max_scan"))),
+		Offset:    ints["offset"],
+		Timestamp: ints["timestamp"],
+		Limit:     int(ints["limit"]),
+		MaxScan:   int(ints["max_scan"]),
 		Filter:    q.Get("filter"),
 		Search:    q.Get("q"),
-		Timeout:   time.Duration(queryInt(q.Get("timeout"))) * time.Second,
+		Timeout:   time.Duration(ints["timeout"]) * time.Second,
 		Raw:       q.Get("raw") == "true",
 		As:        kafka.DecodeAs{Key: q.Get("key_as"), Value: q.Get("value_as")},
 	}

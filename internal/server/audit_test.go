@@ -111,3 +111,51 @@ func TestAuditWrites(t *testing.T) {
 		}
 	})
 }
+
+func TestAuditTrustedProxies(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	proxies, err := parseProxies([]string{"10.0.0.0/8", "192.168.1.5"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mux := ada.New()
+	api := mux.Group("/api/v1", auditWrites("X-User", proxies...))
+	api.POST("/clusters/{cluster}/users", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
+
+	log := func(remote string) map[string]any {
+		buf.Reset()
+		req := httptest.NewRequest("POST", "/api/v1/clusters/prod/users", strings.NewReader(`{}`))
+		req.RemoteAddr = remote
+		req.Header.Set("X-User", "admin")
+		req.Header.Set("X-Forwarded-For", "203.0.113.9")
+		mux.ServeHTTP(httptest.NewRecorder(), req)
+
+		var line map[string]any
+		if err := json.Unmarshal(buf.Bytes(), &line); err != nil {
+			t.Fatalf("bad log line %q: %v", buf.String(), err)
+		}
+
+		return line
+	}
+
+	if l := log("10.1.2.3:4000"); l["user"] != "admin" || l["remote"] != "203.0.113.9" {
+		t.Fatalf("via proxy: %v %v", l["user"], l["remote"])
+	}
+
+	if l := log("192.168.1.5:4000"); l["user"] != "admin" {
+		t.Fatalf("single-host proxy: %v", l["user"])
+	}
+
+	if l := log("198.51.100.7:4000"); l["user"] != "unverified:admin" || l["remote"] != "198.51.100.7:4000" {
+		t.Fatalf("direct: %v %v", l["user"], l["remote"])
+	}
+
+	if _, err := parseProxies([]string{"not-an-ip"}); err == nil {
+		t.Fatal("bad proxy accepted")
+	}
+}

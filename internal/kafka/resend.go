@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math"
 	"slices"
 	"sort"
 	"time"
@@ -212,14 +211,16 @@ func (c *Client) fetchExact(ctx context.Context, topic string, refs []RecordRef)
 	depth := 0
 
 	for p, offs := range byPartition {
-		lo, hi := int64(0), int64(math.MaxInt64)
-		if s, ok := starts.Lookup(topic, p); ok && s.Err == nil {
-			lo = s.Offset
+		// A partition the topic lacks, or whose bounds are unknown, has
+		// none of its offsets: reading it would only wait out empty polls.
+		s, okS := starts.Lookup(topic, p)
+		e, okE := ends.Lookup(topic, p)
+
+		if !okS || !okE || s.Err != nil || e.Err != nil {
+			continue
 		}
 
-		if e, ok := ends.Lookup(topic, p); ok && e.Err == nil {
-			hi = e.Offset
-		}
+		lo, hi := s.Offset, e.Offset
 
 		slices.Sort(offs)
 

@@ -102,6 +102,11 @@ type Server struct {
 	// UserHeader names the request header that carries the caller's identity,
 	// set by an authenticating proxy. It only labels audit log lines.
 	UserHeader string `cfg:"user_header" default:"X-User"`
+	// TrustedProxies are the addresses or CIDRs of the proxies in front of
+	// the console. When set, the user header and X-Forwarded-For are only
+	// believed on requests coming straight from one of them; others are
+	// logged with the connection's address and as an unverified user.
+	TrustedProxies []string `cfg:"trusted_proxies"`
 }
 
 type Cluster struct {
@@ -166,11 +171,29 @@ type SchemaRegistry struct {
 }
 
 type TLS struct {
-	Enabled            bool   `cfg:"enabled"`
+	// Enabled turns TLS on. Unset, a tls block with any setting in it is on:
+	// a ca_file or client certificate without enabled: true used to mean a
+	// plaintext connection, which a TLS listener answers with an alert the
+	// client reads as an "invalid large response". Set false to keep the
+	// settings and still connect without TLS.
+	Enabled            *bool  `cfg:"enabled"`
 	InsecureSkipVerify bool   `cfg:"insecure_skip_verify"`
 	CAFile             string `cfg:"ca_file"`
 	CertFile           string `cfg:"cert_file"`
 	KeyFile            string `cfg:"key_file"`
+}
+
+// On reports whether connections use TLS.
+func (t *TLS) On() bool {
+	if t == nil {
+		return false
+	}
+
+	if t.Enabled != nil {
+		return *t.Enabled
+	}
+
+	return t.InsecureSkipVerify || t.CAFile != "" || t.CertFile != "" || t.KeyFile != ""
 }
 
 const (

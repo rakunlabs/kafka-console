@@ -3,8 +3,10 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -25,7 +27,11 @@ var (
 // auditWrites logs one line for every request that changes a cluster, after
 // it completes, with who asked (from userHeader), what, and how it ended.
 // Nothing is stored; the line goes to the process log like any other.
-func auditWrites(userHeader string) func(http.Handler) http.Handler {
+//
+// With trusted proxies, the user header and X-Forwarded-For are taken only
+// from requests a trusted proxy made; anyone reaching the console directly
+// could otherwise write "X-User: admin" into the log.
+func auditWrites(userHeader string, trusted ...*net.IPNet) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodOptions {
@@ -46,8 +52,19 @@ func auditWrites(userHeader string) func(http.Handler) http.Handler {
 
 			next.ServeHTTP(rec, r)
 
-			user := strings.TrimSpace(r.Header.Get(userHeader))
-			if user == "" {
+			viaProxy := fromTrusted(r, trusted)
+
+			user := ""
+			if viaProxy {
+				user = strings.TrimSpace(r.Header.Get(userHeader))
+			}
+
+			switch {
+			case user != "":
+			case !viaProxy && strings.TrimSpace(r.Header.Get(userHeader)) != "":
+				// Named, but not by a proxy the console trusts.
+				user = "unverified:" + strings.TrimSpace(r.Header.Get(userHeader))
+			default:
 				user = "anonymous"
 			}
 
@@ -59,7 +76,7 @@ func auditWrites(userHeader string) func(http.Handler) http.Handler {
 				"path", r.URL.Path,
 				"status", rec.status,
 				"duration_ms", time.Since(start).Milliseconds(),
-				"remote", clientAddr(r),
+				"remote", clientAddr(r, viaProxy),
 			}
 
 			if id := r.Header.Get("X-Request-Id"); id != "" {
@@ -236,12 +253,73 @@ func action(r *http.Request) string {
 	return name
 }
 
-func clientAddr(r *http.Request) string {
-	if f := r.Header.Get("X-Forwarded-For"); f != "" {
+func clientAddr(r *http.Request, viaProxy bool) string {
+	if f := r.Header.Get("X-Forwarded-For"); f != "" && viaProxy {
 		return strings.TrimSpace(strings.Split(f, ",")[0])
 	}
 
 	return r.RemoteAddr
+}
+
+// fromTrusted reports whether the request came straight from a trusted
+// proxy. With none configured every request is trusted, as before.
+func fromTrusted(r *http.Request, trusted []*net.IPNet) bool {
+	if len(trusted) == 0 {
+		return true
+	}
+
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+
+	for _, n := range trusted {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// parseProxies reads addresses and CIDRs; a bare address is a single host.
+func parseProxies(list []string) ([]*net.IPNet, error) {
+	var out []*net.IPNet
+
+	for _, s := range list {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+
+		if !strings.Contains(s, "/") {
+			ip := net.ParseIP(s)
+			if ip == nil {
+				return nil, fmt.Errorf("trusted proxy %q is not an IP address or CIDR", s)
+			}
+
+			bits := 32
+			if ip.To4() == nil {
+				bits = 128
+			}
+
+			s = fmt.Sprintf("%s/%d", s, bits)
+		}
+
+		_, n, err := net.ParseCIDR(s)
+		if err != nil {
+			return nil, fmt.Errorf("trusted proxy %q; %w", s, err)
+		}
+
+		out = append(out, n)
+	}
+
+	return out, nil
 }
 
 type statusRecorder struct {

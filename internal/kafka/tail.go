@@ -175,8 +175,14 @@ func (c *Client) tailOffsets(ctx context.Context, topic string, req TailRequest)
 			switch req.Start {
 			case "oldest":
 				out[p] = kgo.NewOffset().AtStart()
+			case "last":
+				// The last N of each partition, then everything new.
+				out[p] = kgo.NewOffset().AtEnd().Relative(-max(req.Offset, 0))
 			case "offset":
-				out[p] = kgo.NewOffset().At(req.Offset)
+				// Past a partition's end the broker answers out of range and
+				// the reader would rewind it to the start, replaying the
+				// whole partition; from its end it just waits for new ones.
+				out[p] = kgo.NewOffset().At(min(max(req.Offset, 0), o.Offset))
 			case "timestamp":
 				out[p] = kgo.NewOffset().AfterMilli(req.Timestamp)
 			default:
