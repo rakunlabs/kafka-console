@@ -8,7 +8,6 @@
   import RefreshStop from '../lib/RefreshStop.svelte'
   import { forgetNames } from '../lib/names'
   import { paged } from '../lib/paged.svelte'
-  import { app } from '../lib/features.svelte'
   import { ArrowDown, ArrowUp, Plus } from '@lucide/svelte'
 
   let { cluster }: { cluster: Cluster } = $props()
@@ -79,7 +78,7 @@
   <span class="faint">{fmt(list.total)}</span>
   <span class="spacer"></span>
   <RefreshStop loading={list.loading} onrefresh={() => list.load(true)} onstop={list.stop} />
-  {#if app.features.create_topic}
+  {#if cluster.features.create_topic}
     <button class="primary" disabled={cluster.read_only} onclick={() => {
       form = { name: '', partitions: 3, replication_factor: 0, configs: '' }
       createError = ''

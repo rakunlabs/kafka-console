@@ -100,7 +100,7 @@ func mcpHandler(cfg *config.Config, registry *kafka.Registry) (*mcpRoutes, error
 		if err := clusters.Register(server, endpoint.Cluster, kafkamcp.Options{
 			ReadOnly:     endpoint.ReadOnly || !cfg.MCP.AllowWrites,
 			Destinations: endpoint.Destinations,
-			Tools:        mcpTools(endpoint.Tools, cfg.Features),
+			Tools:        mcpTools(endpoint.Tools, cfg.ClusterFeatures(endpoint.Cluster)),
 			Path:         path,
 			OutputDir:    cfg.MCP.OutputDir,
 		}); err != nil {

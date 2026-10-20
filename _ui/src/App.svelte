@@ -75,7 +75,7 @@
     { section: 'topics', label: 'Topics', icon: Rows3 },
     { section: 'groups', label: 'Consumer groups', icon: Users },
     ...(current?.schema_registry ? [{ section: 'schemas', label: 'Schema Registry', icon: Braces }] : []),
-    ...(app.features.security ? [{ section: 'security', label: 'Security', icon: ShieldCheck }] : []),
+    ...(current?.features.security ? [{ section: 'security', label: 'Security', icon: ShieldCheck }] : []),
   ])
   const activeSection = $derived(route.section === 'brokers' ? 'overview' : route.section)
 
@@ -262,10 +262,8 @@
             <Subject cluster={current} name={route.name} />
           {:else if route.section === 'schemas'}
             <Schemas cluster={current} />
-          {:else if route.section === 'security' && app.features.security}
+          {:else if route.section === 'security' && current.features.security}
             <Security cluster={current} />
-          {:else if route.section === 'security' && !app.loaded}
-            <div class="empty">Loading…</div>
           {:else}
             <Overview cluster={current} />
           {/if}
@@ -275,7 +273,7 @@
   </main>
 </div>
 
-{#if current}<CommandPalette bind:this={palette} cluster={current} {clusters} security={app.features.security} />{/if}
+{#if current}<CommandPalette bind:this={palette} cluster={current} {clusters} security={current.features.security} />{/if}
 
 <style>
   .goto { font-weight: 400; background: var(--surface); }

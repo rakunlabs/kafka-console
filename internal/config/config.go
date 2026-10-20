@@ -41,7 +41,8 @@ type Config struct {
 
 // Features switches parts of the console off with false; unset means on. A
 // feature that is off is gone from both the API and the UI, for example
-// when the console's credentials lack the ACL for it.
+// when the console's credentials lack the ACL for it. A cluster's own
+// features take precedence over the global ones.
 type Features struct {
 	// Security is the ACL, SCRAM user and quota section.
 	Security *bool `cfg:"security"`
@@ -69,6 +70,37 @@ func (f Features) DeleteGroupEnabled() bool   { return enabled(f.DeleteGroup) }
 func (f Features) AlterBrokerEnabled() bool   { return enabled(f.AlterBroker) }
 
 func enabled(b *bool) bool { return b == nil || *b }
+
+// Over returns f with every key set in over replaced by over's value, so a
+// cluster's features win over the global ones key by key.
+func (f Features) Over(over Features) Features {
+	pick := func(base, o *bool) *bool {
+		if o != nil {
+			return o
+		}
+
+		return base
+	}
+
+	return Features{
+		Security:      pick(f.Security, over.Security),
+		CreateTopic:   pick(f.CreateTopic, over.CreateTopic),
+		DeleteTopic:   pick(f.DeleteTopic, over.DeleteTopic),
+		AlterTopic:    pick(f.AlterTopic, over.AlterTopic),
+		DeleteRecords: pick(f.DeleteRecords, over.DeleteRecords),
+		DeleteGroup:   pick(f.DeleteGroup, over.DeleteGroup),
+		AlterBroker:   pick(f.AlterBroker, over.AlterBroker),
+	}
+}
+
+// ClusterFeatures is the global features with the cluster's own on top.
+func (c *Config) ClusterFeatures(name string) Features {
+	if cl := c.Clusters[name]; cl != nil {
+		return c.Features.Over(cl.Features)
+	}
+
+	return c.Features
+}
 
 // MCP is opt-in and read-only unless AllowWrites is explicitly enabled.
 // Cluster read_only remains a lower bound regardless of endpoint policy.
@@ -122,6 +154,9 @@ type Cluster struct {
 	// Description is Markdown shown on the cluster overview, e.g. owners,
 	// runbook links or what the cluster is for. Raw HTML is dropped.
 	Description string `cfg:"description"`
+
+	// Features override the global features for this cluster, key by key.
+	Features Features `cfg:"features"`
 
 	TLS  *TLS  `cfg:"tls"`
 	SASL *SASL `cfg:"sasl"`

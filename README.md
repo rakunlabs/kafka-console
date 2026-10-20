@@ -164,8 +164,27 @@ from the UI, its API routes answer 404, and its MCP tools are not offered
 | `delete_group` | Delete consumer group | `delete_consumer_group` |
 | `alter_broker` | Editing broker config and moving partition replicas | — |
 
-Features apply to every cluster. To block all writes on one cluster, use its
-`read_only` flag instead. Environment variables work too, for example
+Features apply to every cluster. A cluster can set its own `features` too;
+a key set there wins over the global one for that cluster, and keys it leaves
+out follow the global setting:
+
+```yaml
+features:
+  delete_topic: false      # off everywhere...
+
+clusters:
+  dev:
+    brokers: ["localhost:9092"]
+    features:
+      delete_topic: true   # ...except on dev
+  prod:
+    brokers: ["kafka-1.prod:9093"]
+    features:
+      security: false      # only prod hides the Security section
+```
+
+To block all writes on one cluster, use its `read_only` flag instead.
+Environment variables work for the global features, for example
 `KAFKA_CONSOLE_FEATURES_DELETE_TOPIC=false`.
 
 ### Protobuf without a registry

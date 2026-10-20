@@ -8,6 +8,8 @@ export type Cluster = {
   docs?: boolean
   // HTML rendered server-side from the configured Markdown description.
   description?: string
+  // The cluster's features: its own settings over the global ones.
+  features: Features
 }
 
 export type TopicDoc = { html: string; source: string; file: string; modified: string }

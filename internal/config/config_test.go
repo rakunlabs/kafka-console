@@ -39,6 +39,27 @@ func TestFeaturesDefaultOn(t *testing.T) {
 	}
 }
 
+func TestClusterFeaturesOverrideGlobal(t *testing.T) {
+	on, off := true, false
+	cfg := &Config{
+		Features: Features{DeleteTopic: &off, CreateTopic: &off},
+		Clusters: map[string]*Cluster{
+			"dev":  {Features: Features{DeleteTopic: &on, Security: &off}},
+			"prod": {},
+		},
+	}
+
+	dev := cfg.ClusterFeatures("dev")
+	if !dev.DeleteTopicEnabled() || dev.SecurityEnabled() || dev.CreateTopicEnabled() || !dev.AlterTopicEnabled() {
+		t.Fatalf("dev: cluster keys must win and unset ones follow global, got %+v", dev)
+	}
+
+	prod := cfg.ClusterFeatures("prod")
+	if prod.DeleteTopicEnabled() || prod.CreateTopicEnabled() || !prod.SecurityEnabled() {
+		t.Fatalf("prod: must follow global, got %+v", prod)
+	}
+}
+
 func TestValidateProtobufAndDocs(t *testing.T) {
 	dir := t.TempDir()
 	check := func(c *Cluster) error {

@@ -31,6 +31,9 @@ type Server struct {
 	registry *kafka.Registry
 	info     string
 	features features
+	// clusterFeatures is each cluster's features: the global ones with the
+	// cluster's own on top.
+	clusterFeatures map[string]features
 }
 
 // features tells the UI which optional parts to show.
@@ -58,9 +61,13 @@ func newFeatures(f config.Features) features {
 
 func Start(ctx context.Context, cfg *config.Config, registry *kafka.Registry, ui fs.FS) error {
 	s := &Server{
-		registry: registry,
-		info:     cfg.Info,
-		features: newFeatures(cfg.Features),
+		registry:        registry,
+		info:            cfg.Info,
+		features:        newFeatures(cfg.Features),
+		clusterFeatures: make(map[string]features, len(cfg.Clusters)),
+	}
+	for name := range cfg.Clusters {
+		s.clusterFeatures[name] = newFeatures(cfg.ClusterFeatures(name))
 	}
 
 	server := ada.New()
@@ -98,31 +105,23 @@ func Start(ctx context.Context, cfg *config.Config, registry *kafka.Registry, ui
 	c.GET("/names", s.names)
 	c.GET("/brokers/{broker}", s.broker)
 
-	// Switched-off features are not registered, so their paths fall through
-	// to the API's JSON 404: the operation is gone, not just refused.
-	if s.features.AlterBroker {
-		c.PATCH("/brokers/{broker}/configs", s.alterBrokerConfigs)
-		c.POST("/topics/{topic}/reassign", s.reassign)
-		c.GET("/topics/{topic}/balance-plan", s.balancePlan)
-		c.POST("/topics/{topic}/elect-leaders", s.electLeaders)
-	}
+	// Switched-off features answer the API's JSON 404 for their cluster:
+	// the operation is gone, not just refused.
+	alterBroker := s.feature(func(f features) bool { return f.AlterBroker })
+	c.PATCH("/brokers/{broker}/configs", s.alterBrokerConfigs, alterBroker)
+	c.POST("/topics/{topic}/reassign", s.reassign, alterBroker)
+	c.GET("/topics/{topic}/balance-plan", s.balancePlan, alterBroker)
+	c.POST("/topics/{topic}/elect-leaders", s.electLeaders, alterBroker)
 	c.GET("/topics/{topic}/reassignments", s.reassignments)
 	c.GET("/topics/{topic}/docs", s.topicDoc)
 	c.GET("/topics", s.topics)
-	if s.features.CreateTopic {
-		c.POST("/topics", s.createTopic)
-	}
+	c.POST("/topics", s.createTopic, s.feature(func(f features) bool { return f.CreateTopic }))
 	c.GET("/topics/{topic}", s.topic)
-	if s.features.DeleteTopic {
-		c.DELETE("/topics/{topic}", s.deleteTopic)
-	}
-	if s.features.AlterTopic {
-		c.PATCH("/topics/{topic}/configs", s.alterTopicConfigs)
-		c.POST("/topics/{topic}/partitions", s.addPartitions)
-	}
-	if s.features.DeleteRecords {
-		c.POST("/topics/{topic}/delete-records", s.deleteRecords)
-	}
+	c.DELETE("/topics/{topic}", s.deleteTopic, s.feature(func(f features) bool { return f.DeleteTopic }))
+	alterTopic := s.feature(func(f features) bool { return f.AlterTopic })
+	c.PATCH("/topics/{topic}/configs", s.alterTopicConfigs, alterTopic)
+	c.POST("/topics/{topic}/partitions", s.addPartitions, alterTopic)
+	c.POST("/topics/{topic}/delete-records", s.deleteRecords, s.feature(func(f features) bool { return f.DeleteRecords }))
 	c.GET("/topics/{topic}/consumers", s.topicConsumers)
 	c.GET("/topics/{topic}/messages", s.messages)
 	c.GET("/topics/{topic}/messages/{partition}/{offset}", s.message)
@@ -136,24 +135,22 @@ func Start(ctx context.Context, cfg *config.Config, registry *kafka.Registry, ui
 	c.GET("/groups", s.groups)
 	c.POST("/groups", s.createGroup)
 	c.GET("/groups/{group}", s.group)
-	if s.features.DeleteGroup {
-		c.DELETE("/groups/{group}", s.deleteGroup)
-		// Same Group DELETE ACL in Kafka as deleting the group.
-		c.POST("/groups/{group}/delete-offsets", s.deleteGroupOffsets)
-	}
+	deleteGroup := s.feature(func(f features) bool { return f.DeleteGroup })
+	c.DELETE("/groups/{group}", s.deleteGroup, deleteGroup)
+	// Same Group DELETE ACL in Kafka as deleting the group.
+	c.POST("/groups/{group}/delete-offsets", s.deleteGroupOffsets, deleteGroup)
 	c.POST("/groups/{group}/reset", s.resetOffsets)
 	c.POST("/groups/{group}/topics", s.addGroupTopic)
 
-	if s.features.Security {
-		c.GET("/acls", s.acls)
-		c.POST("/acls", s.createACLs)
-		c.POST("/acls/delete", s.deleteACL)
-		c.GET("/users", s.users)
-		c.POST("/users", s.upsertUser)
-		c.DELETE("/users/{user}", s.deleteUser)
-		c.GET("/quotas", s.quotas)
-		c.POST("/quotas", s.alterQuota)
-	}
+	security := s.feature(func(f features) bool { return f.Security })
+	c.GET("/acls", s.acls, security)
+	c.POST("/acls", s.createACLs, security)
+	c.POST("/acls/delete", s.deleteACL, security)
+	c.GET("/users", s.users, security)
+	c.POST("/users", s.upsertUser, security)
+	c.DELETE("/users/{user}", s.deleteUser, security)
+	c.GET("/quotas", s.quotas, security)
+	c.POST("/quotas", s.alterQuota, security)
 
 	c.GET("/schemas", s.schemaRegistry)
 	c.POST("/schemas", s.createSchema)
@@ -213,10 +210,40 @@ type clusterInfo struct {
 	Docs           bool     `json:"docs"`
 	// Description is HTML rendered from the configured Markdown.
 	Description string `json:"description,omitempty"`
+	// Features are the cluster's own, with the global ones underneath.
+	Features features `json:"features"`
 }
 
 func (s *Server) appInfo(c *ada.Context) error {
 	return c.SendJSON(map[string]any{"info": s.info, "version": config.Version, "features": s.features})
+}
+
+// featuresOf is the cluster's features; an unknown cluster gets the global
+// ones and is refused by the handler.
+func (s *Server) featuresOf(cluster string) features {
+	if f, ok := s.clusterFeatures[cluster]; ok {
+		return f
+	}
+
+	return s.features
+}
+
+// feature answers the API's JSON 404 when on reports the request's cluster
+// has the feature switched off.
+func (s *Server) feature(on func(features) bool) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !on(s.featuresOf(r.PathValue("cluster"))) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = w.Write([]byte(`{"message":"not found"}`))
+
+				return
+			}
+
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 func (s *Server) clusters(c *ada.Context) error {
@@ -226,6 +253,7 @@ func (s *Server) clusters(c *ada.Context) error {
 		out = append(out, clusterInfo{
 			Name: name, Brokers: cl.Brokers(), ReadOnly: cl.ReadOnly(), Production: cl.Production(),
 			SchemaRegistry: cl.HasRegistry(), Docs: cl.HasDocs(), Description: cl.Description(),
+			Features: s.featuresOf(name),
 		})
 	}
 

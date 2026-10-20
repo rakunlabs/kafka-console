@@ -8,7 +8,6 @@
   import { RefreshCw, Trash2, RotateCcw, Plus, Lock } from '@lucide/svelte'
   import GroupTopicDialog from '../lib/GroupTopicDialog.svelte'
   import LagEta from '../lib/LagEta.svelte'
-  import { app } from '../lib/features.svelte'
   import MoreRows from '../lib/MoreRows.svelte'
   import ResourceACLs from '../lib/ResourceACLs.svelte'
 
@@ -163,7 +162,7 @@
   <div class="acts">
   <button onclick={load} disabled={loading}><RefreshCw size={14} class={loading ? 'animate-spin' : ''} />Refresh</button>
   <button disabled={cluster.read_only || !data} title={cluster.read_only ? 'This cluster is read-only' : ''} onclick={() => (addingTopic = true)}><Plus size={14} />Add topic</button>
-  {#if app.features.delete_group}
+  {#if cluster.features.delete_group}
     <button class="danger" disabled={cluster.read_only || !data || data.members.length > 0}
       title={data && data.members.length > 0 ? 'Cannot delete a group with active members' : ''}
       onclick={() => { deleteError = ''; deleting = true }}><Trash2 size={14} />Delete group</button>
@@ -198,7 +197,7 @@
       <span class="spacer"></span>
       <span class="acts">
       <button disabled={cluster.read_only || denied} title={denied ? 'No permission to read this topic' : ''} onclick={() => openReset(t.topic)}><RotateCcw size={14} />Reset all partitions…</button>
-      {#if app.features.delete_group}
+      {#if cluster.features.delete_group}
       <button class="danger" disabled={cluster.read_only || (data?.members.length ?? 0) > 0}
         title={(data?.members.length ?? 0) > 0 ? 'Cannot delete offsets for a group with active members' : 'Deletes committed offsets for this topic'}
         onclick={() => { dropError = ''; dropTopic = t.topic; dropping = true }}>Delete offsets</button>
@@ -237,7 +236,7 @@
     </table>
   </div>
 
-  {#if app.features.security}
+  {#if cluster.features.security}
     <div class="section-title"><h2>ACL</h2></div>
     <ResourceACLs {cluster} type="GROUP" {name} />
   {/if}
