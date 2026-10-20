@@ -48,6 +48,10 @@ run-ui: ## Run the Vite dev server (proxies /api to :8080)
 env: ## Start a local Redpanda broker with Schema Registry
 	docker compose -f env/docker-compose.yaml up -d
 
+.PHONY: env-seed
+env-seed: ## Fill the local broker with sample topics, records, schemas and groups
+	go run ./env/seed
+
 .PHONY: env-down
 env-down: ## Stop the local broker
 	docker compose -f env/docker-compose.yaml down -v

@@ -144,7 +144,7 @@
 </div>
 
 <style>
-  .eta { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; font-size: 12.5px; }
+  .eta { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; font-size: 13px; }
   .eta.live, .eta:has(.txt) { padding: 3px 4px 3px 10px; background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius); }
   .txt b { font-weight: 600; }
   .bad { color: var(--danger); }

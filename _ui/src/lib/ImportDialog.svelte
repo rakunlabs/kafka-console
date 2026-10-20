@@ -295,8 +295,8 @@
     <p class="sum"><ListChecks size={15} /><span>All <b>{fmt(valid)}</b> records are valid and will be written to <b class="mono">{topic}</b> in <b>{cluster.name}</b>{keepPartition ? ', each to its partition' : ''}, in file order.</span></p>
     <p class="faint small">Consumers of the topic will receive them as new records. They are sent in batches of {batchSize}; a failed batch stops the import, and it can be resumed after the last written record.</p>
     {#if total === 0}<p class="err">The file has no records.</p>{/if}
-    {#if cluster.production}
-      <label>Production cluster: type <b class="mono">{topic}</b> to confirm <input class="mono" bind:value={confirm} autocomplete="off" /></label>
+    {#if cluster.confirm_writes}
+      <label>Type <b class="mono">{topic}</b> to confirm <input class="mono" bind:value={confirm} autocomplete="off" /></label>
     {/if}
   {:else}
     <div class="progress" role="status">
@@ -325,12 +325,12 @@
       <button class="primary" disabled={!file || busy || !!preview.fatal || cluster.read_only} onclick={check}><ListChecks size={14} />{phase === 'checking' ? 'Checking…' : 'Check'}</button>
     {:else if phase === 'checked'}
       <button onclick={() => (phase = 'pick')}>Back</button>
-      <button class="primary" disabled={!valid || cluster.read_only || (cluster.production && confirm !== topic)} onclick={() => run(0)}><Send size={14} />Import {fmt(valid)}</button>
+      <button class="primary" disabled={!valid || cluster.read_only || (cluster.confirm_writes && confirm !== topic)} onclick={() => run(0)}><Send size={14} />Import {fmt(valid)}</button>
     {:else if phase === 'sending'}
       <button class="danger" onclick={() => (stop = true)}><Square size={13} />Stop after this batch</button>
     {:else}
       {#if !finished && resumeAt}
-        <button disabled={cluster.read_only || (cluster.production && confirm !== topic)} onclick={() => run(resumeAt - 1)}><StepForward size={14} />Resume from item {fmt(resumeAt)}</button>
+        <button disabled={cluster.read_only || (cluster.confirm_writes && confirm !== topic)} onclick={() => run(resumeAt - 1)}><StepForward size={14} />Resume from item {fmt(resumeAt)}</button>
       {/if}
       <button class="primary" onclick={() => (open = false)}>Done</button>
     {/if}
@@ -348,16 +348,16 @@
   .drop input { position: absolute; opacity: 0; width: 1px; height: 1px; pointer-events: none; }
   .hint { display: block; margin-left: 22px; font-size: 12px; color: var(--text-3); }
   .check { align-items: flex-start; flex-wrap: wrap; }
-  .err { color: var(--danger); font-size: 12.5px; }
+  .err { color: var(--danger); font-size: 13px; }
   .error ul { margin: 6px 0 0 18px; padding: 0; }
-  .sum { display: flex; align-items: center; gap: 6px; font-size: 13.5px; }
+  .sum { display: flex; align-items: center; gap: 6px; font-size: 14px; }
   .sum b { font-weight: 600; }
   .tbl { max-height: 200px; overflow: auto; }
   .tbl table { table-layout: fixed; }
   .cut { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .donemsg { display: flex; align-items: center; gap: 6px; font-size: 13.5px; color: var(--ok); }
+  .donemsg { display: flex; align-items: center; gap: 6px; font-size: 14px; color: var(--ok); }
   .donemsg b, .donemsg a { color: var(--text); }
-  .progress { display: grid; gap: 6px; font-size: 12.5px; }
+  .progress { display: grid; gap: 6px; font-size: 13px; }
   .bar { height: 6px; background: var(--surface-2); border: 1px solid var(--border); overflow: hidden; }
   .bar span { display: block; height: 100%; background: var(--cta-text); transition: width .3s ease-out; }
   .bar.fail span { background: var(--danger); }

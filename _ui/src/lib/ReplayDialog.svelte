@@ -146,7 +146,7 @@
       (from.type === 'timestamp' && to.type === 'timestamp' && to.timestamp < from.timestamp),
   )
   const canCount = $derived(!busy && !invalidRange && !!dest && missing.length === 0 && !cluster.read_only)
-  const canSend = $derived(phase === 'counted' && !!counted?.matched && (!cluster.production || confirm === dest))
+  const canSend = $derived(phase === 'counted' && !!counted?.matched && (!cluster.confirm_writes || confirm === dest))
 
   const pct = $derived.by(() => {
     if (!ev) return 0
@@ -263,8 +263,8 @@
       {/if}
       {#if shown.stopped_by === 'limit'}<p class="faint small">Stopped counting at the limit of {fmt(Number(limit))}.</p>{/if}
       {#if shown.script_errors}<p class="err">The filter failed on {fmt(shown.script_errors)} records, which are skipped: {shown.first_error}</p>{/if}
-      {#if cluster.production && shown.matched}
-        <label>Production cluster: type <b class="mono">{dest}</b> to confirm
+      {#if cluster.confirm_writes && shown.matched}
+        <label>Type <b class="mono">{dest}</b> to confirm
           <input class="mono" bind:value={confirm} autocomplete="off" />
         </label>
       {/if}
@@ -309,15 +309,15 @@
   .hint { display: block; margin-left: 22px; font-size: 12px; color: var(--text-3); }
   .hint0 { font-size: 12px; color: var(--text-3); margin-top: -6px; }
   .check { align-items: flex-start; flex-wrap: wrap; }
-  .err { color: var(--danger); font-size: 12.5px; overflow-wrap: anywhere; }
+  .err { color: var(--danger); font-size: 13px; overflow-wrap: anywhere; }
   .tbl { max-height: 220px; overflow: auto; }
-  .sum { display: flex; align-items: center; gap: 6px; font-size: 13.5px; }
+  .sum { display: flex; align-items: center; gap: 6px; font-size: 14px; }
   .sum b { font-weight: 600; }
-  .donemsg { display: flex; align-items: center; gap: 6px; font-size: 13.5px; color: var(--ok); }
+  .donemsg { display: flex; align-items: center; gap: 6px; font-size: 14px; color: var(--ok); }
   .donemsg b, .donemsg a { color: var(--text); }
-  .warnbox { display: flex; gap: 8px; align-items: flex-start; padding: 9px 11px; font-size: 12.5px; color: var(--warn); background: var(--warn-soft); border-radius: var(--radius); }
+  .warnbox { display: flex; gap: 8px; align-items: flex-start; padding: 9px 11px; font-size: 13px; color: var(--warn); background: var(--warn-soft); border-radius: var(--radius); }
   .warnbox :global(svg) { flex: none; margin-top: 1px; }
-  .progress { display: grid; gap: 6px; font-size: 12.5px; }
+  .progress { display: grid; gap: 6px; font-size: 13px; }
   .bar { height: 6px; background: var(--surface-2); border: 1px solid var(--border); overflow: hidden; }
   .bar span { display: block; height: 100%; background: var(--cta-text); transition: width .3s ease-out; }
   .bar.fail span { background: var(--danger); }

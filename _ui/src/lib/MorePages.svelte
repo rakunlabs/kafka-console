@@ -8,7 +8,7 @@
 </script>
 
 {#if shown < total}
-  <div class="flex flex-wrap items-center gap-2 border-t border-line px-3.5 py-2 text-[12.5px] text-ink-3">
+  <div class="flex flex-wrap items-center gap-2 border-t border-line px-3.5 py-2 text-[13px] text-ink-3">
     <span>Showing {fmt(shown)} of {fmt(total)}</span>
     <span class="flex-1"></span>
     <button onclick={onmore} disabled={busy}>

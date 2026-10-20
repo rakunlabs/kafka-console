@@ -157,10 +157,11 @@ func (c *Client) Close() {
 	}
 }
 
-func (c *Client) ReadOnly() bool    { return c.cfg.ReadOnly }
-func (c *Client) Production() bool  { return c.cfg.Production }
-func (c *Client) Brokers() []string { return c.cfg.Brokers }
-func (c *Client) HasRegistry() bool { return c.registry != nil }
+func (c *Client) ReadOnly() bool      { return c.cfg.ReadOnly }
+func (c *Client) ConfirmWrites() bool { return c.cfg.ConfirmWrites }
+func (c *Client) Color() string       { return c.cfg.Color }
+func (c *Client) Brokers() []string   { return c.cfg.Brokers }
+func (c *Client) HasRegistry() bool   { return c.registry != nil }
 
 // Description is the configured cluster description rendered from Markdown
 // with the same safe renderer as topic docs; empty when unset.

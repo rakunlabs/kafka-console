@@ -69,7 +69,7 @@
   .vv {
     position: relative;
     overflow: auto;
-    font: 12.5px/1.55 var(--mono);
+    font: 13px/1.55 var(--mono);
     background: var(--bg);
     border: 1px solid var(--border);
     border-radius: var(--radius);
@@ -86,7 +86,7 @@
     background: color-mix(in srgb, var(--bg) 88%, transparent);
     border-bottom-left-radius: var(--radius);
   }
-  .vbar button { padding: 2px 6px; font: 500 11.5px var(--font); color: var(--text-2); gap: 4px; }
+  .vbar button { padding: 2px 6px; font: 500 12px var(--font); color: var(--text-2); gap: 4px; }
   .vbar button:hover:not(:disabled) { color: var(--text); background: var(--surface-2); }
   .tree { padding: 8px 10px 8px 6px; }
   pre { margin: 0; padding: 10px 12px; font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; }

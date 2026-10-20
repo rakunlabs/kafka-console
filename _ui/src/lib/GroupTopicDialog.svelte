@@ -288,9 +288,9 @@
   .hint { font-size: 12px; font-weight: 400; color: var(--text-3); }
   .field-err { font-size: 12px; font-weight: 400; color: var(--danger); }
   .crumb { display: flex; align-items: center; gap: 8px; font-size: 13px; }
-  .ok { display: flex; align-items: center; gap: 6px; font-size: 13.5px; color: var(--ok); }
+  .ok { display: flex; align-items: center; gap: 6px; font-size: 14px; color: var(--ok); }
   .ok b { color: var(--text); }
-  .warnbox { display: flex; gap: 8px; align-items: flex-start; padding: 9px 11px; font-size: 12.5px; color: var(--warn); background: var(--warn-soft); border-radius: var(--radius); }
+  .warnbox { display: flex; gap: 8px; align-items: flex-start; padding: 9px 11px; font-size: 13px; color: var(--warn); background: var(--warn-soft); border-radius: var(--radius); }
   .warnbox :global(svg) { flex: none; margin-top: 1px; }
 
 
@@ -304,6 +304,6 @@
   .off.wrong { border-color: var(--danger); color: var(--danger); }
   tr.dim td { color: var(--text-3); }
   td.num:has(.off) { padding-top: 4px; padding-bottom: 4px; }
-  .effect { font-size: 12.5px; color: var(--text-2); }
+  .effect { font-size: 13px; color: var(--text-2); }
   .effect b { color: var(--text); }
 </style>

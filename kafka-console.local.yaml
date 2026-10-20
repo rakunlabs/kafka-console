@@ -23,6 +23,8 @@ clusters:
     # order: 1   # list position, lowest first; the first cluster opens by default
     schema_registry:
       urls: ["http://localhost:18081"]
+    color: "red"
+    confirm_writes: true
     description: |   # Markdown, shown in a box on the cluster overview
       ## Local development cluster
 
@@ -56,7 +58,8 @@ clusters:
   #
   # prod:
   #   brokers: ["kafka.prod:9093"]
-  #   production: true   # red banner in the UI
+  #   color: "#e5484d"   # RGB hex or a CSS name like blue, tinting the UI for this cluster
+  #   confirm_writes: true # type the topic name before writes
   #   read_only: true    # refuses produce, topic create/delete, offset reset
   #   tls:
   #     enabled: true

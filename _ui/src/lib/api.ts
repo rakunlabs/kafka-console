@@ -2,7 +2,10 @@ export type Cluster = {
   name: string
   brokers: string[]
   read_only: boolean
-  production: boolean
+  // Writes ask for the target topic's name before sending.
+  confirm_writes: boolean
+  // "#rrggbb" or a CSS color name, tinting the UI while the cluster is open.
+  color?: string
   schema_registry: boolean
   // Topic documentation (Markdown files) is configured.
   docs?: boolean

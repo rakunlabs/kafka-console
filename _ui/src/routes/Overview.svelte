@@ -72,11 +72,11 @@
     href={link}
     class="group -mr-px -mb-px grid gap-0.5 border-r border-b border-line px-[18px] pt-4 pb-3.5 text-ink {link ? 'hover:bg-hover hover:no-underline' : ''}"
   >
-    <span class="flex items-center gap-1.5 text-[12.5px] text-ink-2">
+    <span class="flex items-center gap-1.5 text-[13px] text-ink-2">
       {label}
       {#if link}<ArrowRight size={13} class="text-ink-3 transition-transform duration-150 ease-out group-hover:translate-x-0.5 group-hover:text-ink" />{/if}
     </span>
-    <b class="text-3xl leading-tight font-[450] tracking-tight tabular-nums {tone}">{value}</b>
+    <b class="text-3xl leading-tight font-medium tracking-tight tabular-nums {tone}">{value}</b>
     <small class="text-xs {tone || 'text-ink-3'}">{note}</small>
   </svelte:element>
 {/snippet}
@@ -85,7 +85,7 @@
   <div class="flex flex-wrap items-center gap-3.5">
     <h1>{cluster.name}</h1>
     {#if health}
-      <span class="inline-flex items-center gap-[7px] rounded-[2px] px-2.5 py-0.5 text-[12.5px] font-medium {health.cls}">
+      <span class="inline-flex items-center gap-[7px] rounded-[2px] px-2.5 py-0.5 text-[13px] font-medium {health.cls}">
         <span class="sq"></span>{health.text}
       </span>
     {/if}
@@ -108,7 +108,7 @@
 </header>
 
 {#if cluster.description}
-  <section class="panel markdown mb-6 px-4 py-3 text-[13.5px]" aria-label="Cluster description">
+  <section class="panel markdown mb-6 px-4 py-3 text-[14px]" aria-label="Cluster description">
     <!-- eslint-disable-next-line svelte/no-at-html-tags -- rendered server-side without raw HTML -->
     {@html cluster.description}
   </section>
@@ -174,7 +174,7 @@
         </tbody>
       </table>
       {#if problems.length > problemLimit}
-        <div class="border-t border-line px-4 py-2 text-[12.5px]">
+        <div class="border-t border-line px-4 py-2 text-[13px]">
           <button class="ghost" onclick={() => (showAllProblems = !showAllProblems)}>
             {showAllProblems ? `Show the first ${problemLimit}` : `Show all ${fmt(problems.length)} topics`}
           </button>

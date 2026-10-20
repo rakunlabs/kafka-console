@@ -9,7 +9,7 @@
   // session; reopening refreshes them in the background.
   let { cluster, clusters, security }: { cluster: Cluster; clusters: Cluster[]; security: boolean } = $props()
 
-  type Item = { kind: string; label: string; detail?: string; run: () => void }
+  type Item = { kind: string; label: string; color?: string; run: () => void }
 
   let open = $state(false)
   let query = $state('')
@@ -98,7 +98,7 @@
 
   const others = $derived<Item[]>(clusters
     .filter((c) => c.name !== cluster.name)
-    .map((c) => ({ kind: 'Cluster', label: c.name, detail: c.production ? 'production' : undefined, run: () => go(c.name, 'overview') })))
+    .map((c) => ({ kind: 'Cluster', label: c.name, color: c.color, run: () => go(c.name, 'overview') })))
 
   // Built once per list, not per keystroke: the label is lowercased up front
   // and the page is opened by kind and name when an item is picked.
@@ -201,7 +201,7 @@
           onclick={() => run(it)} onmouseenter={() => (active = i)} onkeydown={() => {}}>
           <Icon size={15} />
           <span class="label" class:mono={it.kind !== 'Page' && it.kind !== 'Security'}>{a}<mark>{b}</mark>{c}</span>
-          {#if it.detail}<span class="badge danger">{it.detail}</span>{/if}
+          {#if it.color}<span class="sq" style:background={it.color}></span>{/if}
           <span class="kind">{it.kind === 'Security' ? 'Page' : it.kind}</span>
           {#if i === active}<CornerDownLeft size={13} class="enter" />{/if}
         </li>
@@ -234,7 +234,7 @@
   .palette[open] { display: flex; flex-direction: column; }
   .palette::backdrop { background: rgb(23 23 20 / .32); }
   .search { display: flex; align-items: center; gap: 10px; padding: 0 14px; border-bottom: 1px solid var(--border-strong); color: var(--text-3); }
-  .search input { flex: 1; border: 0; padding: 14px 0; font-size: 15px; background: transparent; }
+  .search input { flex: 1; border: 0; padding: 14px 0; font-size: 16px; background: transparent; }
   .search input:focus { outline: none; }
   .search :global(.spin) { animation: spin 1s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
@@ -246,7 +246,7 @@
     gap: 10px;
     padding: 7px 10px;
     border-radius: 2px;
-    font-size: 13.5px;
+    font-size: 14px;
     color: var(--text-2);
     cursor: pointer;
   }
@@ -254,7 +254,7 @@
   .label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
   .label.mono { font-size: 13px; }
   mark { background: var(--cta); color: var(--cta-text); border-radius: 1px; padding: 0 1px; }
-  .kind { font-size: 11.5px; color: var(--text-3); }
+  .kind { font-size: 12px; color: var(--text-3); }
   li :global(.enter) { color: var(--text-2); }
   li.none { display: block; padding: 22px 10px; text-align: center; color: var(--text-3); cursor: default; }
   .foot { display: flex; align-items: center; gap: 14px; padding: 7px 14px; font-size: 12px; color: var(--text-3); border-top: 1px solid var(--border); background: var(--surface-2); }

@@ -33,8 +33,8 @@
   const ok = $derived(results?.filter((r) => !r.error) ?? [])
   const failed = $derived(results?.filter((r) => r.error) ?? [])
   // Re-sending into the topic a consumer already read means it reads it again;
-  // on production that is worth a typed confirmation.
-  const needsConfirm = $derived(cluster.production)
+  // clusters with confirm_writes ask for the topic name first.
+  const needsConfirm = $derived(cluster.confirm_writes)
 
   let wasOpen = false
   $effect(() => {
@@ -113,7 +113,7 @@
       <span class="hint">e.g. <code>{topic}/{messages[0]?.partition ?? 0}/{messages[0]?.offset ?? 0}</code>, so a replay can be told apart from the original.</span></label>
 
     {#if needsConfirm}
-      <label>Production cluster: type <b class="mono">{dest || 'the topic name'}</b> to confirm
+      <label>Type <b class="mono">{dest || 'the topic name'}</b> to confirm
         <input class="mono" bind:value={confirm} />
       </label>
     {/if}
@@ -138,10 +138,10 @@
   .lead { font-size: 13px; color: var(--text-2); }
   .hint { display: block; margin-left: 22px; font-size: 12px; color: var(--text-3); }
   .check { align-items: flex-start; flex-wrap: wrap; }
-  .donemsg { display: flex; align-items: center; gap: 6px; font-size: 13.5px; color: var(--ok); }
+  .donemsg { display: flex; align-items: center; gap: 6px; font-size: 14px; color: var(--ok); }
   .donemsg b, .donemsg a { color: var(--text); }
-  .err { color: var(--danger); font-size: 12.5px; }
+  .err { color: var(--danger); font-size: 13px; }
   .tbl { max-height: 300px; overflow: auto; }
-  .warnbox { display: flex; gap: 8px; align-items: flex-start; padding: 9px 11px; font-size: 12.5px; color: var(--warn); background: var(--warn-soft); border-radius: var(--radius); }
+  .warnbox { display: flex; gap: 8px; align-items: flex-start; padding: 9px 11px; font-size: 13px; color: var(--warn); background: var(--warn-soft); border-radius: var(--radius); }
   .warnbox :global(svg) { flex: none; margin-top: 1px; }
 </style>

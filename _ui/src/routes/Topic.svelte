@@ -304,10 +304,10 @@
         title={s.help}
         class="group -mr-px flex items-baseline gap-2 border-r border-line px-4 py-2.5 text-ink {'link' in s ? 'hover:bg-hover hover:no-underline' : ''}"
       >
-        <span class="text-[12.5px] text-ink-2">{s.label}</span>
+        <span class="text-[13px] text-ink-2">{s.label}</span>
         {#if 'aside' in s && s.aside}<span class="font-mono text-[11px] text-ink-3">{s.aside}</span>{/if}
         <span class="flex-1"></span>
-        <b class="text-[19px] leading-none font-[450] tracking-tight tabular-nums">{s.value}</b>
+        <b class="text-xl leading-none font-medium tracking-tight tabular-nums">{s.value}</b>
         {#if 'link' in s}<ArrowRight size={13} class="self-center text-ink-3 transition-transform duration-150 ease-out group-hover:translate-x-0.5 group-hover:text-ink" />{/if}
       </svelte:element>
     {/each}
@@ -344,7 +344,7 @@
   {#if tab === 'partitions'}
     <div class="panel mb-3 flex flex-wrap items-center gap-x-6 gap-y-2 px-4 py-3">
       <PartitionMap cells={partitionCells} size={data.partitions.length > 120 ? 10 : 16} />
-      <span class="text-[12.5px] text-ink-2">
+      <span class="text-[13px] text-ink-2">
         Fill = messages relative to the busiest partition.
         {#if skew}<span class="text-warn">Partition {skew.id} holds {skew.pct}% of all messages; check the key distribution.</span>{/if}
       </span>

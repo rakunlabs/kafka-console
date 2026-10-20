@@ -86,6 +86,29 @@ func TestValidateProtobufAndDocs(t *testing.T) {
 	}
 }
 
+func TestValidateColor(t *testing.T) {
+	for in, want := range map[string]string{
+		"#E5484D": "#e5484d",
+		"e5484d":  "#e5484d",
+		"#f80":    "#ff8800",
+		"Blue":    "blue",
+		"tomato":  "tomato",
+		"bleu":    "",
+		"#12345":  "",
+		"#ggg":    "",
+	} {
+		c := &Cluster{Brokers: []string{"localhost:9092"}, Color: in}
+		err := (&Config{Clusters: map[string]*Cluster{"c": c}}).validate()
+
+		switch {
+		case want == "" && err == nil:
+			t.Errorf("%q: want an error", in)
+		case want != "" && (err != nil || c.Color != want):
+			t.Errorf("%q: got %q, %v; want %q", in, c.Color, err, want)
+		}
+	}
+}
+
 func TestClusterNamesOrder(t *testing.T) {
 	at := func(n int) *int { return &n }
 

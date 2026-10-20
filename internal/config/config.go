@@ -149,8 +149,13 @@ type Cluster struct {
 	Order *int `cfg:"order"`
 	// ReadOnly refuses every write: produce, topic create/delete, offset reset.
 	ReadOnly bool `cfg:"read_only"`
-	// Production only changes how the UI presents the cluster.
-	Production bool `cfg:"production"`
+	// ConfirmWrites makes the UI ask for the target topic's name before
+	// producing, resending, replaying or importing records.
+	ConfirmWrites bool `cfg:"confirm_writes"`
+	// Color is an RGB hex code such as "#e5484d" or a CSS color name such
+	// as "blue"; it tints the UI while the cluster is open so clusters are
+	// told apart at a glance.
+	Color string `cfg:"color"`
 	// Description is Markdown shown on the cluster overview, e.g. owners,
 	// runbook links or what the cluster is for. Raw HTML is dropped.
 	Description string `cfg:"description"`
@@ -363,6 +368,15 @@ func (c *Config) validate() error {
 	for name, cluster := range c.Clusters {
 		if cluster == nil || len(cluster.Brokers) == 0 {
 			return fmt.Errorf("cluster %q has no brokers", name)
+		}
+
+		if cluster.Color != "" {
+			color, ok := normalizeColor(cluster.Color)
+			if !ok {
+				return fmt.Errorf("cluster %q: color %q is not an RGB hex code like #e5484d or a CSS color name like blue", name, cluster.Color)
+			}
+
+			cluster.Color = color
 		}
 
 		if sr := cluster.SchemaRegistry; sr != nil {

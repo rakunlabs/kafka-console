@@ -66,7 +66,7 @@
   let result = $state.raw<ConsumeResult>()
   let loading = $state(false)
   let error = $state('')
-  let selected = $state<Message>()
+  let selected = $state.raw<Message>()
   // The read in flight. A new Fetch or Stop aborts it, on the server too.
   let reading: AbortController | undefined
 
@@ -436,11 +436,12 @@
     expanded = allOpen ? new Set() : new Set(result?.messages.slice(0, expandCap).map(mkey))
   }
 
-  let copied = $state(false)
-  function copy(text: string) {
+  // Which field was copied last, so only its button shows the tick.
+  let copied = $state<'key' | 'value' | null>(null)
+  function copy(text: string, what: 'key' | 'value' = 'value') {
     navigator.clipboard?.writeText(text).then(() => {
-      copied = true
-      setTimeout(() => (copied = false), 1200)
+      copied = what
+      setTimeout(() => (copied = null), 1200)
     }, () => {})
   }
 
@@ -451,7 +452,11 @@
     const next = result.messages[Math.min(Math.max(i + d, 0), result.messages.length - 1)]
     if (next) {
       selected = next
-      document.getElementById(`m-${next.partition}-${next.offset}`)?.scrollIntoView({ block: 'nearest' })
+      const row = document.getElementById(`m-${next.partition}-${next.offset}`)
+      // Keyboard focus follows the selection when it is on a row, so the
+      // focus ring does not stay behind on the row that was clicked.
+      if (document.activeElement?.matches('.list tr[tabindex]')) row?.focus({ preventScroll: true })
+      row?.scrollIntoView({ block: 'nearest' })
     }
   }
   function onkey(e: KeyboardEvent) {
@@ -780,7 +785,8 @@
                          <button type="button" class="ghost small" disabled={editing} onclick={() => edit(m)}><Pencil size={12} />{editing ? 'Loading…' : 'Edit & resend'}</button>
                          <button type="button" class="ghost small" onclick={() => resend([m])}><Repeat size={12} />Resend…</button>
                        {/if}
-                      <button type="button" class="ghost small" onclick={() => copy(m.value ?? '')}><Copy size={12} />Copy</button>
+                      {#if m.key !== null}<button type="button" class="ghost small" onclick={() => copy(m.key ?? '', 'key')}><Copy size={12} />Copy key</button>{/if}
+                      <button type="button" class="ghost small" onclick={() => copy(m.value ?? '')}><Copy size={12} />Copy value</button>
                     </div>
                     {#if m.decode_error}<div class="error small-err">Schema decoding failed: {m.decode_error}</div>{/if}
                     <ValueView text={m.value} format={m.value_format} maxHeight={420} />
@@ -846,6 +852,7 @@
               <span class="spacer"></span>
               <a class="btn ghost small" href={rawURL(cluster.name, topic, selected.partition, selected.offset, 'key')} download
                 title="Download the key's bytes exactly as stored"><Download size={13} />Raw</a>
+              <button class="ghost small" onclick={() => copy(selected?.key ?? '', 'key')}>{#if copied === 'key'}<Check size={13} />Copied{:else}<Copy size={13} />Copy{/if}</button>
             {/if}
           </div>
           <ValueView text={selected.key} format={selected.key_format} depth={2} />
@@ -863,7 +870,7 @@
               <a class="btn ghost small" href={rawURL(cluster.name, topic, selected.partition, selected.offset, 'value')} download
                 title={selected.truncated ? 'Only the first 64 KiB is shown; download the whole value as stored' : "Download the value's bytes exactly as stored"}><Download size={13} />{selected.truncated ? 'Download full' : 'Raw'}</a>
             {/if}
-            <button class="ghost small" onclick={() => copy(selected?.value ?? '')}>{#if copied}<Check size={13} />Copied{:else}<Copy size={13} />Copy{/if}</button>
+            <button class="ghost small" onclick={() => copy(selected?.value ?? '')}>{#if copied === 'value'}<Check size={13} />Copied{:else}<Copy size={13} />Copy{/if}</button>
           </div>
           {#key selected}<ValueView text={selected.value} format={selected.value_format} />{/key}
         </section>
@@ -913,7 +920,7 @@
     margin: 0 -1px -1px 0;
     border-right: 1px solid var(--border);
     border-bottom: 1px solid var(--border);
-    font-size: 12.5px;
+    font-size: 13px;
     font-weight: 400;
     color: var(--text);
     white-space: nowrap;
@@ -956,10 +963,10 @@
   .filter :global(.cm) { margin-top: 0; }
   kbd { font: 11px var(--mono); padding: 0 4px; border: 1px solid var(--border-strong); border-radius: 2px; background: var(--surface); }
   .hint { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; font-size: 12px; }
-  .hint code { font-size: 11.5px; }
+  .hint code { font-size: 12px; }
   .examples { display: flex; flex-wrap: wrap; gap: 4px; }
   .ex { font-size: 12px; padding: 1px 7px; border: 1px solid var(--border-strong); background: var(--surface); color: var(--text-2); }
-  .meta { font-size: 12.5px; margin-bottom: 8px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; min-height: 26px; }
+  .meta { font-size: 13px; margin-bottom: 8px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; min-height: 26px; }
   .err { color: var(--danger); font-size: 12px; }
   .split { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; align-items: start; }
   .split.open { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
@@ -1025,7 +1032,7 @@
   .inl { display: grid; gap: 6px; padding-bottom: 4px; }
   .inl-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; font-size: 12px; }
   .inl-meta code { font-size: 12px; }
-  .hdr { display: inline-flex; gap: 4px; font: 11.5px var(--mono); padding: 0 6px; border: 1px solid var(--border); border-radius: 2px; }
+  .hdr { display: inline-flex; gap: 4px; font: 12px var(--mono); padding: 0 6px; border: 1px solid var(--border); border-radius: 2px; }
 
   @media (max-width: 1100px) {
     .split.open { grid-template-columns: minmax(0, 1fr); }
@@ -1052,7 +1059,7 @@
 
     .list { overflow: visible; }
     .card { display: grid; gap: 2px; min-width: 0; padding-block: 9px; }
-    .card-meta { display: flex; gap: 10px; font-size: 11.5px; color: var(--text-2); }
+    .card-meta { display: flex; gap: 10px; font-size: 12px; color: var(--text-2); }
     .card-meta .faint { margin-left: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .card .key { font-size: 12px; color: var(--text); }
     .card .val { font-size: 12px; }

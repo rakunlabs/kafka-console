@@ -187,14 +187,14 @@
   .item.open > .row:hover:not(:disabled) { background: var(--sel); }
   .row :global(.chev) { color: var(--text-3); transition: transform .16s cubic-bezier(.2, .7, .2, 1); justify-self: center; }
   .open > .row :global(.chev) { transform: rotate(90deg); color: var(--text); }
-  .gname { font-size: 13.5px; font-weight: 500; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .gname { font-size: 14px; font-weight: 500; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .caught { display: flex; align-items: center; gap: 8px; font-size: 12px; }
   .caught .track { flex: 1; max-width: 160px; }
   .caught .track > span { background: var(--ok); }
 
   .detail { padding: 12px 14px 16px 44px; border-top: 1px solid var(--border); background: var(--bg); }
-  .dbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 10px; font-size: 12.5px; }
-  .openlink { display: inline-flex; align-items: center; gap: 4px; font-size: 12.5px; color: var(--text-2); }
+  .dbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 10px; font-size: 13px; }
+  .openlink { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; color: var(--text-2); }
   .openlink:hover { color: var(--text); text-decoration: none; }
   .clients { display: flex; flex-wrap: wrap; gap: 6px; }
   .client {

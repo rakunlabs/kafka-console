@@ -184,7 +184,7 @@
 </Modal>
 
 <style>
-  .spread { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 12.5px; margin: 8px 0; }
+  .spread { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 13px; margin: 8px 0; }
   .tbl { max-height: 360px; overflow: auto; }
   .tbl input { width: 100%; }
   tr.diff td { background: var(--accent-soft, rgb(80 120 255 / 0.08)); }

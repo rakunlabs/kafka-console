@@ -126,5 +126,5 @@
     border-radius: 2px;
   }
   .sum:hover:not(:disabled) { background: var(--sel); border-color: var(--cta-border); }
-  .more { margin: 2px 0 2px 18px; padding: 0 6px; font: 11.5px var(--font); color: var(--text-2); background: transparent; border-style: dashed; }
+  .more { margin: 2px 0 2px 18px; padding: 0 6px; font: 12px var(--font); color: var(--text-2); background: transparent; border-style: dashed; }
 </style>

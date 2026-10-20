@@ -205,7 +205,8 @@ type clusterInfo struct {
 	Name           string   `json:"name"`
 	Brokers        []string `json:"brokers"`
 	ReadOnly       bool     `json:"read_only"`
-	Production     bool     `json:"production"`
+	ConfirmWrites  bool     `json:"confirm_writes"`
+	Color          string   `json:"color,omitempty"`
 	SchemaRegistry bool     `json:"schema_registry"`
 	Docs           bool     `json:"docs"`
 	// Description is HTML rendered from the configured Markdown.
@@ -251,7 +252,7 @@ func (s *Server) clusters(c *ada.Context) error {
 	for _, name := range s.registry.Names() {
 		cl, _ := s.registry.Get(name)
 		out = append(out, clusterInfo{
-			Name: name, Brokers: cl.Brokers(), ReadOnly: cl.ReadOnly(), Production: cl.Production(),
+			Name: name, Brokers: cl.Brokers(), ReadOnly: cl.ReadOnly(), ConfirmWrites: cl.ConfirmWrites(), Color: cl.Color(),
 			SchemaRegistry: cl.HasRegistry(), Docs: cl.HasDocs(), Description: cl.Description(),
 			Features: s.featuresOf(name),
 		})

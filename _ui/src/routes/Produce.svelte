@@ -204,7 +204,7 @@
   }
 
   async function send(destination: string, request: ProduceBody) {
-    if (busy || cluster.read_only || (source && (!reviewing || (cluster.production && confirmation !== destination)))) return
+    if (busy || cluster.read_only || (source && (!reviewing || (cluster.confirm_writes && confirmation !== destination)))) return
     busy = true
     error = ''
     try {
@@ -354,7 +354,6 @@
       {#if invalid}<p class="error" role="alert">{invalid}</p>{/if}
 
       <div class="row submit">
-        {#if cluster.production}<span class="prodnote">You are producing to a production cluster.</span>{/if}
         <span class="spacer"></span>
         <button class="primary" type="submit" disabled={busy || !!invalid}><Send size={14} />{busy ? 'Sending…' : source ? 'Review & send' : 'Send'}</button>
       </div>
@@ -392,8 +391,8 @@
         {/each}
       </div>
     {:else}<p>No fields changed. Sending will create another record with the same content.</p>{/if}
-    {#if cluster.production}
-      <label>Production cluster: type <b class="mono">{pending.target}</b> to confirm
+    {#if cluster.confirm_writes}
+      <label>Type <b class="mono">{pending.target}</b> to confirm
         <input class="mono" bind:value={confirmation} autocomplete="off" />
       </label>
     {/if}
@@ -401,7 +400,7 @@
   {/if}
   {#snippet footer()}
     <button disabled={busy} onclick={() => (reviewing = false)}>Back to editing</button>
-    <button class="primary" disabled={busy || cluster.read_only || !pending || (cluster.production && confirmation !== pending.target)} onclick={() => pending && send(pending.target, pending.body)}><Send size={14} />{busy ? 'Sending…' : 'Send new record'}</button>
+    <button class="primary" disabled={busy || cluster.read_only || !pending || (cluster.confirm_writes && confirmation !== pending.target)} onclick={() => pending && send(pending.target, pending.body)}><Send size={14} />{busy ? 'Sending…' : 'Send new record'}</button>
   {/snippet}
 </Modal>
 
@@ -434,7 +433,6 @@
   .hrow { margin-bottom: 6px; }
   .hrow input { flex: 1; min-width: 0; }
   .hrow select { width: 88px; }
-  .prodnote { font-size: 12px; color: var(--danger); }
   .schemainfo { align-self: end; padding-bottom: 7px; font-size: 12px; }
   .small-hint { font-size: 12px; margin-top: -4px; }
   .ed-loading { height: 252px; border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--surface-2); }

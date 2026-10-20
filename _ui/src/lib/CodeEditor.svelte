@@ -115,7 +115,7 @@
   .cm.invalid { border-color: var(--danger); }
   .cm.invalid:focus-within { outline-color: var(--danger); }
 
-  .cm :global(.cm-editor) { font: 12.5px/1.6 var(--mono); min-height: var(--min); max-height: var(--max); }
+  .cm :global(.cm-editor) { font: 13px/1.6 var(--mono); min-height: var(--min); max-height: var(--max); }
   .cm :global(.cm-editor.cm-focused) { outline: none; }
   .cm :global(.cm-scroller) { font-family: var(--mono); min-height: var(--min); }
   .cm :global(.cm-content) { padding: 6px 0; caret-color: var(--text); }

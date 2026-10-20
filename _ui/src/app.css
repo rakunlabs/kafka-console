@@ -1,6 +1,9 @@
 @import 'tailwindcss';
-@import '@fontsource-variable/inter';
-@import '@fontsource-variable/geist-mono';
+@import '@fontsource-variable/ibm-plex-sans/wght.css';
+@import '@fontsource-variable/ibm-plex-sans/wght-italic.css';
+@import '@fontsource/ibm-plex-mono/400.css';
+@import '@fontsource/ibm-plex-mono/500.css';
+@import '@fontsource/ibm-plex-mono/600.css';
 
 /* Expose the palette to Tailwind utilities (bg-surface, text-ink-2, border-line …).
    Values stay CSS variables so light/dark switching keeps working. */
@@ -74,12 +77,11 @@
   --syn-var: #4f39f6;
 
   --radius: 3px;
-  --font: 'Inter Variable', system-ui, -apple-system, 'Segoe UI', sans-serif;
-  --mono: 'Geist Mono Variable', ui-monospace, 'SF Mono', Menlo, monospace;
+  --font: 'IBM Plex Sans Variable', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, monospace;
 
   color-scheme: light;
   font: 14px/1.5 var(--font);
-  font-feature-settings: 'cv11', 'ss01';
   color: var(--text);
   background: var(--bg);
   caret-color: var(--accent);
@@ -177,13 +179,15 @@
 * { box-sizing: border-box; }
 body { margin: 0; }
 h1, h2, h3, p { margin: 0; }
-h1 { font-size: 26px; font-weight: 500; letter-spacing: -.015em; line-height: 1.2; text-wrap: balance; }
-h2 { font-size: 15px; font-weight: 600; letter-spacing: -.005em; }
+/* Type scale: 11 / 12 / 13 / 14 (body) / 16 / 20 / 24. Mono runs one step
+   under the sans beside it: Plex Mono sets wider at the same size. */
+h1 { font-size: 24px; font-weight: 600; letter-spacing: -.01em; line-height: 1.2; text-wrap: balance; }
+h2 { font-size: 16px; font-weight: 600; }
 a { color: var(--accent); text-decoration: none; text-underline-offset: 3px; }
 a:hover { text-decoration: underline; }
-code, .mono { font-family: var(--mono); font-size: 12.5px; }
-h1.mono, h1 .mono { font-size: 22px; letter-spacing: -.01em; }
-h2.mono, h2 .mono { font-size: 14px; }
+code, .mono { font-family: var(--mono); font-size: 13px; }
+h1.mono, h1 .mono { font-size: 22px; font-weight: 500; letter-spacing: -.02em; }
+h2.mono, h2 .mono { font-size: 15px; font-weight: 500; }
 .num { font-variant-numeric: tabular-nums; text-align: right; }
 .muted { color: var(--text-2); }
 .faint { color: var(--text-3); }
@@ -274,7 +278,7 @@ select.noicon { appearance: none; }
   option::checkmark { order: 1; margin-left: auto; padding-left: 12px; content: '✓'; font-size: 12px; }
   option:disabled { color: var(--text-3); cursor: default; }
 }
-textarea { font-family: var(--mono); font-size: 12.5px; resize: vertical; }
+textarea { font-family: var(--mono); font-size: 13px; resize: vertical; }
 input:not([type='checkbox']):not([type='radio']):focus, select:focus, textarea:focus, button:focus-visible, a:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: -1px;
@@ -397,7 +401,7 @@ tbody tr:hover td { background: var(--row-hover); }
 h1.crumbed { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0 10px; min-width: 0; }
 h1.crumbed .parent { color: var(--text-3); font-weight: 400; }
 h1.crumbed .parent:hover { color: var(--text); text-decoration: none; }
-h1.crumbed .sep { color: var(--border-strong); font-weight: 300; }
+h1.crumbed .sep { color: var(--border-strong); font-weight: 400; }
 h1.crumbed .mono { overflow-wrap: anywhere; }
 .head {
   display: flex;
@@ -536,7 +540,7 @@ td.num { white-space: nowrap; }
   .panel:has(> table) { overflow-x: auto; }
   th, td { padding: 7px 10px; }
   .grid2 { grid-template-columns: minmax(0, 1fr); }
-  h1 { font-size: 22px; }
+  h1 { font-size: 20px; }
   h1.mono, h1 .mono { font-size: 18px; }
   .filters input[type='search'] { width: 100%; }
 }
@@ -567,7 +571,7 @@ td.num { white-space: nowrap; }
 .markdown ul, .markdown ol { padding-left: 22px; }
 .markdown ul { list-style: square; }
 .markdown ol { list-style: decimal; }
-.markdown code { font-family: var(--font-mono); font-size: 12.5px; background: var(--surface-2); padding: 1px 4px; border-radius: 3px; }
+.markdown code { font-family: var(--font-mono); font-size: 13px; background: var(--surface-2); padding: 1px 4px; border-radius: 3px; }
 .markdown pre { background: var(--surface-2); padding: 10px 12px; border-radius: var(--radius); overflow-x: auto; margin: 0 0 10px; }
 .markdown pre code { background: none; padding: 0; }
 .markdown table { border-collapse: collapse; margin: 0 0 10px; }

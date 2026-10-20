@@ -252,7 +252,7 @@
   .cmp { display: flex; flex-direction: row; align-items: center; gap: 6px; font-weight: 400; }
   .cmp select { padding: 2px 6px; min-width: 52px; }
   .refs { display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 8px 12px; border-bottom: 1px solid var(--border); font-size: 12px; }
-  .code { margin: 0; padding: 12px; font: 12.5px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; max-height: calc(100vh - 280px); overflow: auto; }
+  .code { margin: 0; padding: 12px; font: 13px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; max-height: calc(100vh - 280px); overflow: auto; }
   .diff .line { display: block; }
   .diff .add { background: var(--ok-soft); color: var(--ok); }
   .diff .del { background: var(--danger-soft); color: var(--danger); }

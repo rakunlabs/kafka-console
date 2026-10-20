@@ -53,7 +53,7 @@ far behind they are.
   - Filter by registry context; each subject links to the topics it is named after.
 - **Security:** ACLs, SCRAM users, client quotas.
 - **Operator safety:**
-  - Per-cluster `read_only` and `production` flags.
+  - Per-cluster `read_only` and `confirm_writes` flags, and a `color` that tints the UI.
   - Switch off features such as topic create or delete; see [Features](#features-1).
   - An audit log line for every write.
   - Confirmation before destructive actions.
@@ -119,7 +119,8 @@ clusters:
     brokers: ["kafka-1.prod:9093", "kafka-2.prod:9093"]
     order: 1             # list position, lowest first; unset ones follow by name.
                          # The first cluster opens for someone who has not picked one.
-    production: true     # red banner and warnings in the UI
+    color: "#e5484d"     # RGB hex or a CSS name like blue; tints the cluster marker, active nav item and backdrop
+    confirm_writes: true # type the topic name before resend, replay, import and edited produce
     read_only: true      # refuses produce, topic changes, offset resets
     description: |       # Markdown, shown in a box on the cluster overview
       **Production** cluster. Owner: platform team.
@@ -359,7 +360,7 @@ Everything under `/mcp/` that is not an endpoint returns 404. With `allow_writes
 endpoint may write to any cluster**, including named destinations. With it
 enabled, a cluster's `read_only: true` still cannot be widened by an endpoint.
 MCP writes use kafka-mcp's `confirm` previews, not the UI's typed confirmation;
-`production` is a UI warning, not an MCP permission. Call `server_config` to
+`confirm_writes` is a UI confirmation, not an MCP permission. Call `server_config` to
 verify the endpoint, cluster and effective tool policy before acting.
 
 Tool definitions, batch results, mutation guards and audit logging come directly

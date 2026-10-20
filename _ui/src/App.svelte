@@ -23,7 +23,6 @@
     ShieldCheck,
     ChevronsUpDown,
     Lock,
-    TriangleAlert,
     Menu,
     Sun,
     Moon,
@@ -111,7 +110,7 @@
 
 <svelte:window onkeydown={(e) => e.key === 'Escape' && (menuOpen = false)} />
 
-<div class="grid min-h-screen grid-cols-[minmax(0,1fr)] lg:grid-cols-[240px_minmax(0,1fr)]">
+<div class="grid min-h-screen grid-cols-[minmax(0,1fr)] lg:grid-cols-[240px_minmax(0,1fr)]" class:tinted={!!current?.color} style:--cluster={current?.color}>
   {#if menuOpen}
     <button class="scrim lg:hidden" aria-label="Close menu" onclick={() => (menuOpen = false)}></button>
   {/if}
@@ -120,20 +119,19 @@
     class="theme-dark fixed inset-y-0 left-0 z-40 flex w-[min(280px,85vw)] flex-col overflow-y-auto border-r border-line-strong bg-sidebar transition-transform duration-200 lg:sticky lg:top-0 lg:z-auto lg:h-screen lg:w-auto lg:translate-x-0 lg:transition-none {menuOpen
       ? 'translate-x-0 shadow-2xl'
       : '-translate-x-full'}"
-    class:prod-edge={current?.production}
     inert={!wide.matches && !menuOpen}
   >
     <div class="flex h-14 items-center gap-2 border-b border-line-strong px-3.5">
       <a
         href={route.cluster ? href(route.cluster, 'overview') : '#/'}
-        class="flex min-w-0 items-center gap-2.5 text-[15px] font-semibold tracking-tight text-ink hover:no-underline"
+        class="flex min-w-0 items-center gap-2.5 text-base font-semibold tracking-tight text-ink hover:no-underline"
         title="Overview"
       >
         <Logo size={22} />
         <span title={app.version ? `kafka-console ${app.version}` : undefined}>kafka-console</span>
       </a>
       {#if app.info}
-        <span class="ml-auto truncate bg-[#fbff81] px-1.5 py-0.5 text-[11.5px] leading-tight font-semibold text-[#222220]" title={app.info}>{app.info}</span>
+        <span class="ml-auto truncate bg-[#fbff81] px-1.5 py-0.5 text-xs leading-tight font-semibold text-[#222220]" title={app.info}>{app.info}</span>
       {/if}
     </div>
 
@@ -141,7 +139,7 @@
       <label class="gap-1.5">
         <span class="text-xs font-medium text-ink-3">Cluster</span>
         <span class="relative flex items-center text-ink-3">
-          <span class="sq pointer-events-none absolute left-2.5 {current?.production ? 'danger' : 'ok'}"></span>
+          <span class="sq cluster pointer-events-none absolute left-2.5"></span>
           <select
             class="noicon w-full cursor-pointer py-1.5 pr-7 pl-6.5 text-sm font-medium"
             value={route.cluster}
@@ -154,10 +152,9 @@
           <ChevronsUpDown class="pointer-events-none absolute right-2" size={14} />
         </span>
       </label>
-      {#if current && (current.production || current.read_only)}
+      {#if current?.read_only}
         <div class="mt-2 flex gap-1.5">
-          {#if current.production}<span class="badge danger">production</span>{/if}
-          {#if current.read_only}<span class="badge gap-1"><Lock size={11} />read-only</span>{/if}
+          <span class="badge gap-1"><Lock size={11} />read-only</span>
         </div>
       {/if}
     </div>
@@ -220,7 +217,7 @@
       >
         <Logo size={20} />
         {#if current}
-          <span class="sq {current.production ? 'danger' : 'ok'}"></span>
+          <span class="sq cluster"></span>
           <span class="truncate text-sm font-semibold">{current.name}</span>
         {:else}
           <span class="text-sm font-semibold" title={app.version ? `kafka-console ${app.version}` : undefined}>kafka-console</span>
@@ -234,12 +231,6 @@
         <Search size={18} />
       </button>
     </header>
-    {#if current?.production}
-      <div class="relative z-[1] flex min-h-[34px] items-center gap-2 border-b border-danger-line bg-danger-soft px-4 py-1.5 text-[12.5px] text-danger sm:px-6 lg:px-8">
-        <TriangleAlert size={14} />
-        <span>Production cluster <b>{current.name}</b>. Writes affect real data.</span>
-      </div>
-    {/if}
 
     <div class="relative z-[1] max-w-[1440px] px-4 pt-5 pb-14 sm:px-6 lg:px-10 lg:pt-7">
       {#if error}
@@ -279,7 +270,14 @@
   .goto { font-weight: 400; background: var(--surface); }
   .goto:hover:not(:disabled) { color: var(--text); }
   .goto kbd { font: 11px/1.5 var(--mono); padding: 0 5px; color: var(--text-2); background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: 2px; }
-  .prod-edge { box-shadow: inset 0 3px 0 var(--danger); }
+  .sq.cluster { background: var(--cluster, var(--ok)); }
+  /* The cluster's color runs through the backdrop and the active nav item. */
+  .tinted {
+    --grid-line: color-mix(in srgb, var(--cluster) 9%, transparent);
+    --cell-ink: color-mix(in srgb, var(--cluster) 10%, transparent);
+    --cell-ink-strong: color-mix(in srgb, var(--cluster) 38%, transparent);
+  }
+  .tinted nav a.corners { --c: var(--cluster); --hatch: color-mix(in srgb, var(--cluster) 22%, transparent); }
   .scrim { position: fixed; inset: 0; z-index: 35; padding: 0; border: 0; border-radius: 0; background: rgb(0 0 0 / .35); cursor: default; }
   .scrim:hover { background: rgb(0 0 0 / .35) !important; }
   :global(html.sheet-open) header { display: none; }

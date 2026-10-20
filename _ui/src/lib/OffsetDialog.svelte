@@ -226,7 +226,7 @@
     gap: 8px;
     align-items: flex-start;
     padding: 9px 11px;
-    font-size: 12.5px;
+    font-size: 13px;
     color: var(--warn);
     background: var(--warn-soft);
     border-radius: var(--radius);
@@ -238,7 +238,7 @@
   tr.same td { color: var(--text-3); }
   .up { color: var(--warn); }
   .down { color: var(--accent); }
-  .effect { font-size: 12.5px; color: var(--text-2); }
+  .effect { font-size: 13px; color: var(--text-2); }
   .effect b { color: var(--text); }
   .ok { display: flex; align-items: center; gap: 6px; }
 </style>

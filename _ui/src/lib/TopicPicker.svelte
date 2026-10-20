@@ -113,7 +113,7 @@
 <style>
   .picker { border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--surface); overflow: hidden; }
   .search { display: flex; align-items: center; gap: 8px; padding: 0 10px; border-bottom: 1px solid var(--border); color: var(--text-3); }
-  .search input[type='search'] { flex: 1; border: 0; padding: 8px 0; background: transparent; font-size: 13.5px; }
+  .search input[type='search'] { flex: 1; border: 0; padding: 8px 0; background: transparent; font-size: 14px; }
   .search input[type='search']:focus { outline: none; }
   .search:focus-within { box-shadow: inset 0 -2px 0 var(--accent); }
   .search .check { font-size: 12px; flex: none; }

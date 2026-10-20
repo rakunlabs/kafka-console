@@ -94,7 +94,7 @@
   .seg button { justify-content: center; border: 0; border-radius: 0; padding: 5px 8px; font-size: 12px; background: transparent; }
   .seg button + button { border-left: 1px solid var(--border); }
   .seg button.on { background: var(--surface-2); font-weight: 600; }
-  .col { display: flex; align-items: center; gap: 2px; padding: 3px 4px 3px 10px; font-size: 12.5px; border: 1px solid var(--border); border-radius: var(--radius); }
+  .col { display: flex; align-items: center; gap: 2px; padding: 3px 4px 3px 10px; font-size: 13px; border: 1px solid var(--border); border-radius: var(--radius); }
   .col .mono { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .icon { padding: 3px 5px; }
   .add { display: flex; gap: 6px; }
