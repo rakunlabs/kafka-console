@@ -24,7 +24,7 @@ clusters:
     schema_registry:
       urls: ["http://localhost:18081"]
     color: "red"
-    confirm_writes: true
+    # confirm_writes: true
     description: |   # Markdown, shown in a box on the cluster overview
       ## Local development cluster
 

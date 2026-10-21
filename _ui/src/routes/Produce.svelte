@@ -359,12 +359,13 @@
       </div>
     </form>
 
-    <div class="panel">
+    <div class="panel sent">
       <table>
         <thead><tr><th colspan="3">Sent this session</th></tr></thead>
         <tbody>
           {#each sent as s (`${s.topic}:${s.partition}:${s.offset}`)}
-            <tr><td class="mono"><a href={href(cluster.name, 'topics', s.topic)}>{s.topic}</a><br />p{s.partition}</td><td class="mono num">{s.offset}</td><td class="mono faint">{time(s.timestamp)}</td></tr>
+            {@const [day, clock] = time(s.timestamp).split(' ')}
+            <tr class="fresh"><td class="mono grow"><a href={href(cluster.name, 'topics', s.topic)} title={s.topic}>{s.topic}</a><br />p{s.partition}</td><td class="mono num">{s.offset}</td><td class="mono faint num">{day}<br />{clock}</td></tr>
           {:else}
             <tr><td colspan="3" class="faint">No messages sent yet.</td></tr>
           {/each}
@@ -413,6 +414,25 @@
   .comparison { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; font-size: 12px; }
   .comparison pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 240px; overflow: auto; margin-top: 4px; padding: 8px; background: var(--surface-2); border: 1px solid var(--border); font: 12px var(--mono); }
   .layout { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 12px; align-items: start; }
+  .sent { overflow: hidden; }
+  .sent td.grow { min-width: 0; }
+  /* A just-sent record lights up and fades out slowly. It stays lit long
+     enough to be seen after the review dialog closes. */
+  .sent tr.fresh > td { animation: sent-flash 3.6s ease-in both; }
+  .sent tr.fresh > td:first-child { animation-name: sent-flash, sent-edge; }
+  @keyframes sent-flash {
+    0%, 40% { background-color: var(--cta); }
+    100% { background-color: transparent; }
+  }
+  @keyframes sent-edge {
+    0%, 60% { box-shadow: inset 3px 0 0 var(--cta-text); }
+    100% { box-shadow: inset 3px 0 0 transparent; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .sent tr.fresh > td { animation: sent-hold 3s steps(1, end) both; }
+    .sent tr.fresh > td:first-child { animation: sent-hold 3s steps(1, end) both; }
+    @keyframes sent-hold { from { background-color: var(--cta); } to { background-color: transparent; } }
+  }
   .form { padding: 14px; display: grid; gap: 12px; }
   .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
   .lbl { font-size: 12px; font-weight: 500; color: var(--text-2); }

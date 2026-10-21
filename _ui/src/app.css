@@ -578,6 +578,7 @@ th button.ghost:hover:not(:disabled) { background: transparent; color: var(--tex
 /* An abbreviated column header (P, RF, ISR): a dotted underline says the
    header's title spells it out. */
 th abbr { text-decoration: underline dotted var(--line-dash); text-underline-offset: 3px; cursor: help; }
+td a.mono { font-weight: 500; }
 td .badge { margin-left: 6px; }
 td > .badge:first-child { margin-left: 0; }
 td.num { white-space: nowrap; }
