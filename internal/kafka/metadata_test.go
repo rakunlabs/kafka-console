@@ -23,7 +23,7 @@ func TestOverviewSurvivesTopicAuthFailure(t *testing.T) {
 	}
 	t.Cleanup(fake.Close)
 
-	c, err := New("test", &config.Cluster{Brokers: fake.ListenAddrs()})
+	c, err := New("test", &config.Cluster{Brokers: fake.ListenAddrs()}, config.Cache{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +88,7 @@ func TestOverviewSurvivesTopicAuthFailure(t *testing.T) {
 		return resp, nil, true
 	})
 
-	o, err := c.Overview(t.Context())
+	o, err := c.Overview(t.Context(), true)
 	if err != nil {
 		t.Fatalf("overview failed: %v", err)
 	}

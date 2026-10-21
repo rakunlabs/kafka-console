@@ -67,11 +67,13 @@ export type Overview = {
   under_replicated: number
   offline_partitions: number
   groups: number
-  size: number
   has_registry: boolean
   // Only topics with an unhealthy partition; one char per partition, o/u/x.
   problems: { topic: string; partitions: string }[]
+  at: string
 }
+
+export type DiskUsage = { size: number; at: string }
 
 export type TopicName = { name: string; internal: boolean; partitions: number }
 
@@ -571,7 +573,8 @@ export const api = {
   clusters: () => request<Cluster[]>('GET', '/clusters', undefined, { app: true }),
   // Shared and cached across pages (⌘K, pickers), so not tied to one page.
   names: (c: string) => request<Names>('GET', `/clusters/${enc(c)}/names`, undefined, { app: true }),
-  overview: (c: string) => request<Overview>('GET', `/clusters/${enc(c)}/overview`),
+  overview: (c: string, fresh = false) => request<Overview>('GET', `/clusters/${enc(c)}/overview${fresh ? '?fresh=true' : ''}`),
+  diskUsage: (c: string, fresh = false) => request<DiskUsage>('GET', `/clusters/${enc(c)}/disk-usage${fresh ? '?fresh=true' : ''}`),
   topicDoc: (c: string, t: string) => request<TopicDoc>('GET', `/clusters/${enc(c)}/topics/${enc(t)}/docs`),
   balancePlan: (c: string, t: string) => request<Reassignment[]>('GET', `/clusters/${enc(c)}/topics/${enc(t)}/balance-plan`),
   reassignments: (c: string, t: string) => request<PartitionMove[]>('GET', `/clusters/${enc(c)}/topics/${enc(t)}/reassignments`),

@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/twmb/franz-go/pkg/kadm"
 	"github.com/twmb/franz-go/pkg/kerr"
@@ -34,13 +35,15 @@ type Overview struct {
 	UnderReplicated  int      `json:"under_replicated"`
 	OfflinePartitons int      `json:"offline_partitions"`
 	Groups           int      `json:"groups"`
-	Size             int64    `json:"size"`
 	HasRegistry      bool     `json:"has_registry"`
 	// Problems lists only the topics with an unhealthy partition, sorted by
 	// name, so the payload stays small however many topics the cluster has.
 	// Partitions has one character per partition in id order: "o" ok,
 	// "u" under-replicated, "x" offline.
 	Problems []TopicHealth `json:"problems"`
+	// At is when the numbers were read; they may be served from memory for
+	// a few seconds.
+	At time.Time `json:"at"`
 }
 
 type TopicHealth struct {
@@ -48,7 +51,43 @@ type TopicHealth struct {
 	Partitions string `json:"partitions"`
 }
 
-func (c *Client) Overview(ctx context.Context) (*Overview, error) {
+// DiskUsage is the cluster's on-disk size across every replica. It is read
+// apart from the overview: it asks every broker for the size of every
+// partition it holds, which on a large cluster takes far longer than the rest.
+type DiskUsage struct {
+	Size int64     `json:"size"`
+	At   time.Time `json:"at"`
+}
+
+// Overview and disk usage are the first page everyone opens, and both are
+// cluster-wide reads. They are kept in memory for config.Cache and shared
+// between callers. A read gives up after readTimeout.
+const readTimeout = 30 * time.Second
+
+// Overview returns the cluster summary, from memory when a recent one is
+// kept; fresh asks for a new read unless one finished moments ago.
+func (c *Client) Overview(ctx context.Context, fresh bool) (*Overview, error) {
+	return c.overviews.get(ctx, fresh, c.readOverview)
+}
+
+// DiskUsage returns the cluster's total size on disk, kept like Overview.
+func (c *Client) DiskUsage(ctx context.Context, fresh bool) (*DiskUsage, error) {
+	return c.diskUsage.get(ctx, fresh, c.readDiskUsage)
+}
+
+func (c *Client) readDiskUsage(ctx context.Context) (*DiskUsage, error) {
+	dirs, err := c.admin.DescribeAllLogDirs(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("describe log dirs; %w", err)
+	}
+
+	var size int64
+	dirs.Each(func(d kadm.DescribedLogDir) { size += d.Size() })
+
+	return &DiskUsage{Size: size, At: time.Now()}, nil
+}
+
+func (c *Client) readOverview(ctx context.Context) (*Overview, error) {
 	meta, err := c.metadata(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("metadata; %w", err)
@@ -59,9 +98,9 @@ func (c *Client) Overview(ctx context.Context) (*Overview, error) {
 		ClusterID:   meta.Cluster,
 		Controller:  meta.Controller,
 		Brokers:     brokers(meta),
-		Size:        -1,
 		HasRegistry: c.registry != nil,
 		Problems:    []TopicHealth{},
+		At:          time.Now(),
 	}
 
 	index := map[int32]int{}
@@ -70,22 +109,14 @@ func (c *Client) Overview(ctx context.Context) (*Overview, error) {
 	}
 
 	// These only need the metadata above, so they run together; one after
-	// another each waits its own round trip, and the log dir scan touches
-	// every partition on every broker.
+	// another each waits its own round trip.
 	var (
 		wg       sync.WaitGroup
 		versions kadm.BrokersApiVersions
 		verErr   error
-		size     int64 = -1
-		groups         = -1
+		groups   = -1
 	)
 	wg.Go(func() { versions, verErr = c.admin.ApiVersions(ctx) })
-	wg.Go(func() {
-		if dirs, err := c.admin.DescribeAllLogDirs(ctx, nil); err == nil {
-			size = 0
-			dirs.Each(func(d kadm.DescribedLogDir) { size += d.Size() })
-		}
-	})
 	wg.Go(func() {
 		if listed, err := c.admin.ListGroups(ctx); err == nil {
 			groups = len(listed)
@@ -104,7 +135,6 @@ func (c *Client) Overview(ctx context.Context) (*Overview, error) {
 		})
 	}
 
-	o.Size = size
 	o.Groups = max(groups, 0)
 
 	return o, nil

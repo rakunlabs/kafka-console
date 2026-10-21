@@ -377,6 +377,8 @@ github.com/rakunlabs/ada/middleware/requestid v0.5.4 h1:d0HseCKdmBtCwGYWgrgsRLe2
 github.com/rakunlabs/ada/middleware/requestid v0.5.4/go.mod h1:oLdUNvW9wf5ThImL6N5twG9vVx6bKYD6tEaTjDpkWlg=
 github.com/rakunlabs/ada/middleware/server v0.5.4 h1:eklMLLqKBK430cRcgMjylnRA/aUP395m0RdNpNrEarQ=
 github.com/rakunlabs/ada/middleware/server v0.5.4/go.mod h1:nAN0tmc1/sBvOywH/QIlGSNpcyGbvEhmawkHGtqcxxI=
+github.com/rakunlabs/cache v0.5.0 h1:S7dJ3vTHsHldx18bTUk1aTAB3bkXA+7EYvabvA1AB/k=
+github.com/rakunlabs/cache v0.5.0/go.mod h1:fS/o93H/6d21HfValg5rGOIn5qhpZJLvjsF9pwV7Q4Q=
 github.com/rakunlabs/chu v0.5.0 h1:7ZgebT5VB3N6xmOGYZCb2lUczXy+jTXA5DJif3DphkI=
 github.com/rakunlabs/chu v0.5.0/go.mod h1:9cyoYo930jeubqmzBIz6U7/wlSb16v1VZxCDR3x6Qe8=
 github.com/rakunlabs/chu/loader/external/loaderawssecrets v0.0.0-20260831101252-0c6a77e06f7f h1:W/9P9Qs90l46Hgy0PPAU3HoapwnGPEEVw937a4RnV28=
@@ -401,6 +403,8 @@ github.com/rakunlabs/logi v0.4.6 h1:kLEt3d48BSz6cW6iH0R6SxSw2TPX465t73Io4EPa/5o=
 github.com/rakunlabs/logi v0.4.6/go.mod h1:h7mqo7Yj+IJt2o5Li4uO0Bn5hLZuoKUKMS4RkkVS2/M=
 github.com/rakunlabs/ok v0.1.0 h1:rzzhj3iclFMqRPN0H0Y/3cxJe7VbVviwDmbTIPEkrkk=
 github.com/rakunlabs/ok v0.1.0/go.mod h1:lPj4reTAqjK/v4KH83NWNBHZu949T/TvWFoMo21n/7A=
+github.com/rakunlabs/tummy v0.1.2 h1:rKKvdT/JLCZTeKwDAKWK7jwnDLETx/5hGPBv2LT6lDs=
+github.com/rakunlabs/tummy v0.1.2/go.mod h1:KEoD3yG+kC+7uR0WdFTVrfBZT/3WfqFdPCFWGmdB/Bs=
 github.com/rogpeppe/go-internal v1.14.1 h1:UQB4HGPB6osV0SQTLymcB4TgvyWu6ZyliaW0tI/otEQ=
 github.com/rogpeppe/go-internal v1.14.1/go.mod h1:MaRKkUm5W0goXpeCfT7UZI6fk/L7L7so1lCWt35ZSgc=
 github.com/ryanuber/columnize v0.0.0-20160712163229-9b3edd62028f/go.mod h1:sm1tb6uqfes/u+d4ooFouqFdy9/2g9QGwK3SQygK0Ts=

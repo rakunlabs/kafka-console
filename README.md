@@ -109,6 +109,11 @@ server:
 #   create_topic: false
 #   delete_topic: false
 
+# cache:                 # how long the overview is kept in memory and shared between viewers
+#   overview: 15s        # counts, health, brokers, groups
+#   disk_usage: 60s      # scans every broker's log dirs; the expensive one
+#   refresh: 30s         # Refresh reads again only past this age; newer results are reused
+
 clusters:
   local:
     brokers: ["localhost:9092"]
@@ -122,6 +127,8 @@ clusters:
     color: "#e5484d"     # RGB hex or a CSS name like blue; tints the cluster marker, active nav item and backdrop
     confirm_writes: true # type the topic name before resend, replay, import and edited produce
     read_only: true      # refuses produce, topic changes, offset resets
+    cache:               # overrides the global cache settings for this cluster
+      disk_usage: 5m
     description: |       # Markdown, shown in a box on the cluster overview
       **Production** cluster. Owner: platform team.
       Runbook: [wiki](https://wiki.example.com/kafka-prod)

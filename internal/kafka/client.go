@@ -43,9 +43,12 @@ type Client struct {
 	protos  *localProto
 
 	description string
+
+	overviews *memo[*Overview]
+	diskUsage *memo[*DiskUsage]
 }
 
-func New(name string, cfg *config.Cluster) (*Client, error) {
+func New(name string, cfg *config.Cluster, cache config.Cache) (*Client, error) {
 	options := []kgo.Opt{
 		kgo.SeedBrokers(cfg.Brokers...),
 		kgo.WithHooks(listenerHook{cluster: name, tls: cfg.TLS.On()}),
@@ -85,6 +88,9 @@ func New(name string, cfg *config.Cluster) (*Client, error) {
 		client:  client,
 		admin:   kadm.NewClient(client),
 		readers: newReaders(),
+
+		overviews: newMemo[*Overview](cache.Overview, cache.Refresh, readTimeout),
+		diskUsage: newMemo[*DiskUsage](cache.DiskUsage, cache.Refresh, readTimeout),
 	}
 
 	protos, err := newLocalProto(cfg.Protobuf)
@@ -148,6 +154,8 @@ func registryClient(s *config.SchemaRegistry) (*sr.Client, error) {
 func (c *Client) Close() {
 	c.client.Close()
 	c.readers.close()
+	c.overviews.close()
+	c.diskUsage.close()
 
 	c.producersMu.Lock()
 	defer c.producersMu.Unlock()

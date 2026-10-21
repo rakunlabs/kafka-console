@@ -24,7 +24,7 @@ func fakeCluster(t *testing.T, topics map[string]int32) *Client {
 	}
 	t.Cleanup(fake.Close)
 
-	c, err := New("test", &config.Cluster{Brokers: fake.ListenAddrs()})
+	c, err := New("test", &config.Cluster{Brokers: fake.ListenAddrs()}, config.Cache{})
 	if err != nil {
 		t.Fatal(err)
 	}

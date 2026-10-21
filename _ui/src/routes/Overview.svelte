@@ -1,7 +1,7 @@
 <script lang="ts">
   import Pending from '../lib/Pending.svelte'
   import { untrack } from 'svelte'
-  import { api, type Cluster, type Overview } from '../lib/api'
+  import { api, type Cluster, type Overview, type DiskUsage } from '../lib/api'
   import { fmt, bytes } from '../lib/format'
   import { href } from '../lib/router.svelte'
   import { cached, remember } from '../lib/cache'
@@ -11,21 +11,38 @@
 
   // The page remounts per cluster ({#key} in App), so the first value is the one.
   const key = untrack(() => `overview:${cluster.name}`)
+  const diskKey = untrack(() => `disk-usage:${cluster.name}`)
   // A revisit shows the last result at once and refreshes behind it.
   let data = $state<Overview | undefined>(cached(key))
   let error = $state('')
   let loading = $state(false)
+  // Disk usage scans every broker's log dirs, which can take far longer than
+  // the rest, so it loads on its own and fills its tile when it arrives.
+  let disk = $state<DiskUsage | undefined>(cached(diskKey))
+  let diskLoading = $state(false)
+  let diskFailed = $state(false)
 
-  function load() {
+  // The server keeps both for a few seconds; Refresh asks it for new ones.
+  function load(fresh = false) {
     loading = true
     api
-      .overview(cluster.name)
+      .overview(cluster.name, fresh)
       .then((o) => {
         data = remember(key, o)
         error = ''
       })
       .catch((e) => (error = e.message))
       .finally(() => (loading = false))
+
+    diskLoading = true
+    api
+      .diskUsage(cluster.name, fresh)
+      .then((d) => {
+        disk = remember(diskKey, d)
+        diskFailed = false
+      })
+      .catch(() => (diskFailed = true))
+      .finally(() => (diskLoading = false))
   }
   load()
 
@@ -95,7 +112,7 @@
     {#if data?.cluster_id}<span class="mono faint min-w-0 break-all">cluster-id {data.cluster_id}</span>{/if}
     {#if data}<span class="faint">{data.brokers.length} {data.brokers.length === 1 ? 'broker' : 'brokers'} · controller #{data.controller}</span>{/if}
     <span class="spacer"></span>
-    <button onclick={load} disabled={loading}>
+    <button onclick={() => load(true)} disabled={loading}>
       <RefreshCw size={14} class={loading ? 'animate-spin' : ''} />{loading ? 'Refreshing…' : 'Refresh'}
     </button>
   </div>
@@ -127,7 +144,9 @@
     {@render stat('Under-replicated', fmt(data.under_replicated), data.under_replicated > 0 ? 'replicas out of ISR' : 'healthy', undefined, data.under_replicated > 0 ? 'text-warn' : '')}
     {@render stat('Offline', fmt(data.offline_partitions), data.offline_partitions > 0 ? 'no leader' : 'healthy', undefined, data.offline_partitions > 0 ? 'text-danger' : '')}
     {@render stat('Consumer groups', fmt(data.groups), 'view lag', href(cluster.name, 'groups'))}
-    {#if data.size >= 0}{@render stat('Disk usage', bytes(data.size), 'all replicas')}{/if}
+    {#if disk}{@render stat('Disk usage', bytes(disk.size), 'all replicas')}
+    {:else if diskLoading}{@render stat('Disk usage', '…', 'scanning brokers')}
+    {:else if diskFailed}{@render stat('Disk usage', '—', 'not available')}{/if}
   </section>
 
   {#if data.has_registry}

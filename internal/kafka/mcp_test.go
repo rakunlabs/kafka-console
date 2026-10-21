@@ -11,7 +11,7 @@ import (
 func TestMCPBorrowsExistingClientsAndFactories(t *testing.T) {
 	c, err := New("local", &config.Cluster{Brokers: []string{"localhost:1"}, ReadOnly: true,
 		SchemaRegistry: &config.SchemaRegistry{URLs: []string{"http://localhost:2"}, Token: "host-secret"},
-	})
+	}, config.Cache{})
 	if err != nil {
 		t.Fatal(err)
 	}

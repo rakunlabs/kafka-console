@@ -102,6 +102,7 @@ func Start(ctx context.Context, cfg *config.Config, registry *kafka.Registry, ui
 
 	c := api.Group("/clusters/{cluster}")
 	c.GET("/overview", s.overview)
+	c.GET("/disk-usage", s.diskUsage)
 	c.GET("/names", s.names)
 	c.GET("/brokers/{broker}", s.broker)
 
@@ -304,18 +305,34 @@ func fail(err error) error {
 	}
 }
 
+// overview and disk usage are kept in memory per cluster for a few seconds;
+// ?fresh=true (the Refresh button) asks for a new read.
 func (s *Server) overview(c *ada.Context) error {
 	cl, err := s.client(c)
 	if err != nil {
 		return err
 	}
 
-	o, err := cl.Overview(c.Request.Context())
+	o, err := cl.Overview(c.Request.Context(), c.Request.URL.Query().Get("fresh") == "true")
 	if err != nil {
 		return fail(err)
 	}
 
 	return c.SendJSON(o)
+}
+
+func (s *Server) diskUsage(c *ada.Context) error {
+	cl, err := s.client(c)
+	if err != nil {
+		return err
+	}
+
+	d, err := cl.DiskUsage(c.Request.Context(), c.Request.URL.Query().Get("fresh") == "true")
+	if err != nil {
+		return fail(err)
+	}
+
+	return c.SendJSON(d)
 }
 
 func (s *Server) names(c *ada.Context) error {

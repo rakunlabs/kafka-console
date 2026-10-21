@@ -17,6 +17,7 @@ require (
 	github.com/rakunlabs/ada/middleware/recover v0.5.4
 	github.com/rakunlabs/ada/middleware/requestid v0.5.4
 	github.com/rakunlabs/ada/middleware/server v0.5.4
+	github.com/rakunlabs/cache v0.5.0
 	github.com/rakunlabs/chu v0.5.0
 	github.com/rakunlabs/chu/loader/external/loaderawssecrets v0.0.0-20260831101252-0c6a77e06f7f
 	github.com/rakunlabs/chu/loader/external/loaderawsssm v0.0.0-20260831101252-0c6a77e06f7f
@@ -118,6 +119,7 @@ require (
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c // indirect
 	github.com/rakunlabs/gofret v0.2.1 // indirect
 	github.com/rakunlabs/ok v0.1.0 // indirect
+	github.com/rakunlabs/tummy v0.1.2 // indirect
 	github.com/ryanuber/go-glob v1.0.0 // indirect
 	github.com/segmentio/asm v1.1.3 // indirect
 	github.com/segmentio/encoding v0.5.4 // indirect

@@ -35,8 +35,54 @@ type Config struct {
 
 	Server   Server              `cfg:"server"`
 	Features Features            `cfg:"features"`
+	Cache    Cache               `cfg:"cache"`
 	Clusters map[string]*Cluster `cfg:"clusters"`
 	MCP      MCP                 `cfg:"mcp"`
+}
+
+// Cache sets how long the cluster overview and its disk usage are kept in
+// memory and shared between everyone viewing them, e.g. "15s" or "2m". A
+// cluster's own cache settings take precedence over these.
+type Cache struct {
+	// Overview: topic, partition and health counts, brokers, groups.
+	Overview time.Duration `cfg:"overview" default:"15s"`
+	// DiskUsage asks every broker for every partition's size, so it is the
+	// expensive one and changes slowly.
+	DiskUsage time.Duration `cfg:"disk_usage" default:"60s"`
+	// Refresh is the shortest age the Refresh button reads again at; a
+	// newer result is returned as is, so repeated clicks share one read.
+	Refresh time.Duration `cfg:"refresh" default:"30s"`
+}
+
+// ClusterCache overrides Cache for one cluster; unset fields keep the global
+// value.
+type ClusterCache struct {
+	Overview  time.Duration `cfg:"overview"`
+	DiskUsage time.Duration `cfg:"disk_usage"`
+	Refresh   time.Duration `cfg:"refresh"`
+}
+
+// CacheFor returns the cache settings for a cluster: its own where set, the
+// global ones otherwise.
+func (c *Config) CacheFor(name string) Cache {
+	out := c.Cache
+
+	cl, ok := c.Clusters[name]
+	if !ok || cl == nil {
+		return out
+	}
+
+	if cl.Cache.Overview > 0 {
+		out.Overview = cl.Cache.Overview
+	}
+	if cl.Cache.DiskUsage > 0 {
+		out.DiskUsage = cl.Cache.DiskUsage
+	}
+	if cl.Cache.Refresh > 0 {
+		out.Refresh = cl.Cache.Refresh
+	}
+
+	return out
 }
 
 // Features switches parts of the console off with false; unset means on. A
@@ -162,6 +208,8 @@ type Cluster struct {
 
 	// Features override the global features for this cluster, key by key.
 	Features Features `cfg:"features"`
+	// Cache overrides the global cache settings for this cluster.
+	Cache ClusterCache `cfg:"cache"`
 
 	TLS  *TLS  `cfg:"tls"`
 	SASL *SASL `cfg:"sasl"`

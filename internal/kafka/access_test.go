@@ -50,7 +50,7 @@ func restrictedCluster(t *testing.T) (console, admin *Client) {
 		c, err := New("test", &config.Cluster{
 			Brokers: fake.ListenAddrs(),
 			SASL:    &config.SASL{Mechanism: config.MechanismPlain, User: user, Password: user},
-		})
+		}, config.Cache{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -136,7 +136,7 @@ func TestReadsWithPartialAccess(t *testing.T) {
 	// Brokers leave forbidden topics out of a full listing, or report them
 	// refused when the answer comes from the cache; either way they are
 	// not counted.
-	o, err := c.Overview(ctx)
+	o, err := c.Overview(ctx, true)
 	check("overview", err)
 	if err == nil && o.Topics != 1 {
 		t.Errorf("overview topics=%d, want 1", o.Topics)
@@ -197,7 +197,7 @@ func TestGroupActionsWithPartialAccess(t *testing.T) {
 
 	// Warm the cache the way a session does before the actions.
 	_, _ = c.Topic(ctx, "secret")
-	_, _ = c.Overview(ctx)
+	_, _ = c.Overview(ctx, true)
 
 	plan, err := c.ResetOffsets(ctx, "mixed", ResetRequest{Topic: "open", Strategy: "earliest", DryRun: true})
 	if err != nil || len(plan) != 2 {
