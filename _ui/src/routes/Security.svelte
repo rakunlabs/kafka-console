@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { resizable } from '../lib/resizable'
   import Pending from '../lib/Pending.svelte'
   import { api, type ACL, type Cluster, type Quota, type User } from '../lib/api'
   import { fmt } from '../lib/format'
@@ -302,7 +303,7 @@
     <div class="error">{aclError}</div>
   {:else}
     <div class="panel">
-      <table>
+      <table use:resizable={'security.acls'}>
         <thead><tr><th>Principal</th><th>Host</th><th>Resource</th><th>Pattern</th><th>Operation</th><th>Permission</th><th></th></tr></thead>
         <tbody>
           {#each aclRows.slice(0, aclShown) as a, i (i)}
@@ -345,7 +346,7 @@
     <div class="error">{userError}</div>
   {:else}
     <div class="panel">
-      <table>
+      <table use:resizable={'security.users'}>
         <thead><tr><th>User</th><th>Mechanism</th><th></th></tr></thead>
         <tbody>
           {#each users.slice(0, userShown) as u (u.name)}
@@ -376,7 +377,7 @@
     <div class="error">{quotaError}</div>
   {:else}
     <div class="panel">
-      <table>
+      <table use:resizable={'security.quotas'}>
         <thead><tr><th>Entity</th>{#each quotaKeys as k (k.key)}<th class="num">{k.label}</th>{/each}<th></th></tr></thead>
         <tbody>
           {#each quotas.slice(0, quotaShown) as q, i (i)}

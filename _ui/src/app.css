@@ -582,6 +582,15 @@ td .badge { margin-left: 6px; }
 td > .badge:first-child { margin-left: 0; }
 td.num { white-space: nowrap; }
 
+/* Column resize handle (lib/resizable.ts) on a header's right edge. Headers
+   are sticky, so they already anchor it. */
+.rsz-h { position: absolute; top: 0; right: 0; bottom: 0; z-index: 3; width: 8px; cursor: col-resize; touch-action: none; }
+.rsz-h::after { content: ''; position: absolute; top: 6px; bottom: 6px; left: 5px; width: 2px; border-radius: 1px; }
+th:hover > .rsz-h::after { background: var(--border-strong); }
+.rsz-h:hover::after, .rsz-h:focus-visible::after { background: var(--cta-border); }
+.rsz-h:focus-visible { outline: none; }
+html.col-resizing, html.col-resizing * { cursor: col-resize !important; user-select: none; }
+
 /* Narrow screens: a table wider than its panel scrolls inside it instead of
    pushing the page sideways. The header is no longer sticky there, since the
    panel becomes its scroll container. */

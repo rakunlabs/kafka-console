@@ -1,6 +1,8 @@
 <script lang="ts">
+  import { resizable } from './resizable'
   import type { Cluster, PartitionLag } from './api'
   import { fmt } from './format'
+  import { href } from './router.svelte'
   import LagBar from './LagBar.svelte'
   import OffsetDialog from './OffsetDialog.svelte'
   import MoreRows from './MoreRows.svelte'
@@ -51,6 +53,14 @@
   }
 
   const why = $derived(cluster.read_only ? 'This cluster is read-only' : activeMembers > 0 ? 'Stop the consumers to change offsets (you can still preview)' : '')
+
+  // The committed offset is the next message the group reads; once caught
+  // up there is none yet, so the link opens the last one it read instead.
+  function seekTo(p: PartitionLag): number | undefined {
+    if (p.no_access || p.committed < 0) return undefined
+    const o = p.committed < p.high ? p.committed : p.committed - 1
+    return o >= p.low && o >= 0 ? o : undefined
+  }
 </script>
 
 {#if editable && selected.size > 0}
@@ -66,7 +76,7 @@
 {/if}
 
 <div class="panel overflow-x-auto">
-  <table class="pt">
+  <table class="pt" use:resizable={'group.partitions'}>
     <colgroup>
       {#if editable}<col style:width="36px" />{/if}
       <col style:width="48px" /><col style:width="26%" />
@@ -84,7 +94,7 @@
         <th class="num" title="Partition"><abbr>P</abbr></th><th>Progress</th>
         {#if showLow}<th class="num">Low</th>{/if}
         <th class="num">Committed</th><th class="num">High</th><th class="num">Lag</th><th>Client</th><th>Host</th>
-        {#if editable}<th><span class="sr-only">Change offset</span></th>{/if}
+        {#if editable}<th data-noresize><span class="sr-only">Change offset</span></th>{/if}
       </tr>
     </thead>
     <tbody>
@@ -98,7 +108,12 @@
           <td class="num mono">{p.partition}</td>
           <td><LagBar low={p.low} high={p.high} committed={p.committed} /></td>
           {#if showLow}<td class="num mono faint">{fmt(p.low)}</td>{/if}
-          <td class="num mono">{fmt(p.committed)}</td>
+          <td class="num mono">
+            {#if seekTo(p) !== undefined}
+              <a href={href(cluster.name, 'topics', topic, { p: String(p.partition), o: String(seekTo(p)) })}
+                title={p.committed < p.high ? `Open the next message this group will read (offset ${p.committed})` : `Caught up; open the last message it read (offset ${p.committed - 1})`}>{fmt(p.committed)}</a>
+            {:else}{fmt(p.committed)}{/if}
+          </td>
           <td class="num mono">{fmt(p.high)}</td>
           <td class="num mono">{#if p.lag > 0}<span class="lagpill">{fmt(p.lag)}</span>{:else}<span class="faint">{fmt(p.lag)}</span>{/if}</td>
           <td class="mono small">

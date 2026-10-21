@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { api, type Cluster, type ResetPlan } from './api'
+  import { api, type Cluster, type ResetPlan, type TopicConsumer } from './api'
   import { fmt } from './format'
   import Modal from './Modal.svelte'
   import { TriangleAlert, Eye, Check } from '@lucide/svelte'
@@ -25,11 +25,16 @@
     ondone?: () => void
   } = $props()
 
-  type Strategy = 'offset' | 'shift' | 'earliest' | 'latest' | 'timestamp'
+  type Strategy = 'offset' | 'shift' | 'earliest' | 'latest' | 'timestamp' | 'copy'
   let strategy = $state<Strategy>('offset')
   let offset = $state(0)
   let shift = $state(-10)
   let timestamp = $state('')
+  // Copy: other groups with commits on this topic, and the one picked.
+  let sources = $state.raw<TopicConsumer[]>()
+  let sourcesLoading = $state(false)
+  let sourceError = $state('')
+  let source = $state('')
   let plan = $state<ResetPlan[]>()
   let planKey = $state('')
   let error = $state('')
@@ -52,6 +57,10 @@
       strategy = single ? 'offset' : 'latest'
       shift = -10
       timestamp = ''
+      sources = undefined
+      sourcesLoading = false
+      sourceError = ''
+      source = ''
       plan = undefined
       error = ''
       done = false
@@ -69,13 +78,54 @@
     } catch {}
   }
 
-  const key = $derived(JSON.stringify([strategy, offset, shift, timestamp]))
+  const key = $derived(JSON.stringify([strategy, offset, shift, timestamp, source]))
   // A preview describes the inputs it ran with; any edit voids it.
   $effect(() => {
     if (plan && key !== planKey) plan = undefined
   })
 
+  // The groups to copy from are listed the first time copy is picked: only
+  // groups with a commit on this topic, so the copy is always same-topic.
+  $effect(() => {
+    if (strategy !== 'copy' || sources || !open) return
+    const gen = generation
+    sources = []
+    sourcesLoading = true
+    api.topicConsumers(cluster.name, topic).then(
+      (list) => {
+        if (gen !== generation) return
+        sources = list.filter((c) => c.group !== group && c.partitions.some((p) => p.committed >= 0))
+        source = sources[0]?.group ?? ''
+      },
+      (e) => {
+        if (gen === generation) sourceError = e.message
+      },
+    ).finally(() => {
+      if (gen === generation) sourcesLoading = false
+    })
+  })
+
+  // The source's commits for the partitions this dialog moves.
+  const copied = $derived.by(() => {
+    const src = sources?.find((s) => s.group === source)
+    if (!src) return []
+    const want = new Set(partitions)
+    return src.partitions
+      .filter((p) => p.committed >= 0 && (!want.size || want.has(p.partition)))
+      .map((p) => ({ partition: p.partition, offset: p.committed }))
+  })
+  // Partitions asked for that the source never committed; they stay put.
+  const uncopied = $derived.by(() => {
+    const src = sources?.find((s) => s.group === source)
+    if (!src) return 0
+    const has = new Set(copied.map((c) => c.partition))
+    return partitions.length
+      ? partitions.filter((p) => !has.has(p)).length
+      : src.partitions.filter((p) => !has.has(p.partition)).length
+  })
+
   function body(dry: boolean) {
+    if (strategy === 'copy') return { topic, strategy: 'offsets', offsets: copied, dry_run: dry }
     return {
       topic,
       partitions,
@@ -123,7 +173,8 @@
   const invalid = $derived(
     (strategy === 'offset' && (!Number.isFinite(Number(offset)) || Number(offset) < 0)) ||
       (strategy === 'shift' && (!Number.isInteger(Number(shift)) || Number(shift) === 0)) ||
-      (strategy === 'timestamp' && !timestamp),
+      (strategy === 'timestamp' && !timestamp) ||
+      (strategy === 'copy' && !copied.length),
   )
 
   const delta = (p: ResetPlan) => (p.from < 0 ? '—' : `${p.to - p.from > 0 ? '+' : ''}${(p.to - p.from).toLocaleString()}`)
@@ -148,6 +199,7 @@
       ['earliest', 'Earliest'],
       ['latest', 'Latest'],
       ['timestamp', 'Timestamp'],
+      ['copy', 'Copy a group'],
     ] as [v, l] (v)}
       <label class="mode" class:on={strategy === v}>
         <input type="radio" name="strategy" value={v} bind:group={strategy} />{l}
@@ -170,6 +222,26 @@
       <input type="datetime-local" step="1" bind:value={timestamp} />
       <span class="hint">Each partition moves to the first message at or after this time.</span>
     </label>
+  {:else if strategy === 'copy'}
+    {#if sourceError}
+      <div class="error">{sourceError}</div>
+    {:else if sourcesLoading}
+      <p class="hint">Loading groups…</p>
+    {:else if !sources?.length}
+      <p class="hint">No other group has committed offsets on <span class="mono">{topic}</span>.</p>
+    {:else}
+      <label>Source group
+        <select bind:value={source}>
+          {#each sources as s (s.group)}
+            <option value={s.group}>{s.group} · {s.state || 'unknown'} · lag {fmt(s.lag)}</option>
+          {/each}
+        </select>
+        <span class="hint">
+          Its committed offsets on <span class="mono">{topic}</span> are copied as they are now.
+          {#if uncopied}{uncopied} {uncopied === 1 ? 'partition it never committed stays' : 'partitions it never committed stay'} where {uncopied === 1 ? 'it is' : 'they are'}.{/if}
+        </span>
+      </label>
+    {/if}
   {:else}
     <p class="hint">{strategy === 'earliest' ? 'Move to the oldest retained message; everything still on disk is consumed again.' : 'Move to the end; existing messages are skipped and only new ones are consumed.'}</p>
   {/if}

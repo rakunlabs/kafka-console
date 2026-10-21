@@ -46,6 +46,7 @@ far behind they are.
 - **Consumer groups:**
   - Per-partition lag and catch-up estimate.
   - Reset offsets with a preview: earliest, latest, offset, timestamp or shift.
+  - Back up a group's offsets to a JSON file and restore them, or copy another group's offsets on the same topic.
   - Create a group or add a topic to one.
 - **Schema Registry:**
   - Avro, Protobuf and JSON Schema decoding.

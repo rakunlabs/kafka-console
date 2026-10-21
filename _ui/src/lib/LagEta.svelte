@@ -5,17 +5,23 @@
 
   // Estimates when a group catches up, from two or more readings of its lag
   // and committed offsets taken in the browser. Nothing is stored server-side;
-  // closing the page discards the samples.
-  type Sample = { at: number; lag: number; committed: number; high: number }
+  // closing the page discards the samples. With per-partition readings it
+  // also names the partitions that have lag but whose commit did not move.
+  type Part = { topic: string; partition: number; committed: number; lag: number }
+  type Sample = { at: number; lag: number; committed: number; high: number; parts?: Part[] }
 
   let {
     read,
     interval = 5000,
+    link,
   }: {
     // Returns the current total lag, sum of committed offsets and sum of
-    // high watermarks for the scope being measured.
-    read: () => Promise<{ lag: number; committed: number; high: number }>
+    // high watermarks for the scope being measured, and optionally each
+    // partition's committed offset and lag.
+    read: () => Promise<{ lag: number; committed: number; high: number; parts?: Part[] }>
     interval?: number
+    // Where a stuck partition's next message can be opened.
+    link?: (topic: string, partition: number, offset: number) => string
   } = $props()
 
   let samples = $state<Sample[]>([])
@@ -80,6 +86,26 @@
     return { consume, produce, net, lag, eta, state, secs }
   })
 
+  // Partitions with lag at every reading whose committed offset never moved.
+  // Needs a few readings so a consumer between commits is not flagged.
+  const stuckAfter = 3
+  const stuck = $derived.by(() => {
+    if (samples.length < stuckAfter) return []
+    const first = samples[0].parts
+    const last = samples[samples.length - 1].parts
+    if (!first || !last) return []
+    const key = (p: Part) => `${p.topic}\u0000${p.partition}`
+    const start = new Map(first.map((p) => [key(p), p]))
+    return last
+      .filter((p) => {
+        const a = start.get(key(p))
+        return a && p.lag > 0 && a.lag > 0 && p.committed >= 0 && p.committed === a.committed
+      })
+      .sort((a, b) => b.lag - a.lag)
+  })
+  const stuckSecs = $derived(samples.length ? (samples[samples.length - 1].at - samples[0].at) / 1000 : 0)
+  let showAll = $state(false)
+
   function dur(s: number) {
     if (s < 60) return `${Math.max(1, Math.round(s))} s`
     if (s < 3600) return `${Math.round(s / 60)} min`
@@ -141,6 +167,24 @@
     {/if}
   {/if}
   {#if error}<span class="bad small">{error}</span>{/if}
+  {#if stuck.length}
+    {@const many = new Set(stuck.map((p) => p.topic)).size > 1}
+    <div class="stuck" role="status">
+      <b class="bad">{stuck.length} {stuck.length === 1 ? 'partition' : 'partitions'} not moving</b>
+      <span class="faint">lag but no commit for {dur(stuckSecs)}:</span>
+      {#each showAll ? stuck : stuck.slice(0, 6) as p (p.topic + p.partition)}
+        {@const label = `${many ? p.topic + ' ' : ''}P${p.partition}`}
+        {#if link}
+          <a class="chip mono" href={link(p.topic, p.partition, p.committed)} title="Open the message it is stuck on: offset {p.committed}, lag {fmt(p.lag)}">{label} @ {fmt(p.committed)}</a>
+        {:else}
+          <span class="chip mono" title="Lag {fmt(p.lag)}">{label} @ {fmt(p.committed)}</span>
+        {/if}
+      {/each}
+      {#if stuck.length > 6}
+        <button class="ghost small" onclick={() => (showAll = !showAll)}>{showAll ? 'Fewer' : `+${stuck.length - 6} more`}</button>
+      {/if}
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -150,4 +194,8 @@
   .bad { color: var(--danger); }
   .rates { font-variant-numeric: tabular-nums; }
   .spark polyline { fill: none; stroke: var(--text-2); stroke-width: 1.4; stroke-linejoin: round; }
+  .stuck { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; padding: 4px 0 2px; border-top: 1px dashed var(--line-dash); }
+  .stuck b { font-weight: 600; }
+  .chip { font-size: 12px; padding: 0 6px; line-height: 20px; border: 1px solid var(--border-strong); border-radius: 2px; background: var(--surface-2); color: var(--text); }
+  a.chip:hover { border-color: var(--danger); text-decoration: none; }
 </style>

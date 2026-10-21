@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { resizable } from '../lib/resizable'
   import Pending from '../lib/Pending.svelte'
   import { api, type Cluster, type GroupDetail, type ResetPlan } from '../lib/api'
   import { fmt, stateBadge, partitionList } from '../lib/format'
@@ -6,8 +7,9 @@
   import PartitionOffsets from '../lib/PartitionOffsets.svelte'
   import Modal from '../lib/Modal.svelte'
   import { forgetNames } from '../lib/names'
-  import { RefreshCw, Trash2, RotateCcw, Plus, Lock } from '@lucide/svelte'
+  import { RefreshCw, Trash2, RotateCcw, Plus, Lock, Download, Upload } from '@lucide/svelte'
   import GroupTopicDialog from '../lib/GroupTopicDialog.svelte'
+  import RestoreOffsetsDialog, { backupOf, downloadBackup } from '../lib/RestoreOffsetsDialog.svelte'
   import LagEta from '../lib/LagEta.svelte'
   import MoreRows from '../lib/MoreRows.svelte'
   import ResourceACLs from '../lib/ResourceACLs.svelte'
@@ -50,17 +52,37 @@
   let shownTopics = $state(topicPage)
 
   let addingTopic = $state(false)
+  let restoring = $state(false)
+
+  // The backup is taken from fresh offsets, not what the page loaded earlier.
+  let backingUp = $state(false)
+  async function backup() {
+    backingUp = true
+    try {
+      const g = await api.group(cluster.name, name)
+      data = g
+      downloadBackup(backupOf(cluster.name, g))
+    } catch (e: any) {
+      error = e.message
+    } finally {
+      backingUp = false
+    }
+  }
+  const hasCommits = $derived(!!data?.partitions.some((p) => p.committed >= 0 && !p.no_access))
 
   // Fresh readings for the catch-up estimate; the page's own data is left alone.
   async function reading(topic?: string) {
     const g = await api.group(cluster.name, name)
-    const rows = g.partitions.filter((p) => !topic || p.topic === topic)
+    const rows = g.partitions.filter((p) => !p.no_access && (!topic || p.topic === topic))
     return {
       lag: rows.reduce((s, p) => s + Math.max(p.lag, 0), 0),
       committed: rows.reduce((s, p) => s + Math.max(p.committed, 0), 0),
       high: rows.reduce((s, p) => s + p.high, 0),
+      parts: rows.map((p) => ({ topic: p.topic, partition: p.partition, committed: p.committed, lag: p.lag })),
     }
   }
+  const messageAt = (topic: string, partition: number, offset: number) =>
+    href(cluster.name, 'topics', topic, { p: String(partition), o: String(offset) })
 
   // Offset reset
   let resetting = $state(false)
@@ -163,6 +185,8 @@
   <div class="acts">
   <button onclick={load} disabled={loading}><RefreshCw size={14} class={loading ? 'animate-spin' : ''} />Refresh</button>
   <button disabled={cluster.read_only || !data} title={cluster.read_only ? 'This cluster is read-only' : ''} onclick={() => (addingTopic = true)}><Plus size={14} />Add topic</button>
+  <button disabled={!hasCommits || backingUp} title="Download the committed offsets as a JSON file" onclick={backup}><Download size={14} />Back up offsets</button>
+  <button disabled={cluster.read_only || !data} title={cluster.read_only ? 'This cluster is read-only' : 'Commit offsets from a backup file'} onclick={() => (restoring = true)}><Upload size={14} />Restore…</button>
   {#if cluster.features.delete_group}
     <button class="danger" disabled={cluster.read_only || !data || data.members.length > 0}
       title={data && data.members.length > 0 ? 'Cannot delete a group with active members' : ''}
@@ -182,7 +206,7 @@
     <span><b>{data.members.length}</b> members</span>
     <span>Protocol <b>{data.protocol || '—'}</b></span>
     <span>Coordinator <b>{data.coordinator}</b></span>
-    {#if data.lag > 0}<span class="spacer"></span><LagEta read={() => reading()} />{/if}
+    {#if data.lag > 0}<span class="spacer"></span><LagEta read={() => reading()} link={messageAt} />{/if}
   </div>
 
   {#each byTopic.slice(0, shownTopics) as t (t.topic)}
@@ -193,7 +217,7 @@
         <span class="badge gap-1"><Lock size={11} />no access</span>
       {:else}
         <span class="faint">lag {fmt(t.rows.reduce((s, r) => s + Math.max(r.lag, 0), 0))}</span>
-        {#if t.rows.some((r) => r.lag > 0) && byTopic.length > 1}<LagEta read={() => reading(t.topic)} />{/if}
+        {#if t.rows.some((r) => r.lag > 0) && byTopic.length > 1}<LagEta read={() => reading(t.topic)} link={messageAt} />{/if}
       {/if}
       <span class="spacer"></span>
       <span class="acts">
@@ -225,7 +249,7 @@
 
   <div class="section-title"><h2>Members</h2><span class="faint">{data.members.length}</span></div>
   <div class="panel">
-    <table>
+    <table use:resizable={'group.members'}>
       <thead><tr><th>Client ID</th><th>Host</th><th>Member ID</th></tr></thead>
       <tbody>
         {#each data.members as m (m.id)}
@@ -244,6 +268,7 @@
 {/if}
 
 <GroupTopicDialog {cluster} group={name} existingTopics={topics} activeMembers={data?.members.length ?? 0} bind:open={addingTopic} ondone={load} />
+<RestoreOffsetsDialog {cluster} group={name} activeMembers={data?.members.length ?? 0} bind:open={restoring} ondone={load} />
 
 <Modal title="Reset offsets: {reset.topic}" bind:open={resetting} width={560}>
   {#if data && data.members.length > 0}

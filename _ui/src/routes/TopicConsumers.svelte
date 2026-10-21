@@ -54,13 +54,16 @@
   // alone, where the topic's consumer list would redo every group's.
   async function reading(group: string) {
     const g = await api.group(cluster.name, group)
-    const rows = g.partitions.filter((p) => p.topic === topic)
+    const rows = g.partitions.filter((p) => p.topic === topic && !p.no_access)
     return {
       lag: rows.reduce((s, p) => s + Math.max(p.lag, 0), 0),
       committed: rows.reduce((s, p) => s + Math.max(p.committed, 0), 0),
       high: rows.reduce((s, p) => s + p.high, 0),
+      parts: rows.map((p) => ({ topic: p.topic, partition: p.partition, committed: p.committed, lag: p.lag })),
     }
   }
+  const messageAt = (t: string, partition: number, offset: number) =>
+    href(cluster.name, 'topics', t, { p: String(partition), o: String(offset) })
 
   const total = $derived((groups ?? []).reduce((s, g) => s + g.lag, 0))
 </script>
@@ -137,7 +140,7 @@
                 <span class="faint">No active members; showing committed offsets.</span>
               {/if}
               <span class="spacer"></span>
-              {#if g.lag > 0}<LagEta read={() => reading(g.group)} />{/if}
+              {#if g.lag > 0}<LagEta read={() => reading(g.group)} link={messageAt} />{/if}
               <a class="openlink" href={href(cluster.name, 'groups', g.group)}>Open group <ArrowRight size={13} /></a>
             </div>
 

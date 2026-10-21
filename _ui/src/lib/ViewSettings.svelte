@@ -1,6 +1,6 @@
 <script lang="ts">
   import { prefs, type TimeFormat } from './prefs.svelte'
-  import { Columns3, ChevronUp, ChevronDown, X, Plus } from '@lucide/svelte'
+  import { Columns3, ChevronUp, ChevronDown, X, Plus, RotateCcw } from '@lucide/svelte'
 
   // The message list's view settings: how times read, and which value
   // fields get their own column. Both are kept in this browser only.
@@ -9,11 +9,16 @@
     onadd,
     onremove,
     onmove,
+    resized = false,
+    onresetwidths,
   }: {
     columns: string[]
     onadd: (path: string) => void
     onremove: (path: string) => void
     onmove: (path: string, by: number) => void
+    // Some column was resized by hand; offer to go back to automatic widths.
+    resized?: boolean
+    onresetwidths?: () => void
   } = $props()
 
   let el = $state<HTMLDetailsElement>()
@@ -65,6 +70,11 @@
         <button type="submit" class="small" disabled={!path.trim()}><Plus size={13} />Add</button>
       </form>
     </div>
+    <div class="sec">
+      <span class="lbl">Column widths</span>
+      <p class="hint">Drag a header's right edge to resize; double-click it to fit the longest value. Kept for this topic.</p>
+      <button type="button" class="small" disabled={!resized} onclick={() => onresetwidths?.()}><RotateCcw size={13} />Reset to automatic</button>
+    </div>
   </div>
 </details>
 
@@ -99,4 +109,5 @@
   .icon { padding: 3px 5px; }
   .add { display: flex; gap: 6px; }
   .add input { flex: 1; min-width: 0; padding-inline: 10px; }
+  .sec > button { justify-self: start; }
 </style>

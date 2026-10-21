@@ -1048,7 +1048,7 @@ type ResetRequest struct {
 	Topic string `json:"topic"`
 	// Partitions limits the reset; empty means every partition of the topic.
 	Partitions []int32 `json:"partitions"`
-	// Strategy is earliest, latest, offset, timestamp or shift.
+	// Strategy is earliest, latest, offset, timestamp, shift or offsets.
 	Strategy  string `json:"strategy"`
 	Offset    int64  `json:"offset"`
 	Timestamp int64  `json:"timestamp"`
@@ -1056,6 +1056,10 @@ type ResetRequest struct {
 	// re-reads, positive skips); partitions with no commit shift from the
 	// low watermark.
 	Shift int64 `json:"shift"`
+	// Offsets gives each partition its own target, for the offsets strategy
+	// (restoring a backup, copying another group). Only these partitions
+	// move; a target outside a partition's range is clamped to it.
+	Offsets []PartitionOffset `json:"offsets"`
 	// DryRun returns the planned offsets without committing.
 	DryRun bool `json:"dry_run"`
 }
@@ -1120,6 +1124,30 @@ func (c *Client) ResetOffsets(ctx context.Context, group string, req ResetReques
 		wanted[p] = true
 	}
 
+	// For the offsets strategy the list itself names the partitions.
+	targets := map[int32]int64{}
+	if req.Strategy == "offsets" {
+		if len(req.Offsets) == 0 {
+			return nil, ErrInvalid{errors.New("give at least one partition offset")}
+		}
+
+		wanted = map[int32]bool{}
+
+		for _, po := range req.Offsets {
+			switch {
+			case po.Partition < 0:
+				return nil, ErrInvalid{fmt.Errorf("partition %d is not valid", po.Partition)}
+			case po.Offset < 0:
+				return nil, ErrInvalid{fmt.Errorf("partition %d: offset must not be negative", po.Partition)}
+			case wanted[po.Partition]:
+				return nil, ErrInvalid{fmt.Errorf("partition %d is listed twice", po.Partition)}
+			}
+
+			wanted[po.Partition] = true
+			targets[po.Partition] = po.Offset
+		}
+	}
+
 	if req.Strategy == "offset" && req.Offset < 0 {
 		return nil, ErrInvalid{fmt.Errorf("offset must not be negative")}
 	}
@@ -1179,6 +1207,8 @@ func (c *Client) ResetOffsets(ctx context.Context, group string, req ResetReques
 			target = e.Offset
 		case "offset":
 			target = min(max(req.Offset, s.Offset), e.Offset)
+		case "offsets":
+			target = min(max(targets[s.Partition], s.Offset), e.Offset)
 		case "timestamp":
 			// kadm gives the end offset when nothing is that new; an
 			// error means the offset at that time is unknown.

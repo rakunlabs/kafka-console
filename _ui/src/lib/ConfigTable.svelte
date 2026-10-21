@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { resizable } from './resizable'
   import type { ConfigChange, ConfigEntry } from './api'
 
   let {
@@ -75,7 +76,7 @@
 {#if error}<div class="error">{error}</div>{/if}
 
 <div class="panel">
-  <table>
+  <table use:resizable={'configs'}>
     <thead><tr><th>Key</th><th>Value</th><th>Source</th><th></th></tr></thead>
     <tbody>
       {#each rows as c (c.key)}

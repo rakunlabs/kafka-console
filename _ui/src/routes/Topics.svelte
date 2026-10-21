@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { resizable } from '../lib/resizable'
   import Pending from '../lib/Pending.svelte'
   import { untrack } from 'svelte'
   import { api, type Cluster, type TopicQuery, type TopicSummary } from '../lib/api'
@@ -97,7 +98,7 @@
   <div class="error">{list.error}</div>
 {:else}
   <div class="panel" class:stale={list.loading && list.items.length > 0}>
-    <table>
+    <table use:resizable={'topics'}>
       <thead>
         <tr>
           <th><button class="ghost th" onclick={() => sort('name')}>Name {#if sortKey === 'name'}{#if sortDesc}<ArrowDown size={12} />{:else}<ArrowUp size={12} />{/if}{/if}</button></th>

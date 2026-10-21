@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { resizable } from '../lib/resizable'
   import Pending from '../lib/Pending.svelte'
   import { untrack } from 'svelte'
   import { api, type Cluster, type GroupQuery, type GroupSummary } from '../lib/api'
@@ -51,7 +52,7 @@
   <div class="error">{list.error}</div>
 {:else}
   <div class="panel" class:stale={list.loading && list.items.length > 0}>
-    <table>
+    <table use:resizable={'groups'}>
       <thead><tr><th>Group</th><th>State</th><th class="num">Members</th><th>Topics</th><th class="num">Lag</th></tr></thead>
       <tbody>
         {#each list.items as g (g.name)}

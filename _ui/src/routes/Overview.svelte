@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { resizable } from '../lib/resizable'
   import Pending from '../lib/Pending.svelte'
   import { untrack } from 'svelte'
   import { api, type Cluster, type Overview, type DiskUsage } from '../lib/api'
@@ -175,7 +176,7 @@
     </div>
   {:else}
     <div class="panel mb-8 overflow-x-auto">
-      <table>
+      <table use:resizable={'overview.problems'}>
         <thead><tr><th>Topic</th><th class="num">Partitions</th><th class="num">Offline</th><th class="num">Under-replicated</th><th>Affected partitions</th></tr></thead>
         <tbody>
           {#each shownProblems as t (t.topic)}
@@ -208,7 +209,7 @@
     <span class="faint">{data.brokers.length}</span>
   </div>
   <div class="panel overflow-x-auto">
-    <table>
+    <table use:resizable={'overview.brokers'}>
       <thead>
         <tr>
           <th>ID</th><th>Host</th><th>Rack</th>

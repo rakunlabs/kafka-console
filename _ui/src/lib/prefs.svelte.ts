@@ -44,3 +44,38 @@ export function saveColumns(topic: string, paths: string[]) {
   if (paths.length) localStorage.setItem(columnsKey(topic), JSON.stringify(paths))
   else localStorage.removeItem(columnsKey(topic))
 }
+
+// ─── Message list column widths ───
+
+const widthsKey = (topic: string) => `kc.widths.${topic}`
+
+/** Column widths in px set by hand for a topic's message list, by column id. */
+export function loadWidths(topic: string): Record<string, number> {
+  try {
+    const v = JSON.parse(localStorage.getItem(widthsKey(topic)) ?? '{}')
+    if (!v || typeof v !== 'object' || Array.isArray(v)) return {}
+    return Object.fromEntries(Object.entries(v).filter(([, w]) => typeof w === 'number' && Number.isFinite(w) && w > 0)) as Record<string, number>
+  } catch {
+    return {}
+  }
+}
+
+export function saveWidths(topic: string, widths: Record<string, number>) {
+  if (Object.keys(widths).length) localStorage.setItem(widthsKey(topic), JSON.stringify(widths))
+  else localStorage.removeItem(widthsKey(topic))
+}
+
+// ─── Message detail width ───
+
+const detailKey = 'kc.detailWidth'
+
+/** The width in px the message detail was dragged to, or null for the default. */
+export function loadDetailWidth(): number | null {
+  const v = Number(localStorage.getItem(detailKey))
+  return Number.isFinite(v) && v > 0 ? Math.round(v) : null
+}
+
+export function saveDetailWidth(px: number | null) {
+  if (px === null) localStorage.removeItem(detailKey)
+  else localStorage.setItem(detailKey, String(Math.round(px)))
+}

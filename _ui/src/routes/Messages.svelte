@@ -3,8 +3,9 @@
   import { api, tail, messageStream, isAbort, rawURL, type Cluster, type ConsumeResult, type Message } from '../lib/api'
   import Pending from '../lib/Pending.svelte'
   import { fmt } from '../lib/format'
-  import { prefs, loadColumns, saveColumns } from '../lib/prefs.svelte'
+  import { prefs, loadColumns, saveColumns, loadDetailWidth, saveDetailWidth, loadWidths, saveWidths } from '../lib/prefs.svelte'
   import ViewSettings from '../lib/ViewSettings.svelte'
+  import ColResizer from '../lib/ColResizer.svelte'
   import { showTime, pick as pickField, cell } from '../lib/viewer'
   import ValueView from '../lib/ValueView.svelte'
   import ResendDialog from '../lib/ResendDialog.svelte'
@@ -16,7 +17,20 @@
   import { Pencil } from '@lucide/svelte'
   import { Play, Pause, Square, Radio, Download, Copy, Check, ChevronUp, ChevronDown, Plus, Minus, ChevronsUpDown, ChevronsDownUp, Repeat, X, Code, Binary, Search, Upload, History, Loader, ChevronsDown } from '@lucide/svelte'
 
-  let { cluster, topic, partitions, onedit }: { cluster: Cluster; topic: string; partitions: number[]; onedit: (message: Message) => void } = $props()
+  let {
+    cluster,
+    topic,
+    partitions,
+    onedit,
+    at,
+  }: {
+    cluster: Cluster
+    topic: string
+    partitions: number[]
+    onedit: (message: Message) => void
+    // Open on this message: the read starts there and it is selected.
+    at?: { partition: number; offset: number }
+  } = $props()
 
   let editing = $state(false)
   let editError = $state('')
@@ -38,9 +52,9 @@
     }
   }
 
-  let start = $state('newest')
-  let partition = $state('')
-  let offset = $state(0)
+  let start = $state(untrack(() => (at ? 'offset' : 'newest')))
+  let partition = $state(untrack(() => (at ? String(at.partition) : '')))
+  let offset = $state(untrack(() => at?.offset ?? 0))
   // For "last": how many of the newest records of each partition.
   let lastN = $state(100)
   let timestamp = $state('')
@@ -549,10 +563,46 @@
   const keyWidth = $derived.by(() => {
     let longest = 3
     for (const m of result?.messages ?? []) longest = Math.max(longest, (m.key ?? '—').length)
-    const px = Math.max(96, Math.ceil(longest * 7.6) + 30)
-    return Math.min(px, selected ? 200 : 380)
+    const px = Math.max(120, Math.ceil(longest * 7.6) + 36)
+    return Math.min(px, selected ? 240 : 440)
   })
   const timeWidth = $derived(prefs.time === 'relative' || prefs.time === 'unix' ? 130 : prefs.time === 'utc' ? 210 : 200)
+
+  // Widths set by hand (drag or double-click on a header edge), per topic.
+  // A column without one keeps its automatic width.
+  let widths = $state<Record<string, number>>(untrack(() => loadWidths(topic)))
+  const colW = (id: string, auto: number) => widths[id] ?? auto
+  const offsetW = $derived(colW('offset', 84))
+  const timeW = $derived(colW('time', timeWidth))
+  const keyW = $derived(colW('key', keyWidth))
+  const valueColW = (c: string) => colW(`v:${c}`, 140)
+  function setWidth(id: string, px: number) {
+    widths = { ...widths, [id]: px }
+  }
+  const keepWidths = () => saveWidths(topic, widths)
+  function resetWidths() {
+    widths = {}
+    saveWidths(topic, {})
+  }
+  // Fit to the widest of the rows shown, header included, wider or narrower.
+  // A range measures the text itself, even where the cell cuts it off.
+  let listEl = $state<HTMLElement>()
+  function fit(id: string) {
+    if (!listEl) return
+    let px = 0
+    const range = document.createRange()
+    for (const el of listEl.querySelectorAll<HTMLElement>(`[data-col="${CSS.escape(id)}"]`)) {
+      const parts = [...el.childNodes].filter((n) => !(n instanceof HTMLElement && n.classList.contains('rz')))
+      if (!parts.length) continue
+      range.setStartBefore(parts[0])
+      range.setEndAfter(parts[parts.length - 1])
+      const cs = getComputedStyle(el)
+      px = Math.max(px, range.getBoundingClientRect().width + parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight))
+    }
+    if (!px) return
+    setWidth(id, Math.min(Math.max(Math.ceil(px) + 4, 48), 1200))
+    keepWidths()
+  }
 
   // The list's columns have fixed widths, so it needs at least their sum (plus
   // room for the value preview) before the detail can sit beside it. When the
@@ -561,16 +611,76 @@
   const detailMin = 380
   let splitWidth = $state(0)
   const listMin = $derived(
-    (cluster.read_only ? 0 : 34) + 40 + 44 + 84 + timeWidth + keyWidth + (showColumns ? columns.length * 140 : 0) + 160,
+    (cluster.read_only ? 0 : 34) + 40 + 44 + offsetW + timeW + keyW + (showColumns ? columns.reduce((s, c) => s + valueColW(c), 0) : 0) + 160,
   )
   const stacked = $derived(narrow.matches || splitWidth < listMin + 12 + detailMin)
   // Too narrow for the side-by-side split but wider than a phone, the detail
   // slides over the list from the right instead of opening below it.
   const drawer = $derived(!narrow.matches && stacked)
 
+  // Beside the list the detail can be dragged wider or narrower by its left
+  // edge; the width is remembered. It never squeezes the list below listMin.
+  let detailWidth = $state<number | null>(loadDetailWidth())
+  let detailEl = $state<HTMLElement>()
+  let resizing = $state(false)
+  const detailMax = $derived(Math.max(detailMin, splitWidth - listMin - 12))
+  const clampDetail = (px: number) => Math.round(Math.min(Math.max(px, detailMin), detailMax))
+  const detailW = $derived(detailWidth === null ? null : clampDetail(detailWidth))
+  function startResize(e: PointerEvent) {
+    if (e.button !== 0 || !detailEl) return
+    e.preventDefault()
+    const handle = e.currentTarget as HTMLElement
+    handle.setPointerCapture(e.pointerId)
+    const startX = e.clientX
+    const startW = detailEl.getBoundingClientRect().width
+    resizing = true
+    const move = (ev: PointerEvent) => (detailWidth = clampDetail(startW + startX - ev.clientX))
+    const end = () => {
+      handle.removeEventListener('pointermove', move)
+      handle.removeEventListener('pointerup', end)
+      handle.removeEventListener('pointercancel', end)
+      resizing = false
+      saveDetailWidth(detailWidth)
+    }
+    handle.addEventListener('pointermove', move)
+    handle.addEventListener('pointerup', end)
+    handle.addEventListener('pointercancel', end)
+  }
+  function resizeKey(e: KeyboardEvent) {
+    const by = e.key === 'ArrowLeft' ? 24 : e.key === 'ArrowRight' ? -24 : 0
+    if (!by || !detailEl) return
+    e.preventDefault()
+    e.stopPropagation()
+    detailWidth = clampDetail((detailW ?? detailEl.getBoundingClientRect().width) + by)
+    saveDetailWidth(detailWidth)
+  }
+  function resetDetailWidth() {
+    detailWidth = null
+    saveDetailWidth(null)
+  }
+
   // Last: load() resets state declared throughout this script before its
   // first await.
   load()
+
+  // Opened on a message (from a group's committed offset): select it once
+  // the first read brings it in. Any other read or a pick of its own ends it.
+  let seekAt = $state(untrack(() => at))
+  $effect(() => {
+    if (!seekAt || !result) return
+    if (selected) {
+      seekAt = undefined
+      return
+    }
+    const m = result.messages.find((x) => x.partition === seekAt!.partition && x.offset === seekAt!.offset)
+    if (m) {
+      selected = m
+      seekAt = undefined
+      requestAnimationFrame(() => document.getElementById(`m-${m.partition}-${m.offset}`)?.scrollIntoView({ block: 'nearest' }))
+    } else if (result.stopped_by !== 'reading') {
+      seekAt = undefined
+    }
+  })
 </script>
 
 <svelte:window onkeydown={onkey} />
@@ -709,24 +819,25 @@
       {#if narrow.matches}
         <Overflow label="Message tools">{@render tools()}</Overflow>
       {:else}
-        <ViewSettings {columns} onadd={addColumn} onremove={removeColumn} onmove={moveColumn} />
+        <ViewSettings {columns} onadd={addColumn} onremove={removeColumn} onmove={moveColumn}
+          resized={Object.keys(widths).length > 0} onresetwidths={resetWidths} />
         {@render tools()}
       {/if}
     {/if}
   </div>
 
-  <div class="split" class:open={!!selected} class:stacked bind:clientWidth={splitWidth}
-    style:--list-min="{listMin}px" style:--detail-min="{detailMin}px">
-    <div class="panel list">
+  <div class="split" class:open={!!selected} class:stacked class:resizing bind:clientWidth={splitWidth}
+    style:--list-min="{listMin}px" style:--detail-min="{detailMin}px" style:--detail-w={detailW === null ? undefined : `${detailW}px`}>
+    <div class="panel list" bind:this={listEl}>
       <table class="manual">
         <colgroup>
           {#if !cluster.read_only}<col style:width="34px" />{/if}
           {#if narrow.matches}
             <col />
           {:else}
-            <col style:width="40px" /><col style:width="44px" /><col style:width="84px" /><col style:width="{timeWidth}px" />
-            <col style:width="{keyWidth}px" />
-            {#if showColumns}{#each columns as c (c)}<col style:width="140px" />{/each}{/if}
+            <col style:width="40px" /><col style:width="44px" /><col style:width="{offsetW}px" /><col style:width="{timeW}px" />
+            <col style:width="{keyW}px" />
+            {#if showColumns}{#each columns as c (c)}<col style:width="{valueColW(c)}px" />{/each}{/if}
             <col />
           {/if}
         </colgroup>
@@ -746,8 +857,14 @@
                   </button>
                 {/if}
               </th>
-              <th class="num" title="Partition"><abbr>P</abbr></th><th class="num">Offset</th><th>Time</th><th>Key</th>
-              {#if showColumns}{#each columns as c (c)}<th class="mono vcol" title="value.{c}">{c}</th>{/each}{/if}
+              <th class="num" title="Partition"><abbr>P</abbr></th>
+              {#snippet rz(id: string, label: string, w: number)}
+                <ColResizer {label} width={w} onchange={(px) => setWidth(id, px)} ondone={keepWidths} onfit={() => fit(id)} />
+              {/snippet}
+              <th class="num rzh" data-col="offset">Offset{@render rz('offset', 'Offset', offsetW)}</th>
+              <th class="rzh" data-col="time">Time{@render rz('time', 'Time', timeW)}</th>
+              <th class="rzh" data-col="key">Key{@render rz('key', 'Key', keyW)}</th>
+              {#if showColumns}{#each columns as c (c)}<th class="mono vcol rzh" data-col="v:{c}" title="value.{c}">{c}{@render rz(`v:${c}`, c, valueColW(c))}</th>{/each}{/if}
               <th>Value</th>
             {/if}
           </tr>
@@ -781,10 +898,10 @@
                   </button>
                 </td>
                 <td class="num mono">{m.partition}</td>
-                <td class="num mono">{m.offset}</td>
-                <td class="mono nowrap time" title={other(m.timestamp)}>{when(m.timestamp)}</td>
-                <td class="mono key" title={m.key ?? undefined}>{k[0]}{#if k[1]}<mark>{k[1]}</mark>{/if}{k[2]}</td>
-                {#if showColumns}{#each columns as c (c)}{@const f = field(m, c)}<td class="mono vcol" title={f}>{f}</td>{/each}{/if}
+                <td class="num mono" data-col="offset">{m.offset}</td>
+                <td class="mono nowrap time" data-col="time" title={other(m.timestamp)}>{when(m.timestamp)}</td>
+                <td class="mono key" data-col="key" title={m.key ?? undefined}>{k[0]}{#if k[1]}<mark>{k[1]}</mark>{/if}{k[2]}</td>
+                {#if showColumns}{#each columns as c (c)}{@const f = field(m, c)}<td class="mono vcol" data-col="v:{c}" title={f}>{f}</td>{/each}{/if}
                 <td class="mono val">{v[0]}{#if v[1]}<mark>{v[1]}</mark>{/if}{v[2]}</td>
               {/if}
             </tr>
@@ -834,8 +951,14 @@
     </div>
 
     {#if selected}
-      <div class="panel detail" class:sheet class:drawer role={sheet || drawer ? 'dialog' : undefined} aria-modal={sheet ? 'true' : undefined}
+      <div class="panel detail" class:sheet class:drawer bind:this={detailEl} role={sheet || drawer ? 'dialog' : undefined} aria-modal={sheet ? 'true' : undefined}
         aria-label={sheet || drawer ? `Message ${selected.partition}:${selected.offset}` : undefined}>
+        {#if !stacked}
+          <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
+          <div class="resize" role="separator" aria-orientation="vertical" aria-label="Resize message panel"
+            aria-valuemin={detailMin} aria-valuemax={detailMax} aria-valuenow={detailW ?? undefined} tabindex="0"
+            title="Drag to resize · double-click to reset" onpointerdown={startResize} onkeydown={resizeKey} ondblclick={resetDetailWidth}></div>
+        {/if}
         <div class="dhead">
           <div class="dtop">
             <div class="dtitle">
@@ -990,7 +1113,8 @@
   .meta { font-size: 13px; margin-bottom: 8px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; min-height: 26px; }
   .err { color: var(--danger); font-size: 12px; }
   .split { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; align-items: start; }
-  .split.open:not(.stacked) { grid-template-columns: minmax(var(--list-min), 1fr) minmax(var(--detail-min), 1fr); }
+  .split.open:not(.stacked) { grid-template-columns: minmax(var(--list-min), 1fr) var(--detail-w, minmax(var(--detail-min), 1.35fr)); }
+  .split.resizing { cursor: col-resize; user-select: none; }
   .list > table { min-width: 0; }
   /* The list grows with its rows and the page scrolls; the header row sticks
      under the top edge (under the app header below lg) while reading. */
@@ -1000,7 +1124,7 @@
   @media (max-width: 1023.98px) { .list { --stick: 48px; } }
   /* Between phone and lg the panel scrolls sideways, so it is the header's
      sticky container and the offset would push the header onto the rows. */
-  @media (min-width: 640px) and (max-width: 1023.98px) { .list thead th { position: static; } }
+  @media (min-width: 640px) and (max-width: 1023.98px) { .list thead th { position: static; } .list thead th.rzh { position: relative; } }
   .list table { table-layout: fixed; }
   .list tr { cursor: pointer; }
   .list tr:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
@@ -1021,9 +1145,15 @@
   .time { overflow: hidden; text-overflow: ellipsis; }
   .key, .val { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .val { color: var(--text-2); }
-  /* The header stays put; the body under it scrolls. */
-  .detail { position: sticky; top: 12px; max-height: calc(100vh - 24px); display: flex; flex-direction: column; overflow: hidden; }
-  .dbody { flex: 1 1 auto; min-height: 0; overflow: auto; overscroll-behavior: contain; }
+  /* Beside the list the detail grows with its content and the page scrolls;
+     as a drawer or sheet it is fixed, so the header stays put and the body
+     under it scrolls. */
+  .detail { position: relative; display: flex; flex-direction: column; overflow: hidden; }
+  /* The left edge is the grab handle for resizing beside the list. */
+  .resize { position: absolute; top: 0; bottom: 0; left: 0; z-index: 3; width: 7px; cursor: col-resize; touch-action: none; }
+  .resize:hover, .resize:focus-visible, .resizing .resize { background: var(--cta-border); outline: none; }
+  .dbody { flex: 1 1 auto; min-height: 0; }
+  .drawer .dbody, .sheet .dbody { overflow: auto; overscroll-behavior: contain; }
   /* Header: who the message is, how to walk and close, on one line that
      never wraps; the write actions sit on their own row under it. */
   .dhead { flex: none; display: grid; grid-template-columns: minmax(0, 1fr); border-bottom: 1px solid var(--border-strong); background: var(--surface-2); }

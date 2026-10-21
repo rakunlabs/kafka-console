@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { resizable } from '../lib/resizable'
   import Pending from '../lib/Pending.svelte'
   import { untrack } from 'svelte'
   import { api, type Cluster, type RegistryOverview, type RegistryQuery, type SubjectSummary } from '../lib/api'
@@ -97,7 +98,7 @@
   </div>
 
   <div class="panel" class:stale={list.loading && list.items.length > 0}>
-    <table>
+    <table use:resizable={'schemas'}>
       <thead><tr><th>Subject</th><th>Type</th><th class="num">Latest version</th><th class="num">Versions</th><th class="num">ID</th><th>Compatibility</th></tr></thead>
       <tbody>
         {#each list.items as s (s.name)}

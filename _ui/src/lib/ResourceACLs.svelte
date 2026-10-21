@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { resizable } from './resizable'
   import Pending from './Pending.svelte'
   import { untrack } from 'svelte'
   import { api, type ACL, type Cluster } from './api'
@@ -30,7 +31,7 @@
   <div class="empty"><Pending /></div>
 {:else}
   <div class="panel overflow-x-auto">
-    <table>
+    <table use:resizable={'resource.acls'}>
       <thead><tr><th>Principal</th><th>Host</th><th>Operation</th><th>Permission</th><th>Matches</th></tr></thead>
       <tbody>
         {#each acls as a, i (i)}

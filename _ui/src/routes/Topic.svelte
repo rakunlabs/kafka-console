@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { resizable } from '../lib/resizable'
   import Pending from '../lib/Pending.svelte'
   import { api, type Cluster, type TopicDetail, type Message } from '../lib/api'
   import { fmt, bytes, duration, sizeIEC, partitionList } from '../lib/format'
@@ -357,7 +358,7 @@
     </div>
     <ReassignDialog {cluster} topic={name} bind:open={moving} ondone={load} />
     <div class="panel">
-      <table>
+      <table use:resizable={'topic.partitions'}>
         <thead>
           <tr><th class="num">Partition</th><th class="num">Leader</th><th>Replicas</th><th title="In-sync replicas: the replicas fully caught up with the leader"><abbr>ISR</abbr></th><th class="num">Low</th><th class="num">High</th><th class="num">Messages</th><th class="num">Size</th></tr>
         </thead>
@@ -394,7 +395,12 @@
       <Produce {cluster} topic={name} partitions={data.partitions.map((p) => p.id)} source={editMessage} onclear={() => (editMessage = undefined)} />
     {/key}
   {:else}
-    <Messages {cluster} topic={name} partitions={data.partitions.map((p) => p.id)} onedit={edit} />
+    {@const p = router.route.query.get('p')}
+    {@const o = router.route.query.get('o')}
+    {@const at = p !== null && o !== null && /^\d+$/.test(p) && /^\d+$/.test(o) ? { partition: Number(p), offset: Number(o) } : undefined}
+    {#key at && `${at.partition}:${at.offset}`}
+      <Messages {cluster} topic={name} partitions={data.partitions.map((p) => p.id)} onedit={edit} {at} />
+    {/key}
   {/if}
 {/if}
 

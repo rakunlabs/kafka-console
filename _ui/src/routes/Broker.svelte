@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { resizable } from '../lib/resizable'
   import Pending from '../lib/Pending.svelte'
   import { api, type BrokerDetail, type Cluster, type ConfigChange } from '../lib/api'
   import { bytes, fmt } from '../lib/format'
@@ -46,7 +47,7 @@
 
   <h2 class="section">Log directories</h2>
   <div class="panel">
-    <table>
+    <table use:resizable={'broker.dirs'}>
       <thead><tr><th>Directory</th><th class="num">Partitions</th><th class="num">Data</th><th class="disk">Disk</th></tr></thead>
       <tbody>
         {#each data.log_dirs as d (d.dir)}

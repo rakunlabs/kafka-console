@@ -644,6 +644,15 @@ export const api = {
   resetOffsets: (
     c: string,
     g: string,
-    body: { topic: string; partitions?: number[]; strategy: string; offset?: number; timestamp?: number; shift?: number; dry_run: boolean },
+    body: {
+      topic: string
+      partitions?: number[]
+      strategy: string
+      offset?: number
+      timestamp?: number
+      shift?: number
+      offsets?: { partition: number; offset: number }[]
+      dry_run: boolean
+    },
   ) => request<{ dry_run: boolean; partitions: ResetPlan[] }>('POST', `/clusters/${enc(c)}/groups/${enc(g)}/reset`, body),
 }
