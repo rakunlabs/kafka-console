@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/bufbuild/protocompile"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 	"github.com/twmb/franz-go/pkg/sr"
+	"golang.org/x/sync/singleflight"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -22,7 +24,6 @@ import (
 
 // codec decodes and encodes payloads for one registered schema.
 type codec struct {
-	id    int
 	kind  sr.SchemaType
 	avro  *avroCodec
 	proto protoreflect.FileDescriptor
@@ -33,6 +34,9 @@ type codec struct {
 type codecCache struct {
 	registry *sr.Client
 
+	// loading makes concurrent readers of a new schema ID share one load.
+	loading singleflight.Group
+
 	mu       sync.Mutex
 	byID     map[int]*codec
 	failed   map[int]time.Time
@@ -40,6 +44,9 @@ type codecCache struct {
 }
 
 const codecRetryAfter = 30 * time.Second
+
+// codecLoadTimeout bounds loading one schema with its references.
+const codecLoadTimeout = 20 * time.Second
 
 // subjectFor is how long a subject version's ID is trusted. An import
 // encodes every record through it; a new latest version (or a subject that
@@ -106,24 +113,32 @@ func (cc *codecCache) get(ctx context.Context, id int) (*codec, error) {
 	}
 	cc.mu.Unlock()
 
-	c, err := cc.load(ctx, id)
+	// The load outlives any one caller, so one that gives up does not fail
+	// the others waiting on it; it has a deadline of its own.
+	v, err, _ := cc.loading.Do(strconv.Itoa(id), func() (any, error) {
+		lctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), codecLoadTimeout)
+		defer cancel()
 
-	cc.mu.Lock()
-	defer cc.mu.Unlock()
+		c, err := cc.load(lctx, id)
 
-	if err != nil {
-		// A caller that gave up (left the page, timed out) says nothing
-		// about the schema; only real failures block it for everyone.
-		if ctx.Err() == nil {
+		cc.mu.Lock()
+		defer cc.mu.Unlock()
+
+		if err != nil {
 			cc.failed[id] = time.Now()
+
+			return nil, err
 		}
 
+		cc.byID[id] = c
+
+		return c, nil
+	})
+	if err != nil {
 		return nil, err
 	}
 
-	cc.byID[id] = c
-
-	return c, nil
+	return v.(*codec), nil
 }
 
 func (cc *codecCache) load(ctx context.Context, id int) (*codec, error) {
@@ -178,7 +193,7 @@ func (cc *codecCache) references(ctx context.Context, refs []sr.SchemaReference,
 }
 
 func compile(id int, s sr.Schema, refs []namedSchema) (*codec, error) {
-	c := &codec{id: id, kind: s.Type}
+	c := &codec{kind: s.Type}
 
 	switch s.Type {
 	case sr.TypeAvro:
@@ -571,7 +586,7 @@ func pickMessage(fd protoreflect.FileDescriptor, name string) (protoreflect.Mess
 	return found, nil
 }
 
-// SchemaMessages lists protobuf message names, for the produce form.
+// protoMessageNames lists protobuf message names, for the produce form.
 func protoMessageNames(fd protoreflect.FileDescriptor) []string {
 	var out []string
 

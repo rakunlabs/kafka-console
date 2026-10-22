@@ -149,7 +149,7 @@ func (c *Client) listOffsetsPerTopic(ctx context.Context, set kadm.TopicsSet) (s
 	var (
 		mu  sync.Mutex
 		wg  sync.WaitGroup
-		sem = make(chan struct{}, registryParallel)
+		sem = make(chan struct{}, offsetsParallel)
 	)
 
 	for _, t := range topics {

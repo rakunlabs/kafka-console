@@ -11,7 +11,7 @@ import (
 func TestMCPBorrowsExistingClientsAndFactories(t *testing.T) {
 	c, err := New("local", &config.Cluster{Brokers: []string{"localhost:1"}, ReadOnly: true,
 		SchemaRegistry: &config.SchemaRegistry{URLs: []string{"http://localhost:2"}, Token: "host-secret"},
-	}, config.Cache{})
+	}, Settings{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -28,14 +28,22 @@ func TestMCPBorrowsExistingClientsAndFactories(t *testing.T) {
 	if err != nil || manual != existing {
 		t.Fatal("MCP must reuse the console's cached manual producer")
 	}
-	reader, err := connection.NewReader("orders")
+	if connection.NewReader != nil || connection.AcquireReader == nil {
+		t.Fatal("MCP must take readers from the console's bounded pool, not open its own")
+	}
+	reader, release, err := connection.AcquireReader(t.Context(), "orders")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if reader == c.client || reader == manual {
 		t.Fatal("each scan needs an isolated consumer, not shared consuming state")
 	}
-	reader.Close()
+	release()
+	release() // a second release must not free a slot twice
+	bulk, err := connection.BulkProducer(false)
+	if err != nil || bulk == c.client {
+		t.Fatal("MCP batch writes must use the console's bulk producer, not the shared client")
+	}
 	if connection.Name != "local" {
 		t.Fatalf("connection must carry the console's cluster name, got %q", connection.Name)
 	}

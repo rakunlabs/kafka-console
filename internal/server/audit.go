@@ -54,17 +54,8 @@ func auditWrites(userHeader string, trusted ...*net.IPNet) func(http.Handler) ht
 
 			viaProxy := fromTrusted(r, trusted)
 
-			user := ""
-			if viaProxy {
-				user = strings.TrimSpace(r.Header.Get(userHeader))
-			}
-
-			switch {
-			case user != "":
-			case !viaProxy && strings.TrimSpace(r.Header.Get(userHeader)) != "":
-				// Named, but not by a proxy the console trusts.
-				user = "unverified:" + strings.TrimSpace(r.Header.Get(userHeader))
-			default:
+			user := auditUser(r, userHeader, viaProxy)
+			if user == "" {
 				user = "anonymous"
 			}
 
@@ -251,6 +242,38 @@ func action(r *http.Request) string {
 	}
 
 	return name
+}
+
+// auditUser is who the request names in userHeader, marked unverified when
+// it did not come from a trusted proxy; empty when it names no one.
+func auditUser(r *http.Request, userHeader string, viaProxy bool) string {
+	user := strings.TrimSpace(r.Header.Get(userHeader))
+
+	switch {
+	case user == "", viaProxy:
+		return user
+	default:
+		// Named, but not by a proxy the console trusts.
+		return "unverified:" + user
+	}
+}
+
+// mcpUserHeader carries the audit user from the HTTP layer, which knows the
+// connection, to kafka-mcp's audit records, which only see headers.
+const mcpUserHeader = "X-Kafka-Console-Audit-User"
+
+// mcpAuditUser replaces whatever a client sent in mcpUserHeader with the
+// user the console vouches for, the way auditWrites names one.
+func mcpAuditUser(userHeader string, trusted []*net.IPNet, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Header.Del(mcpUserHeader)
+
+		if user := auditUser(r, userHeader, fromTrusted(r, trusted)); user != "" {
+			r.Header.Set(mcpUserHeader, user)
+		}
+
+		next.ServeHTTP(w, r)
+	})
 }
 
 func clientAddr(r *http.Request, viaProxy bool) string {

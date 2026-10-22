@@ -270,27 +270,36 @@ type SubjectTopic struct {
 // is not hit with thousands at once.
 const registryParallel = 8
 
+// offsetsParallel bounds the per-topic offset requests of the group lag
+// fallback, a Kafka load unrelated to the registry's.
+const offsetsParallel = 8
+
 // allSchemasFrom is how many subjects make one GET /schemas cheaper than
 // two requests per subject. Below it a page (50 subjects by default) does
 // not download every schema text of the registry.
 const allSchemasFrom = 200
 
-// subjectSummaries reads the subjects' latest version and version count.
-// Many subjects (a type filter over all) are read with one GET /schemas;
-// a page, and registries without that endpoint (e.g. Redpanda), use two
-// requests per subject, in parallel.
-func (c *Client) allSchemas(ctx context.Context, subjects int) ([]sr.SubjectSchema, error) {
+// allSchemas reads every schema with one GET /schemas when that is cheaper
+// than reading the subjects one by one; ok is false otherwise, and when the
+// registry lacks the endpoint (e.g. Redpanda).
+func (c *Client) allSchemas(ctx context.Context, subjects int) ([]sr.SubjectSchema, bool) {
 	if subjects < allSchemasFrom {
-		return nil, errors.New("few subjects; read them one by one")
+		return nil, false
 	}
 
-	return c.registry.AllSchemas(ctx)
+	all, err := c.registry.AllSchemas(ctx)
+
+	return all, err == nil && len(all) > 0
 }
 
+// subjectSummaries reads the subjects' latest version and version count.
+// Many subjects (a type filter over all) are read with one GET /schemas;
+// a page, and registries without that endpoint, use two requests per
+// subject, in parallel.
 func (c *Client) subjectSummaries(ctx context.Context, names []string) map[string]*SubjectSummary {
 	out := make(map[string]*SubjectSummary, len(names))
 
-	if all, err := c.allSchemas(ctx, len(names)); err == nil && len(all) > 0 {
+	if all, ok := c.allSchemas(ctx, len(names)); ok {
 		for _, s := range all {
 			sum := out[s.Subject]
 			if sum == nil {

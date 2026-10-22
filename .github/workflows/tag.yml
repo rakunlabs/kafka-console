@@ -16,7 +16,8 @@ jobs:
       - name: Install Go
         uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          go-version: stable
+          check-latest: true
       - name: Unshallow
         run: git fetch --prune --unshallow
 

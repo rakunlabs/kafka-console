@@ -1,67 +1,15 @@
 package server
 
 import (
-	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
-	"net/url"
 	"strconv"
-	"strings"
 
 	"github.com/rakunlabs/ada"
 
 	"github.com/rakunlabs/kafka-console/internal/kafka"
 	"github.com/rakunlabs/kafka-console/internal/script"
 )
-
-func partitions(v string) ([]int32, error) {
-	if v == "" {
-		return nil, nil
-	}
-
-	var out []int32
-
-	for _, p := range strings.Split(v, ",") {
-		n, err := strconv.ParseInt(strings.TrimSpace(p), 10, 32)
-		if err != nil {
-			return nil, ada.NewHTTPError(http.StatusBadRequest, "partitions must be comma separated numbers")
-		}
-
-		out = append(out, int32(n))
-	}
-
-	return out, nil
-}
-
-// resumeAt parses "after": partition:offset pairs, comma separated, from a
-// previous read's next. An empty value but a present parameter means the
-// read is over (nothing left anywhere).
-func resumeAt(q url.Values) (map[int32]int64, error) {
-	if !q.Has("after") {
-		return nil, nil
-	}
-
-	out := map[int32]int64{}
-
-	for pair := range strings.SplitSeq(q.Get("after"), ",") {
-		if pair = strings.TrimSpace(pair); pair == "" {
-			continue
-		}
-
-		p, o, ok := strings.Cut(pair, ":")
-		pn, errP := strconv.ParseInt(p, 10, 32)
-		on, errO := strconv.ParseInt(o, 10, 64)
-
-		if !ok || errP != nil || errO != nil {
-			return nil, ada.NewHTTPError(http.StatusBadRequest, "after must be partition:offset pairs, comma separated")
-		}
-
-		out[int32(pn)] = on
-	}
-
-	return out, nil
-}
 
 // handle runs fn with the request's cluster and replies with its result, or
 // 204 when the result is nil.
@@ -205,89 +153,50 @@ func (s *Server) tail(c *ada.Context) error {
 		return err
 	}
 
-	q := c.Request.URL.Query()
-
-	req := kafka.TailRequest{
-		Start:     q.Get("start"),
-		Offset:    queryInt(q.Get("offset")),
-		Timestamp: queryInt(q.Get("timestamp")),
-		Filter:    q.Get("filter"),
-		Search:    q.Get("q"),
-		Raw:       q.Get("raw") == "true",
-		As:        kafka.DecodeAs{Key: q.Get("key_as"), Value: q.Get("value_as")},
-	}
-
-	if req.Partitions, err = partitions(q.Get("partitions")); err != nil {
+	p, err := parseRead(c.Request.URL.Query(), []string{"newest", "oldest", "offset", "timestamp", "last"},
+		"offset", "timestamp", "limit")
+	if err != nil {
 		return err
 	}
 
-	limit := queryInt(q.Get("limit"))
+	req := kafka.TailRequest{
+		Start:      p.start,
+		Offset:     p.ints["offset"],
+		Timestamp:  p.ints["timestamp"],
+		Filter:     p.filter,
+		Search:     p.search,
+		Raw:        p.raw,
+		As:         p.as,
+		Partitions: p.partitions,
+	}
 
-	w := c.Response
-	rc := http.NewResponseController(w)
-
-	started := false
+	limit := p.ints["limit"]
+	out := newStream(c.Response, eventStream)
 	sent := int64(0)
 
-	start := func() {
-		if started {
-			return
-		}
-
-		started = true
-
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("X-Accel-Buffering", "no")
-		w.WriteHeader(http.StatusOK)
-	}
-
-	write := func(event string, v any) bool {
-		start()
-
-		b, err := json.Marshal(v)
-		if err != nil {
-			return false
-		}
-
-		if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, b); err != nil {
-			return false
-		}
-
-		return rc.Flush() == nil
-	}
-
-	// Headers go out before the first poll so the browser knows the stream
-	// is open even when the topic is quiet.
 	err = cl.Tail(c.Request.Context(), c.Request.PathValue("topic"), req, func(e kafka.TailEvent) bool {
 		if e.Message != nil {
 			sent++
 		}
 
-		if !write("message", e) {
+		if !out.event("message", e) {
 			return false
 		}
 
 		return limit <= 0 || sent < limit
 	})
 	if err != nil {
-		if !started {
-			return fail(err)
-		}
-
-		write("error", map[string]string{"error": err.Error()})
-
-		return nil
+		return out.fail(err, func() { out.event("error", map[string]string{"error": err.Error()}) })
 	}
 
-	write("end", map[string]int64{"sent": sent})
+	out.event("end", map[string]int64{"sent": sent})
 
 	return nil
 }
 
 // replay streams newline-delimited JSON events: a plan, progress and a final
-// done. Closing the connection stops the replay; records already handed to
-// the producer are still written.
+// done. Closing the connection stops the replay; records still buffered in
+// the producer may or may not be written, as with any cancelled produce.
 func (s *Server) replay(c *ada.Context) error {
 	cl, err := s.client(c)
 	if err != nil {
@@ -299,33 +208,15 @@ func (s *Server) replay(c *ada.Context) error {
 		return err
 	}
 
-	w := c.Response
-	rc := http.NewResponseController(w)
-	enc := json.NewEncoder(w)
-	started := false
+	out := newStream(c.Response, ndjson)
 
 	err = cl.Replay(c.Request.Context(), c.Request.PathValue("topic"), req, func(e kafka.ReplayEvent) bool {
-		if !started {
-			started = true
-
-			w.Header().Set("Content-Type", "application/x-ndjson")
-			w.Header().Set("Cache-Control", "no-cache")
-			w.Header().Set("X-Accel-Buffering", "no")
-			w.WriteHeader(http.StatusOK)
-		}
-
-		if enc.Encode(e) != nil {
-			return false
-		}
-
-		return rc.Flush() == nil
+		return out.line(e)
 	})
 	if err != nil {
-		if !started {
-			return fail(err)
-		}
-
-		_ = enc.Encode(kafka.ReplayEvent{Type: "done", StoppedBy: "error", FirstError: err.Error()})
+		return out.fail(err, func() {
+			out.line(kafka.ReplayEvent{Type: "done", StoppedBy: "error", FirstError: err.Error()})
+		})
 	}
 
 	return nil

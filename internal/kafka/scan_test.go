@@ -9,6 +9,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/twmb/franz-go/pkg/kgo"
+
+	"github.com/rakunlabs/kafka-console/internal/config"
 )
 
 func TestCursorSizesRoundsToNeed(t *testing.T) {
@@ -104,11 +106,11 @@ func TestRenderTruncatedTextStaysText(t *testing.T) {
 }
 
 func TestStreamsAreBounded(t *testing.T) {
-	c := &Client{readers: newReaders()}
+	c := &Client{readers: newReaders(config.Limits{})}
 
 	var releases []func()
 
-	for range maxStreams {
+	for range defaultStreams {
 		release, err := c.stream()
 		if err != nil {
 			t.Fatalf("stream refused below the limit: %v", err)
@@ -129,8 +131,8 @@ func TestStreamsAreBounded(t *testing.T) {
 }
 
 func TestScanReaderWaitsForASlot(t *testing.T) {
-	c := &Client{readers: newReaders()}
-	for range maxReads {
+	c := &Client{readers: newReaders(config.Limits{})}
+	for range defaultReads {
 		c.readers.slots <- struct{}{}
 	}
 
@@ -139,6 +141,29 @@ func TestScanReaderWaitsForASlot(t *testing.T) {
 
 	if _, _, err := c.scanReader(ctx, "t"); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("got %v, want to wait until the context ends", err)
+	}
+}
+
+func TestMCPReadersHaveTheirOwnBoundedPool(t *testing.T) {
+	c := &Client{readers: newReaders(config.Limits{Reads: 1, MCPReads: 2})}
+	if cap(c.readers.slots) != 1 || cap(c.readers.mcp) != 2 {
+		t.Fatalf("pools sized %d and %d, want the configured 1 and 2", cap(c.readers.slots), cap(c.readers.mcp))
+	}
+
+	// MCP holding all of its slots leaves the console's free.
+	for range 2 {
+		c.readers.mcp <- struct{}{}
+	}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+	defer cancel()
+
+	if _, _, err := c.mcpReader(ctx, "t"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("MCP over its limit: %v, want to wait until the context ends", err)
+	}
+
+	if len(c.readers.slots) != 0 {
+		t.Fatal("an MCP read must not take a console slot")
 	}
 }
 
@@ -270,5 +295,83 @@ func TestConsumeContinues(t *testing.T) {
 		if got != 3 || res.StoppedBy != "cancelled" {
 			t.Fatalf("%s: stopped after %d, stopped_by %q", start, got, res.StoppedBy)
 		}
+	}
+}
+
+func TestConsumeTimeRange(t *testing.T) {
+	c := fakeCluster(t, map[string]int32{"timed": 2})
+
+	p, err := c.producer(true, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	base := time.Now().Add(-time.Hour).Truncate(time.Second)
+	for part := range int32(2) {
+		for i := range 30 {
+			rec := &kgo.Record{Topic: "timed", Partition: part, Timestamp: base.Add(time.Duration(i) * time.Second), Value: fmt.Appendf(nil, "n-%d", i)}
+			if err := p.ProduceSync(t.Context(), rec).FirstErr(); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	since := base.Add(10 * time.Second).UnixMilli()
+	until := base.Add(19 * time.Second).UnixMilli()
+
+	for _, req := range []ConsumeRequest{
+		{Start: "newest", Since: &since, Until: &until},
+		{Start: "oldest", Since: &since, Until: &until},
+		{Start: "timestamp", Timestamp: since, Until: &until},
+		{Start: "newest", Since: &since, Until: &until, Search: "n-1"},
+	} {
+		req.Limit = 1000
+
+		res, err := c.Consume(t.Context(), "timed", req)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// The search also matches n-1, which is outside the range.
+		if len(res.Messages) != 20 || res.StoppedBy != "end" {
+			t.Fatalf("%+v: %d messages, stopped_by %q, want 20", req, len(res.Messages), res.StoppedBy)
+		}
+
+		for _, m := range res.Messages {
+			if ms := m.Timestamp.UnixMilli(); ms < since || ms > until {
+				t.Fatalf("%+v: message at %v is outside the range", req, m.Timestamp)
+			}
+		}
+	}
+
+	bad := ConsumeRequest{Since: &until, Until: &since}
+	if _, err := c.Consume(t.Context(), "timed", bad); !errors.As(err, new(ErrInvalid)) {
+		t.Fatalf("reversed range: %v, want ErrInvalid", err)
+	}
+}
+
+func TestWindowEndsAccept(t *testing.T) {
+	w := windowEnds{0: 10}
+	ctrl := &kgo.Record{Partition: 0, Offset: 9, Attrs: kgo.RecordAttrs{}}
+
+	if keep, done := w.accept(&kgo.Record{Partition: 1, Offset: 0}); keep || done {
+		t.Fatal("a partition the read does not want must be skipped")
+	}
+
+	if keep, done := w.accept(&kgo.Record{Partition: 0, Offset: 5}); !keep || done {
+		t.Fatal("a record inside the window must be visited")
+	}
+
+	if keep, done := w.accept(ctrl); !keep || !done {
+		t.Fatal("the last offset must be visited and finish the window")
+	}
+
+	if _, ok := w[0]; ok {
+		t.Fatal("a finished window must be forgotten")
+	}
+
+	w[0] = 10
+	if keep, done := w.accept(&kgo.Record{Partition: 0, Offset: 12}); keep || !done {
+		t.Fatal("a record past the end must finish the window without a visit")
 	}
 }

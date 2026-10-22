@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -63,7 +64,7 @@ func TestMCPPolicyAndProtocol(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, tool := range listed.Tools {
-		if tool.Name == "delete_topic" || tool.Name == "list_acls" {
+		if tool.Name == "delete_topic" || tool.Name == "list_acls" || tool.Name == "transform_messages" {
 			t.Fatalf("forbidden tool advertised: %s", tool.Name)
 		}
 	}
@@ -346,5 +347,38 @@ func TestMCPFeaturesWithholdTools(t *testing.T) {
 		if !seen[name] {
 			t.Errorf("%s missing while its feature is on", name)
 		}
+	}
+}
+
+func TestMCPAuditUserComesFromTheConsole(t *testing.T) {
+	_, local, _ := net.ParseCIDR("127.0.0.1/32")
+
+	var got string
+	handler := mcpAuditUser("X-User", []*net.IPNet{local},
+		http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { got = r.Header.Get(mcpUserHeader) }))
+
+	for _, tc := range []struct {
+		name, remote, user, forged, want string
+	}{
+		{"a trusted proxy names the user", "127.0.0.1:1", "ada", "", "ada"},
+		{"an untrusted caller is marked unverified", "10.0.0.1:1", "ada", "", "unverified:ada"},
+		{"a client cannot set the internal header", "10.0.0.1:1", "", "admin", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/mcp/local", nil)
+			r.RemoteAddr = tc.remote
+			if tc.user != "" {
+				r.Header.Set("X-User", tc.user)
+			}
+			if tc.forged != "" {
+				r.Header.Set(mcpUserHeader, tc.forged)
+			}
+
+			handler.ServeHTTP(httptest.NewRecorder(), r)
+
+			if got != tc.want {
+				t.Fatalf("audit user %q, want %q", got, tc.want)
+			}
+		})
 	}
 }

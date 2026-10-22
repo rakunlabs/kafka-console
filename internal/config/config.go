@@ -36,6 +36,7 @@ type Config struct {
 	Server   Server              `cfg:"server"`
 	Features Features            `cfg:"features"`
 	Cache    Cache               `cfg:"cache"`
+	Limits   Limits              `cfg:"limits"`
 	Clusters map[string]*Cluster `cfg:"clusters"`
 	MCP      MCP                 `cfg:"mcp"`
 }
@@ -83,6 +84,77 @@ func (c *Config) CacheFor(name string) Cache {
 	}
 
 	return out
+}
+
+// Limits bounds what one cluster's connection runs at once, so a busy
+// console or an MCP agent cannot open unbounded connections to its brokers.
+// A cluster's own limits take precedence over these; 0 keeps the default.
+type Limits struct {
+	// Reads is how many reads (browse, search, resend) run at once; more
+	// wait their turn.
+	Reads int `cfg:"reads" default:"16"`
+	// IdleReaders is how many readers are kept connected between reads, so
+	// the next one skips the dial, TLS and SASL handshake.
+	IdleReaders int `cfg:"idle_readers" default:"4"`
+	// Streams is how many live tails and replays run at once; past it a
+	// new one is refused rather than queued behind ones that may not end.
+	Streams int `cfg:"streams" default:"32"`
+	// MCPReads is how many readers MCP tools hold at once, apart from the
+	// console's own reads so an agent cannot starve the UI. A search with
+	// parallelism takes one per reader; more wait until the call's timeout.
+	MCPReads int `cfg:"mcp_reads" default:"8"`
+}
+
+// LimitsFor returns the limits for a cluster: its own where set, the global
+// ones otherwise.
+func (c *Config) LimitsFor(name string) Limits {
+	out := c.Limits
+
+	cl, ok := c.Clusters[name]
+	if !ok || cl == nil {
+		return out
+	}
+
+	pick := func(global, own int) int {
+		if own > 0 {
+			return own
+		}
+
+		return global
+	}
+
+	out.Reads = pick(out.Reads, cl.Limits.Reads)
+	out.IdleReaders = pick(out.IdleReaders, cl.Limits.IdleReaders)
+	out.Streams = pick(out.Streams, cl.Limits.Streams)
+	out.MCPReads = pick(out.MCPReads, cl.Limits.MCPReads)
+
+	return out
+}
+
+func (l Limits) validate(at string) error {
+	for name, v := range map[string]int{
+		"reads": l.Reads, "idle_readers": l.IdleReaders, "streams": l.Streams, "mcp_reads": l.MCPReads,
+	} {
+		if v < 0 {
+			return fmt.Errorf("%s.%s must not be negative", at, name)
+		}
+	}
+
+	return nil
+}
+
+// ClusterLimits overrides Limits for one cluster; unset fields keep the
+// global value. It is Limits without the defaults.
+type ClusterLimits struct {
+	Reads       int `cfg:"reads"`
+	IdleReaders int `cfg:"idle_readers"`
+	Streams     int `cfg:"streams"`
+	MCPReads    int `cfg:"mcp_reads"`
+}
+
+func (l ClusterLimits) validate(at string) error {
+	// Field by field rather than a conversion, so the two types may differ.
+	return Limits{Reads: l.Reads, IdleReaders: l.IdleReaders, Streams: l.Streams, MCPReads: l.MCPReads}.validate(at) //nolint:staticcheck // see above
 }
 
 // Features switches parts of the console off with false; unset means on. A
@@ -185,6 +257,9 @@ type Server struct {
 	// believed on requests coming straight from one of them; others are
 	// logged with the connection's address and as an unverified user.
 	TrustedProxies []string `cfg:"trusted_proxies"`
+	// IdleTimeout closes keep-alive connections idle this long. There is no
+	// write timeout: message reads, tails and replays stream for minutes.
+	IdleTimeout time.Duration `cfg:"idle_timeout" default:"2m"`
 }
 
 type Cluster struct {
@@ -210,6 +285,8 @@ type Cluster struct {
 	Features Features `cfg:"features"`
 	// Cache overrides the global cache settings for this cluster.
 	Cache ClusterCache `cfg:"cache"`
+	// Limits override the global limits for this cluster.
+	Limits ClusterLimits `cfg:"limits"`
 
 	TLS  *TLS  `cfg:"tls"`
 	SASL *SASL `cfg:"sasl"`
@@ -413,9 +490,17 @@ func (c *Config) validate() error {
 		return fmt.Errorf("no clusters configured; add at least one under clusters")
 	}
 
+	if err := c.Limits.validate("limits"); err != nil {
+		return err
+	}
+
 	for name, cluster := range c.Clusters {
 		if cluster == nil || len(cluster.Brokers) == 0 {
 			return fmt.Errorf("cluster %q has no brokers", name)
+		}
+
+		if err := cluster.Limits.validate("clusters." + name + ".limits"); err != nil {
+			return err
 		}
 
 		if cluster.Color != "" {

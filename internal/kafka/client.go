@@ -48,9 +48,20 @@ type Client struct {
 	diskUsage *memo[*DiskUsage]
 }
 
-func New(name string, cfg *config.Cluster, cache config.Cache) (*Client, error) {
+// Settings are the console-wide settings a cluster's connection uses.
+type Settings struct {
+	Cache  config.Cache
+	Limits config.Limits
+}
+
+func New(name string, cfg *config.Cluster, settings Settings) (*Client, error) {
+	cache := settings.Cache
+
 	options := []kgo.Opt{
 		kgo.SeedBrokers(cfg.Brokers...),
+		// Named, so broker logs and quotas tell the console's connections
+		// apart from every other client using the default name.
+		kgo.ClientID(config.ServiceName),
 		kgo.WithHooks(listenerHook{cluster: name, tls: cfg.TLS.On()}),
 	}
 
@@ -87,7 +98,7 @@ func New(name string, cfg *config.Cluster, cache config.Cache) (*Client, error) 
 		options: options,
 		client:  client,
 		admin:   kadm.NewClient(client),
-		readers: newReaders(),
+		readers: newReaders(settings.Limits),
 
 		overviews: newMemo[*Overview](cache.Overview, cache.Refresh, readTimeout),
 		diskUsage: newMemo[*DiskUsage](cache.DiskUsage, cache.Refresh, readTimeout),
@@ -259,18 +270,9 @@ func compressionCodec(name string) kgo.CompressionCodec {
 	return kgo.NoCompression()
 }
 
-// newReader opens a short-lived consumer for reading a topic by offset ranges.
-func (c *Client) newReader(topic string) (*kgo.Client, error) {
-	opts := append(append([]kgo.Opt(nil), c.options...),
-		kgo.ConsumePartitions(map[string]map[int32]kgo.Offset{topic: {}}),
-		kgo.FetchMaxWait(time.Second),
-	)
-
-	return kgo.NewClient(opts...)
-}
-
-// newScanReader is newReader for scans that stop at a known end offset. It
-// also returns transaction markers: they take offsets but carry no data, so
+// newScanReader opens a consumer for scans that stop at a known end offset.
+// It consumes nothing until a scan adds partitions. It also returns
+// transaction markers: they take offsets but carry no data, so
 // a partition whose last offset is a commit marker would otherwise never
 // deliver its end and the scan would wait out its empty polls. Callers skip
 // them with isControl.
@@ -284,37 +286,48 @@ func (c *Client) newScanReader() (*kgo.Client, error) {
 	return kgo.NewClient(opts...)
 }
 
+// Defaults for config.Limits fields left at 0, as in tests that build a
+// Client without a loaded configuration.
 const (
-	// maxReads bounds the reads (browse, search, resend) running at once
-	// per cluster; more wait their turn instead of each opening its own
-	// connections to every broker.
-	maxReads = 16
-	// idleReaders is how many scan readers are kept connected between
-	// requests. A new one costs a dial, TLS and SASL to each broker it
-	// reads from; a kept one is ready at once.
-	idleReaders = 4
-	// maxStreams bounds live tails and replays per cluster. Each holds a
-	// consumer open for as long as it runs, so past the limit a new one is
-	// refused at once rather than queued behind streams that may never end.
-	maxStreams = 32
+	defaultReads       = 16
+	defaultIdleReaders = 4
+	defaultStreams     = 32
+	defaultMCPReads    = 8
 )
 
 // ErrBusy refuses work when a cluster already runs as much of it as allowed.
 var ErrBusy = errors.New("too many live tails and replays are running on this cluster; stop one and retry")
 
-// readers hands out scan readers, at most maxReads at a time, reusing idle
-// ones. A reader holds no partitions while idle: scan removes what it adds.
+// readers hands out scan readers, at most limits.Reads at a time, reusing
+// idle ones. A reader holds no partitions while idle: scan removes what it
+// adds. MCP tools take theirs from a pool of their own (mcp), so an agent
+// cannot hold every slot the UI reads with.
 type readers struct {
 	slots   chan struct{}
+	mcp     chan struct{}
 	streams chan struct{}
+	keep    int
 
 	mu     sync.Mutex
 	idle   []*kgo.Client
 	closed bool
 }
 
-func newReaders() *readers {
-	return &readers{slots: make(chan struct{}, maxReads), streams: make(chan struct{}, maxStreams)}
+func newReaders(l config.Limits) *readers {
+	or := func(v, def int) int {
+		if v > 0 {
+			return v
+		}
+
+		return def
+	}
+
+	return &readers{
+		slots:   make(chan struct{}, or(l.Reads, defaultReads)),
+		mcp:     make(chan struct{}, or(l.MCPReads, defaultMCPReads)),
+		streams: make(chan struct{}, or(l.Streams, defaultStreams)),
+		keep:    or(l.IdleReaders, defaultIdleReaders),
+	}
 }
 
 // stream takes a place for a long-running consumer, or fails with ErrBusy.
@@ -331,10 +344,31 @@ func (c *Client) stream() (release func(), err error) {
 // back; pass that function whether the reader is still sound (false after an
 // error, so a reader in an unknown state is closed, not reused).
 func (c *Client) scanReader(ctx context.Context, topic string) (*kgo.Client, func(ok bool), error) {
+	return c.lendReader(ctx, c.readers.slots, topic)
+}
+
+// mcpReader is scanReader for MCP tools: from their own pool of slots, and
+// given back through a release that cannot report whether the reader is
+// sound, so it is only kept when the tool left it consuming nothing.
+func (c *Client) mcpReader(ctx context.Context, topic string) (*kgo.Client, func(), error) {
+	cl, done, err := c.lendReader(ctx, c.readers.mcp, topic)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var once sync.Once
+
+	return cl, func() {
+		once.Do(func() { done(len(cl.GetConsumeTopics()) == 0) })
+	}, nil
+}
+
+// lendReader takes a slot from slots, then an idle reader or a new one.
+func (c *Client) lendReader(ctx context.Context, slots chan struct{}, topic string) (*kgo.Client, func(ok bool), error) {
 	r := c.readers
 
 	select {
-	case r.slots <- struct{}{}:
+	case slots <- struct{}{}:
 	case <-ctx.Done():
 		return nil, nil, ctx.Err()
 	}
@@ -349,14 +383,14 @@ func (c *Client) scanReader(ctx context.Context, topic string) (*kgo.Client, fun
 	if cl == nil {
 		var err error
 		if cl, err = c.newScanReader(); err != nil {
-			<-r.slots
+			<-slots
 
 			return nil, nil, err
 		}
 	}
 
 	done := func(ok bool) {
-		defer func() { <-r.slots }()
+		defer func() { <-slots }()
 
 		// Forget the topic, so a kept reader does not keep refreshing
 		// metadata for every topic it was ever lent for.
@@ -365,7 +399,7 @@ func (c *Client) scanReader(ctx context.Context, topic string) (*kgo.Client, fun
 		}
 
 		r.mu.Lock()
-		keep := ok && !r.closed && len(r.idle) < idleReaders
+		keep := ok && !r.closed && len(r.idle) < r.keep
 		if keep {
 			r.idle = append(r.idle, cl)
 		}
@@ -391,6 +425,51 @@ func (r *readers) close() {
 }
 
 func isControl(rec *kgo.Record) bool { return rec.Attrs.IsControl() }
+
+// windowEnds tracks the exclusive end offset of each partition a read has
+// yet to finish.
+type windowEnds map[int32]int64
+
+// accept reports whether rec is a record of an unfinished window to visit,
+// and whether it finished its partition's window. Records past the end,
+// buffered from before, and transaction markers are not visited, though a
+// marker can finish a window.
+func (w windowEnds) accept(rec *kgo.Record) (visit, finished bool) {
+	end, ok := w[rec.Partition]
+	if !ok {
+		return false, false
+	}
+
+	if rec.Offset >= end {
+		delete(w, rec.Partition)
+
+		return false, true
+	}
+
+	if rec.Offset == end-1 {
+		delete(w, rec.Partition)
+
+		finished = true
+	}
+
+	return !isControl(rec), finished
+}
+
+// produceInOrder produces records and returns each one's result at its
+// index in records; ProduceSync returns them in completion order.
+func produceInOrder(ctx context.Context, producer *kgo.Client, records []*kgo.Record) []kgo.ProduceResult {
+	at := make(map[*kgo.Record]int, len(records))
+	for i, rec := range records {
+		at[rec] = i
+	}
+
+	out := make([]kgo.ProduceResult, len(records))
+	for _, r := range producer.ProduceSync(ctx, records...) {
+		out[at[r.Record]] = r
+	}
+
+	return out
+}
 
 func tlsConfig(s *config.TLS) (*tls.Config, error) {
 	cfg, err := tlscfg.New(

@@ -25,17 +25,17 @@ type Broker struct {
 }
 
 type Overview struct {
-	Cluster          string   `json:"cluster"`
-	ClusterID        string   `json:"cluster_id"`
-	Brokers          []Broker `json:"brokers"`
-	Controller       int32    `json:"controller"`
-	Topics           int      `json:"topics"`
-	InternalTopics   int      `json:"internal_topics"`
-	Partitions       int      `json:"partitions"`
-	UnderReplicated  int      `json:"under_replicated"`
-	OfflinePartitons int      `json:"offline_partitions"`
-	Groups           int      `json:"groups"`
-	HasRegistry      bool     `json:"has_registry"`
+	Cluster           string   `json:"cluster"`
+	ClusterID         string   `json:"cluster_id"`
+	Brokers           []Broker `json:"brokers"`
+	Controller        int32    `json:"controller"`
+	Topics            int      `json:"topics"`
+	InternalTopics    int      `json:"internal_topics"`
+	Partitions        int      `json:"partitions"`
+	UnderReplicated   int      `json:"under_replicated"`
+	OfflinePartitions int      `json:"offline_partitions"`
+	Groups            int      `json:"groups"`
+	HasRegistry       bool     `json:"has_registry"`
 	// Problems lists only the topics with an unhealthy partition, sorted by
 	// name, so the payload stays small however many topics the cluster has.
 	// Partitions has one character per partition in id order: "o" ok,
@@ -185,7 +185,7 @@ func (o *Overview) countTopics(meta kadm.Metadata, index map[int32]int) {
 			}
 
 			if p.Leader < 0 {
-				o.OfflinePartitons++
+				o.OfflinePartitions++
 			}
 
 			if len(p.ISR) < len(p.Replicas) {
@@ -538,13 +538,15 @@ func (c *Client) CreateTopic(ctx context.Context, req CreateTopicRequest) error 
 		req.ReplicationFactor = -1
 	}
 
+	// kadm returns the response's own error as err; its ErrMessage says
+	// why, e.g. "replication factor larger than available brokers".
 	resp, err := c.admin.CreateTopic(ctx, req.Partitions, req.ReplicationFactor, req.Configs, req.Name)
 	if err != nil {
-		return fmt.Errorf("create topic; %w", err)
-	}
+		if resp.ErrMessage != "" {
+			return fmt.Errorf("create topic; %w: %s", err, resp.ErrMessage)
+		}
 
-	if resp.Err != nil {
-		return fmt.Errorf("create topic; %w %s", resp.Err, resp.ErrMessage)
+		return fmt.Errorf("create topic; %w", err)
 	}
 
 	return nil
@@ -1017,13 +1019,8 @@ func (c *Client) DeleteGroup(ctx context.Context, name string) error {
 		return err
 	}
 
-	resp, err := c.admin.DeleteGroup(ctx, name)
-	if err != nil {
+	if _, err := c.admin.DeleteGroup(ctx, name); err != nil {
 		return fmt.Errorf("delete group; %w", err)
-	}
-
-	if resp.Err != nil {
-		return fmt.Errorf("delete group; %w", resp.Err)
 	}
 
 	return nil
@@ -1085,7 +1082,14 @@ func (c *Client) ResetOffsets(ctx context.Context, group string, req ResetReques
 		return nil, fmt.Errorf("describe group; %w", err)
 	}
 
-	if g, ok := described[group]; ok && !req.DryRun {
+	// Committing to a group that does not exist would create it; a typo in
+	// its name must not. New groups go through CreateGroup.
+	g, ok := described[group]
+	if !ok || errors.Is(g.Err, kerr.GroupIDNotFound) || g.Err == nil && g.State == "Dead" {
+		return nil, fmt.Errorf("group %q; %w", group, ErrNotFound)
+	}
+
+	if !req.DryRun {
 		// A failed describe has no members listed; that is not "idle".
 		if g.Err != nil {
 			return nil, fmt.Errorf("describe group; %w", g.Err)
@@ -1398,7 +1402,10 @@ func (c *Client) commitFirstOffsets(ctx context.Context, req CreateGroupRequest)
 			return nil, ErrInvalid{fmt.Errorf("topic %q has no partition %d", req.Topic, po.Partition)}
 		}
 
-		e, _ := ends.Lookup(req.Topic, po.Partition)
+		e, ok := ends.Lookup(req.Topic, po.Partition)
+		if !ok || e.Err != nil {
+			return nil, fmt.Errorf("end offset of partition %d unavailable", po.Partition)
+		}
 
 		if po.Offset < s.Offset || po.Offset > e.Offset {
 			return nil, ErrInvalid{fmt.Errorf("partition %d: offset %d is outside %d–%d", po.Partition, po.Offset, s.Offset, e.Offset)}

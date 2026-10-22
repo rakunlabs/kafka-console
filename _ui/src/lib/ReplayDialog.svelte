@@ -20,7 +20,7 @@
     cluster: Cluster
     topic: string
     partitions: number[]
-    seed: { partition: string; start: string; offset: number; timestamp: string; search: string; filter: string }
+    seed: { partition: string; start: string; offset: number; since: string; until: string; search: string; filter: string }
     open: boolean
   } = $props()
 
@@ -61,9 +61,9 @@
   $effect(() => {
     if (open && !wasOpen) {
       from = seed.start === 'offset' ? { type: 'offset', offset: seed.offset, timestamp: '' }
-        : seed.start === 'timestamp' && seed.timestamp ? { type: 'timestamp', offset: 0, timestamp: seed.timestamp }
+        : seed.since ? { type: 'timestamp', offset: 0, timestamp: seed.since }
         : { type: 'oldest', offset: 0, timestamp: '' }
-      to = { type: 'newest', offset: 0, timestamp: '' }
+      to = seed.until ? { type: 'timestamp', offset: 0, timestamp: seed.until } : { type: 'newest', offset: 0, timestamp: '' }
       partition = seed.partition
       search = seed.search
       filter = seed.filter

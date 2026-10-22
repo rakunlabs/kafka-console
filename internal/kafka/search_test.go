@@ -1,6 +1,8 @@
 package kafka
 
 import (
+	"bytes"
+	"strings"
 	"testing"
 
 	"github.com/twmb/franz-go/pkg/kgo"
@@ -39,5 +41,21 @@ func TestTextMatch(t *testing.T) {
 				t.Fatalf("textMatch(%q) = %v, want %v", tc.q, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestContainsFoldMatchesLowerContains(t *testing.T) {
+	texts := []string{"", "Order FAILED at 10:00", `{"status":"Failed"}`, "ğüşİÖç ŞEHİR", "abc", "ÄBC äbc", "x"}
+	needles := []string{"failed", "status", "şehir", "äbc", "abcd", "x", "ç", "i̇"}
+
+	for _, text := range texts {
+		for _, needle := range needles {
+			lower := []byte(strings.ToLower(needle))
+			want := bytes.Contains(bytes.ToLower([]byte(text)), lower)
+
+			if got := containsFold([]byte(text), lower); got != want {
+				t.Errorf("containsFold(%q, %q) = %v, want %v", text, needle, got, want)
+			}
+		}
 	}
 }

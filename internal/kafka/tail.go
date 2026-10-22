@@ -4,18 +4,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
+	"github.com/twmb/franz-go/pkg/kerr"
 	"github.com/twmb/franz-go/pkg/kgo"
-
-	"github.com/rakunlabs/kafka-console/internal/script"
 )
 
 // TailRequest follows a topic from now on, or from a chosen start.
 type TailRequest struct {
 	Partitions []int32
-	// Start is newest (only new messages), oldest, offset or timestamp.
+	// Start is newest (only new messages), oldest, offset, timestamp or last
+	// (the last Offset records of each partition, then new ones).
 	Start     string
 	Offset    int64
 	Timestamp int64
@@ -31,14 +30,17 @@ type TailEvent struct {
 	Scanned int64    `json:"scanned"`
 	Matched int64    `json:"matched"`
 	Error   string   `json:"error,omitempty"`
+	// ScriptErrors counts records the filter failed on; FirstError says why.
+	ScriptErrors int64  `json:"script_errors,omitempty"`
+	FirstError   string `json:"first_error,omitempty"`
 }
 
 const (
 	tailBatchCap      = 200
 	tailProgressEvery = time.Second
-	// tailScriptBudget bounds a single filter call so a runaway script cannot
-	// stall a stream that otherwise never ends.
-	tailScriptBudget = 2 * time.Second
+	// tailErrorPause spaces fetch errors that come back at once, such as a
+	// deleted topic's, so a tail does not spin reporting them.
+	tailErrorPause = time.Second
 )
 
 // Tail streams records to emit until ctx ends or emit returns false.
@@ -47,14 +49,9 @@ func (c *Client) Tail(ctx context.Context, topic string, req TailRequest, emit f
 		return err
 	}
 
-	var filter *script.Script
-	if strings.TrimSpace(req.Filter) != "" {
-		var err error
-
-		filter, err = script.Compile(req.Filter, filterParameters...)
-		if err != nil {
-			return ErrInvalid{err}
-		}
+	filter, err := compileFilter(req.Filter)
+	if err != nil {
+		return err
 	}
 
 	release, err := c.stream()
@@ -83,7 +80,9 @@ func (c *Client) Tail(ctx context.Context, topic string, req TailRequest, emit f
 	}
 	defer reader.Close()
 
-	var scanned, matched int64
+	var scanned, matched, scriptErrors int64
+
+	firstError := ""
 
 	lastProgress := time.Now()
 
@@ -99,6 +98,14 @@ func (c *Client) Tail(ctx context.Context, topic string, req TailRequest, emit f
 		if err := fetches.Err0(); err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
 			if !emit(TailEvent{Scanned: scanned, Matched: matched, Error: err.Error()}) {
 				return nil
+			}
+
+			if fetches.NumRecords() == 0 {
+				select {
+				case <-ctx.Done():
+					return nil
+				case <-time.After(tailErrorPause):
+				}
 			}
 		}
 
@@ -118,15 +125,17 @@ func (c *Client) Tail(ctx context.Context, topic string, req TailRequest, emit f
 			}
 
 			if filter != nil {
-				fctx, fcancel := context.WithTimeout(ctx, tailScriptBudget)
-				guard := script.Guard(fctx, filter, "filter timed out")
-				ok, err := filter.Call(filterArguments(filter, rec, d)...)
+				ok, err := evalFilter(ctx, filter, rec, d)
+				if err != nil {
+					scriptErrors++
+					if firstError == "" {
+						firstError = err.Error()
+					}
 
-				guard()
-				fcancel()
-				filter.Close()
+					return
+				}
 
-				if err != nil || !ok {
+				if !ok {
 					return
 				}
 			}
@@ -134,7 +143,7 @@ func (c *Client) Tail(ctx context.Context, topic string, req TailRequest, emit f
 			matched++
 
 			m := render(rec, d, defaultValueCutoff)
-			if !emit(TailEvent{Message: &m, Scanned: scanned, Matched: matched}) {
+			if !emit(TailEvent{Message: &m, Scanned: scanned, Matched: matched, ScriptErrors: scriptErrors, FirstError: firstError}) {
 				stop = true
 			}
 		})
@@ -146,7 +155,7 @@ func (c *Client) Tail(ctx context.Context, topic string, req TailRequest, emit f
 		if time.Since(lastProgress) >= tailProgressEvery {
 			lastProgress = time.Now()
 
-			if !emit(TailEvent{Scanned: scanned, Matched: matched}) {
+			if !emit(TailEvent{Scanned: scanned, Matched: matched, ScriptErrors: scriptErrors, FirstError: firstError}) {
 				return nil
 			}
 		}
@@ -156,7 +165,7 @@ func (c *Client) Tail(ctx context.Context, topic string, req TailRequest, emit f
 func (c *Client) tailOffsets(ctx context.Context, topic string, req TailRequest) (map[int32]kgo.Offset, error) {
 	ends, err := c.admin.ListEndOffsets(ctx, topic)
 	if err != nil {
-		return nil, fmt.Errorf("list end offsets; %w", err)
+		return nil, fmt.Errorf("list end offsets; %w", accessErr(err))
 	}
 
 	wanted := map[int32]bool{}
@@ -188,6 +197,14 @@ func (c *Client) tailOffsets(ctx context.Context, topic string, req TailRequest)
 			default:
 				out[p] = kgo.NewOffset().At(o.Offset)
 			}
+		}
+	}
+
+	// Every partition failed: say why, a refused topic as refused rather
+	// than missing.
+	if len(out) == 0 {
+		if err := ends.Error(); err != nil && !errors.Is(err, kerr.UnknownTopicOrPartition) {
+			return nil, fmt.Errorf("topic %q; %w", topic, accessErr(err))
 		}
 	}
 

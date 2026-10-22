@@ -38,7 +38,7 @@
   <span class="faint">{fmt(list.total)}</span>
   <span class="spacer"></span>
   <RefreshStop loading={list.loading} onrefresh={() => list.load(true)} onstop={list.stop} />
-  <button class="primary" disabled={cluster.read_only} title={cluster.read_only ? 'This cluster is read-only' : ''} onclick={() => (creating = true)}><Plus size={14} />New group</button>
+  {#if !cluster.read_only}<button class="primary" onclick={() => (creating = true)}><Plus size={14} />New group</button>{/if}
 </div>
 
 <GroupTopicDialog {cluster} bind:open={creating} ondone={() => list.load()} />

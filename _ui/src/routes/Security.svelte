@@ -297,7 +297,7 @@
     <span class="faint">{aclRows.length}</span>
     <span class="spacer"></span>
     <button onclick={loadACLs} disabled={aclLoading}><RefreshCw size={14} class={aclLoading ? 'animate-spin' : ''} />Refresh</button>
-    <button class="primary" disabled={cluster.read_only} onclick={openACL}><Plus size={14} />Add ACL</button>
+    {#if !cluster.read_only}<button class="primary" onclick={openACL}><Plus size={14} />Add ACL</button>{/if}
   </div>
   {#if aclError}
     <div class="error">{aclError}</div>
@@ -324,7 +324,7 @@
               <td class="mono small">{a.operation}</td>
               <td><span class="badge {a.permission === 'ALLOW' ? 'ok' : 'danger'}">{a.permission}</span></td>
               <td class="actions">
-                <button class="ghost small danger" disabled={cluster.read_only} onclick={() => { aclDelete = a; aclDeleting = true }}>Delete</button>
+                {#if !cluster.read_only}<button class="ghost small danger" onclick={() => { aclDelete = a; aclDeleting = true }}>Delete</button>{/if}
               </td>
             </tr>
           {:else}
@@ -340,7 +340,7 @@
     <span class="faint">{users.length} users</span>
     <span class="spacer"></span>
     <button onclick={loadUsers} disabled={userLoading}><RefreshCw size={14} class={userLoading ? 'animate-spin' : ''} />Refresh</button>
-    <button class="primary" disabled={cluster.read_only} onclick={() => openUser()}><Plus size={14} />Create user</button>
+    {#if !cluster.read_only}<button class="primary" onclick={() => openUser()}><Plus size={14} />Create user</button>{/if}
   </div>
   {#if userError}
     <div class="error">{userError}</div>
@@ -354,8 +354,10 @@
               <td class="mono grow" title={u.name}>{u.name}</td>
               <td>{#each u.mechanisms as m (m)}<span class="badge">{m}</span> {/each}</td>
               <td class="actions">
-                <button class="ghost small" disabled={cluster.read_only} onclick={() => openUser(u)}>Change password</button>
-                <button class="ghost small danger" disabled={cluster.read_only} onclick={() => { userDelete = u.name; userDeleting = true }}>Delete</button>
+                {#if !cluster.read_only}
+                  <button class="ghost small" onclick={() => openUser(u)}>Change password</button>
+                  <button class="ghost small danger" onclick={() => { userDelete = u.name; userDeleting = true }}>Delete</button>
+                {/if}
               </td>
             </tr>
           {:else}
@@ -371,7 +373,7 @@
     <span class="faint">{quotas.length} entries</span>
     <span class="spacer"></span>
     <button onclick={loadQuotas} disabled={quotaLoading}><RefreshCw size={14} class={quotaLoading ? 'animate-spin' : ''} />Refresh</button>
-    <button class="primary" disabled={cluster.read_only} onclick={() => openQuota()}><Plus size={14} />Add quota</button>
+    {#if !cluster.read_only}<button class="primary" onclick={() => openQuota()}><Plus size={14} />Add quota</button>{/if}
   </div>
   {#if quotaError}
     <div class="error">{quotaError}</div>
@@ -385,8 +387,10 @@
               <td class="mono grow" title={entityLabel(q)}>{entityLabel(q)}</td>
               {#each quotaKeys as k (k.key)}<td class="num mono">{q.values[k.key] !== undefined ? fmt(q.values[k.key]) : '—'}</td>{/each}
               <td class="actions">
-                <button class="ghost small" disabled={cluster.read_only} onclick={() => openQuota(q)}>Edit</button>
-                <button class="ghost small danger" disabled={cluster.read_only || busy} onclick={() => { quotaDelete = q; quotaDeleting = true }}>Delete</button>
+                {#if !cluster.read_only}
+                  <button class="ghost small" onclick={() => openQuota(q)}>Edit</button>
+                  <button class="ghost small danger" disabled={busy} onclick={() => { quotaDelete = q; quotaDeleting = true }}>Delete</button>
+                {/if}
               </td>
             </tr>
           {:else}

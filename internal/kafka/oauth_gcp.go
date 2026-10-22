@@ -346,8 +346,9 @@ func (s *gcpTokenSource) do(req *http.Request, v any) error {
 		return err
 	}
 
+	// Token endpoint bodies can echo secrets; report only the status.
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return fmt.Errorf("status %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+		return fmt.Errorf("status %d", resp.StatusCode)
 	}
 
 	return json.Unmarshal(b, v)

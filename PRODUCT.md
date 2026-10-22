@@ -29,7 +29,7 @@ A self-hosted Kafka console that answers "what is in this topic, who is consumin
 
 - Cluster overview: brokers (leader/replica counts, version guess), controller, topic/partition counts, disk usage. Broker detail: log dirs, editable broker configs.
 - Topics: list (size, cleanup policy), detail (partitions, leader, replicas, ISR, offsets, size, config), create, delete, edit/reset configs, add partitions, delete records (truncate).
-- Messages: browse by partition, offset, timestamp, newest/oldest; key/value/headers; JSON pretty print; JS filter; live tail over SSE; JSON/CSV export.
+- Messages: browse by partition, offset, newest/oldest, time range (presets or custom from/to, any direction); search/filter reads stream until limit, end of range, Stop or 30 min, no scan cap; key/value/headers; JSON pretty print; JS filter; live tail over SSE; JSON/CSV export.
 - Schema Registry (optional per cluster): automatic Avro/Protobuf/JSON Schema decoding of Confluent-framed keys and values; subjects, versions, diff, create with compatibility check, compatibility levels, soft/hard delete.
 - Produce: key, value, headers, target partition, compression, base64 binary, or JSON encoded through a registry schema.
 - Edit & resend: load a full record into Produce; edit key/value/headers and target topic/partition, preserving binary/null data and original schema IDs/message types by default. Review changes before sending a new record; the original stays unchanged. `confirm_writes` clusters require typing the target topic; read-only clusters block writes. Byte-for-byte Resend remains separate.

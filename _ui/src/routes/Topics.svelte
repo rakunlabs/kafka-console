@@ -80,8 +80,8 @@
   <span class="faint">{fmt(list.total)}</span>
   <span class="spacer"></span>
   <RefreshStop loading={list.loading} onrefresh={() => list.load(true)} onstop={list.stop} />
-  {#if cluster.features.create_topic}
-    <button class="primary" disabled={cluster.read_only} onclick={() => {
+  {#if cluster.features.create_topic && !cluster.read_only}
+    <button class="primary" onclick={() => {
       form = { name: '', partitions: 3, replication_factor: 0, configs: '' }
       createError = ''
       creating = true

@@ -4,15 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/twmb/franz-go/pkg/kadm"
 	"github.com/twmb/franz-go/pkg/kgo"
-
-	"github.com/rakunlabs/kafka-console/internal/script"
 )
 
 const (
@@ -173,7 +170,7 @@ func (c *Client) ReplayPlan(ctx context.Context, topic string, req ReplayRequest
 
 	if req.To.Type == "timestamp" {
 		if toTime, err = c.admin.ListOffsetsAfterMilli(ctx, req.To.Timestamp+1, topic); err != nil {
-			return nil, fmt.Errorf("list offsets by time; %w", err)
+			return nil, fmt.Errorf("list offsets by time; %w", accessErr(err))
 		}
 	}
 
@@ -326,13 +323,9 @@ func (c *Client) Replay(ctx context.Context, topic string, req ReplayRequest, em
 		limit = maxReplay
 	}
 
-	var filter *script.Script
-	if strings.TrimSpace(req.Filter) != "" {
-		var err error
-
-		if filter, err = script.Compile(req.Filter, filterParameters...); err != nil {
-			return ErrInvalid{err}
-		}
+	filter, err := compileFilter(req.Filter)
+	if err != nil {
+		return err
 	}
 
 	plan, err := c.ReplayPlan(ctx, topic, req)
@@ -393,7 +386,7 @@ func (c *Client) Replay(ctx context.Context, topic string, req ReplayRequest, em
 	defer cancel()
 
 	offsets := make(map[int32]kgo.Offset, len(used))
-	active := make(map[int32]int64, len(used))
+	active := make(windowEnds, len(used))
 
 	for _, r := range plan {
 		if r.End > r.Start {
@@ -464,11 +457,6 @@ func (c *Client) Replay(ctx context.Context, topic string, req ReplayRequest, em
 		return emit(ev)
 	}
 
-	finish := func(rec *kgo.Record) {
-		delete(active, rec.Partition)
-		reader.PauseFetchPartitions(map[string][]int32{topic: {rec.Partition}})
-	}
-
 	visit := func(rec *kgo.Record) {
 		if stoppedBy != "" {
 			return
@@ -482,22 +470,12 @@ func (c *Client) Replay(ctx context.Context, topic string, req ReplayRequest, em
 			return
 		}
 
-		end, ok := active[rec.Partition]
-		if !ok {
-			return
+		keep, finished := active.accept(rec)
+		if finished {
+			reader.PauseFetchPartitions(map[string][]int32{topic: {rec.Partition}})
 		}
 
-		if rec.Offset >= end {
-			finish(rec)
-
-			return
-		}
-
-		if rec.Offset == end-1 {
-			finish(rec)
-		}
-
-		if isControl(rec) {
+		if !keep {
 			return
 		}
 
@@ -511,14 +489,7 @@ func (c *Client) Replay(ctx context.Context, topic string, req ReplayRequest, em
 			}
 
 			if filter != nil {
-				fctx, fcancel := context.WithTimeout(rctx, tailScriptBudget)
-				guard := script.Guard(fctx, filter, "filter timed out")
-				ok, err := filter.Call(filterArguments(filter, rec, d)...)
-
-				guard()
-				fcancel()
-				filter.Close()
-
+				ok, err := evalFilter(rctx, filter, rec, d)
 				if err != nil {
 					ev.ScriptErrors++
 					if ev.FirstError == "" {
@@ -754,14 +725,7 @@ func (c *Client) Import(ctx context.Context, topic string, req ImportRequest) ([
 	pctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
-	// Results arrive in completion order, not the order produced.
-	at := make(map[*kgo.Record]int, len(records))
-	for i, rec := range records {
-		at[rec] = i
-	}
-
-	for _, r := range producer.ProduceSync(pctx, records...) {
-		i := at[r.Record]
+	for i, r := range produceInOrder(pctx, producer, records) {
 		if r.Err != nil {
 			out[i] = ImportResult{Partition: -1, Offset: -1, Error: r.Err.Error()}
 

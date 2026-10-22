@@ -50,7 +50,7 @@ func restrictedCluster(t *testing.T) (console, admin *Client) {
 		c, err := New("test", &config.Cluster{
 			Brokers: fake.ListenAddrs(),
 			SASL:    &config.SASL{Mechanism: config.MechanismPlain, User: user, Password: user},
-		}, config.Cache{})
+		}, Settings{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -178,7 +178,7 @@ func TestReadsWithPartialAccess(t *testing.T) {
 	_, err = c.TopicConsumers(ctx, "secret")
 	check("topic consumers of a forbidden topic", err)
 
-	_, err = c.Consume(ctx, "open", ConsumeRequest{Start: "newest", Limit: 10, MaxScan: 100})
+	_, err = c.Consume(ctx, "open", ConsumeRequest{Start: "newest", Limit: 10})
 	check("consume open", err)
 
 	_, err = c.Broker(ctx, 0)
@@ -231,7 +231,7 @@ func TestForbiddenTopicIsRefusedQuickly(t *testing.T) {
 
 	for name, run := range map[string]func() error{
 		"consume": func() error {
-			_, err := c.Consume(ctx, "secret", ConsumeRequest{Start: "newest", Limit: 10, MaxScan: 100})
+			_, err := c.Consume(ctx, "secret", ConsumeRequest{Start: "newest", Limit: 10})
 			return err
 		},
 		"message": func() error {
@@ -267,4 +267,15 @@ func isDenied(err error) bool {
 
 	return errors.Is(err, ErrNoTopicAccess) || errors.As(err, &auth) ||
 		errors.Is(err, kerr.TopicAuthorizationFailed)
+}
+
+// A live tail of a topic the console may not read says so; "not found"
+// would send the user looking for a typo.
+func TestTailOfAForbiddenTopicIsRefused(t *testing.T) {
+	c, _ := restrictedCluster(t)
+
+	err := c.Tail(t.Context(), "secret", TailRequest{Start: "newest"}, func(TailEvent) bool { return false })
+	if !errors.Is(err, ErrNoTopicAccess) {
+		t.Fatalf("tail of a forbidden topic: %v, want no access", err)
+	}
 }

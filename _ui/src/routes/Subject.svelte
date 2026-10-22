@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { copyText } from '../lib/resource.svelte'
   import Pending from '../lib/Pending.svelte'
   import { api, type Cluster, type SubjectDetail } from '../lib/api'
   import { href, go, router } from '../lib/router.svelte'
@@ -116,9 +117,7 @@
     }
   }
 
-  function copy(text: string) {
-    navigator.clipboard?.writeText(text)
-  }
+  const copy = (text: string) => void copyText(text)
 
   // A subject named <topic>-value or <topic>-key likely belongs to that topic.
   const topic = $derived(name.match(/^(.+)-(value|key)$/)?.[1])
@@ -128,8 +127,10 @@
   <h1 class="crumbed"><a class="parent" href={href(cluster.name, 'schemas')}>Schema Registry</a><span class="sep" aria-hidden="true">/</span><span class="mono">{name}</span></h1>
   {#if current}<span class="badge">{current.type}</span>{/if}
   <span class="spacer"></span>
-  <button class="primary" disabled={cluster.read_only || !current} onclick={() => (adding = true)}><Plus size={14} />New version</button>
-  <button class="danger" disabled={cluster.read_only || !data} onclick={() => askDelete()}><Trash2 size={14} />Delete subject</button>
+  {#if !cluster.read_only}
+    <button class="primary" disabled={!current} onclick={() => (adding = true)}><Plus size={14} />New version</button>
+    <button class="danger" disabled={!data} onclick={() => askDelete()}><Trash2 size={14} />Delete subject</button>
+  {/if}
 </div>
 
 {#if error && !data}
@@ -187,7 +188,7 @@
           </select>
         </label>
         <button class="ghost small" onclick={() => copy(pretty(current.schema, current.type))}>Copy</button>
-        <button class="ghost small danger" disabled={cluster.read_only} onclick={() => askDelete(current.version)}>Delete version</button>
+        {#if !cluster.read_only}<button class="ghost small danger" onclick={() => askDelete(current.version)}>Delete version</button>{/if}
       </div>
 
       {#if current.references.length}

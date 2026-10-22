@@ -6,6 +6,7 @@
   import { fmt, bytes } from '../lib/format'
   import { href } from '../lib/router.svelte'
   import { cached, remember } from '../lib/cache'
+  import { copyText } from '../lib/resource.svelte'
   import { ArrowRight, RefreshCw, Check, Copy } from '@lucide/svelte'
 
   let { cluster }: { cluster: Cluster } = $props()
@@ -48,8 +49,8 @@
   load()
 
   let copied = $state(false)
-  function copyBootstrap() {
-    navigator.clipboard?.writeText(cluster.brokers.join(','))
+  async function copyBootstrap() {
+    if (!(await copyText(cluster.brokers.join(',')))) return
     copied = true
     setTimeout(() => (copied = false), 1200)
   }

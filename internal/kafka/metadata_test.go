@@ -23,7 +23,7 @@ func TestOverviewSurvivesTopicAuthFailure(t *testing.T) {
 	}
 	t.Cleanup(fake.Close)
 
-	c, err := New("test", &config.Cluster{Brokers: fake.ListenAddrs()}, config.Cache{})
+	c, err := New("test", &config.Cluster{Brokers: fake.ListenAddrs()}, Settings{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,5 +162,19 @@ func TestDeleteRecordsGuards(t *testing.T) {
 
 	if low(0) != 10 || low(1) != 10 {
 		t.Fatalf("after all: lows %d, %d", low(0), low(1))
+	}
+}
+
+func TestBrokerCountsWhatItHosts(t *testing.T) {
+	c := fakeCluster(t, map[string]int32{"a": 3, "b": 2})
+
+	b, err := c.Broker(t.Context(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// One broker leads and holds every partition.
+	if b.Leaders != 5 || b.Replicas != 5 {
+		t.Fatalf("broker hosts %d leaders, %d replicas; want 5 and 5", b.Leaders, b.Replicas)
 	}
 }

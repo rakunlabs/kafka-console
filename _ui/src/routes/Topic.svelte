@@ -51,7 +51,7 @@
     { id: 'partitions', label: 'Partitions', icon: Columns3 },
     { id: 'consumers', label: 'Consumers', icon: Users },
     { id: 'config', label: 'Config', icon: SlidersHorizontal },
-    { id: 'produce', label: 'Produce', icon: Send },
+    ...(cluster.read_only ? [] : [{ id: 'produce', label: 'Produce', icon: Send }]),
     ...(cluster.features.security ? [{ id: 'acl', label: 'ACL', icon: ShieldCheck }] : []),
     ...(cluster.docs ? [{ id: 'docs', label: 'Docs', icon: BookOpen }] : []),
   ])
@@ -211,7 +211,7 @@
 
   const compacted = $derived((data?.configs ?? []).some((c) => c.key === 'cleanup.policy' && c.value?.includes('compact') && !c.value?.includes('delete')))
   // The "⋯" menu would be empty when every management feature is off.
-  const hasManage = $derived(cluster.features.alter_topic || cluster.features.delete_records || cluster.features.delete_topic)
+  const hasManage = $derived(!cluster.read_only && (cluster.features.alter_topic || cluster.features.delete_records || cluster.features.delete_topic))
 
   // Delete
   let deleting = $state(false)
@@ -244,14 +244,14 @@
   <button onclick={load} disabled={loading}><RefreshCw size={14} class={loading ? 'animate-spin' : ''} />Refresh</button>
   {#snippet manage()}
   {#if cluster.features.alter_topic}
-    <button disabled={cluster.read_only || !data} onclick={() => {
+    <button disabled={!data} onclick={() => {
       total = (data?.partitions.length ?? 0) + 1
       growError = ''
       growing = true
     }}><Plus size={14} />Add partitions</button>
   {/if}
   {#if cluster.features.delete_records}
-    <button class="danger" disabled={cluster.read_only || !data || compacted}
+    <button class="danger" disabled={!data || compacted}
       title={compacted ? 'Records cannot be deleted from compact-only topics' : ''} onclick={() => {
       trunc = { strategy: 'all', offset: 0, timestamp: '', partitions: '' }
       truncError = ''
@@ -261,7 +261,7 @@
     }}><Eraser size={14} />Delete records…</button>
   {/if}
   {#if cluster.features.delete_topic}
-    <button class="danger" disabled={cluster.read_only || !data} onclick={() => {
+    <button class="danger" disabled={!data} onclick={() => {
       confirmName = ''
       deleteError = ''
       deleting = true
@@ -350,10 +350,10 @@
         Fill = messages relative to the busiest partition.
         {#if skew}<span class="text-warn">Partition {skew.id} holds {skew.pct}% of all messages; check the key distribution.</span>{/if}
       </span>
-      {#if cluster.features.alter_broker}
+      {#if cluster.features.alter_broker && !cluster.read_only}
         <span class="flex-1"></span>
-        <button disabled={cluster.read_only} onclick={() => (moving = true)}
-          title={cluster.read_only ? 'This cluster is read-only' : 'Move replicas between brokers, or balance them'}><ArrowRightLeft size={14} />Move replicas…</button>
+        <button onclick={() => (moving = true)}
+          title="Move replicas between brokers, or balance them"><ArrowRightLeft size={14} />Move replicas…</button>
       {/if}
     </div>
     <ReassignDialog {cluster} topic={name} bind:open={moving} ondone={load} />

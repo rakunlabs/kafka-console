@@ -146,13 +146,13 @@ func (c *Client) DeleteRecords(ctx context.Context, topic string, req DeleteReco
 
 	ends, err := c.admin.ListEndOffsets(ctx, topic)
 	if err != nil {
-		return nil, fmt.Errorf("list end offsets; %w", err)
+		return nil, fmt.Errorf("list end offsets; %w", accessErr(err))
 	}
 
 	var atTime kadm.ListedOffsets
 	if req.Strategy == "timestamp" {
 		if atTime, err = c.admin.ListOffsetsAfterMilli(ctx, req.Timestamp, topic); err != nil {
-			return nil, fmt.Errorf("list offsets by time; %w", err)
+			return nil, fmt.Errorf("list offsets by time; %w", accessErr(err))
 		}
 	}
 
@@ -176,7 +176,7 @@ func (c *Client) DeleteRecords(ctx context.Context, topic string, req DeleteReco
 		// A partition whose end is unknown is not touched: guessing could
 		// delete more than asked.
 		if e.Err != nil || e.Offset < 0 {
-			lookupErr = errors.Join(lookupErr, fmt.Errorf("partition %d: end offset unknown; %v", e.Partition, e.Err))
+			lookupErr = errors.Join(lookupErr, fmt.Errorf("partition %d: end offset unknown; %w", e.Partition, accessErr(e.Err)))
 
 			return
 		}
@@ -272,18 +272,18 @@ type LogDir struct {
 	Error       string `json:"error,omitempty"`
 }
 
+// BrokerDetail is a broker with what it hosts; Broker.Leaders and
+// Broker.Replicas count the partitions of the topics the console may see.
 type BrokerDetail struct {
 	Broker
 	Configs []ConfigEntry `json:"configs"`
 	LogDirs []LogDir      `json:"log_dirs"`
-	// Leaders and Replicas count the partitions this broker hosts.
-	Leaders  int `json:"leaders"`
-	Replicas int `json:"replicas"`
 }
 
 func (c *Client) Broker(ctx context.Context, id int32) (*BrokerDetail, error) {
-	// Brokers only: a topic the console may not describe must not fail it.
-	meta, err := c.admin.BrokerMetadata(ctx)
+	// Every topic, to count what the broker hosts; one the console may not
+	// describe keeps its error and is left out instead of failing it.
+	meta, err := c.metadata(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("metadata; %w", err)
 	}
@@ -301,6 +301,10 @@ func (c *Client) Broker(ctx context.Context, id int32) (*BrokerDetail, error) {
 	}
 
 	for _, t := range meta.Topics {
+		if t.Err != nil {
+			continue
+		}
+
 		for _, p := range t.Partitions {
 			if p.Leader == id {
 				out.Leaders++

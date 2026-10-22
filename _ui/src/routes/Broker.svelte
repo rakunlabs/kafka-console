@@ -1,27 +1,21 @@
 <script lang="ts">
   import { resizable } from '../lib/resizable'
   import Pending from '../lib/Pending.svelte'
-  import { api, type BrokerDetail, type Cluster, type ConfigChange } from '../lib/api'
+  import { api, type Cluster, type ConfigChange } from '../lib/api'
+  import { resource } from '../lib/resource.svelte'
   import { bytes, fmt } from '../lib/format'
   import { href } from '../lib/router.svelte'
   import ConfigTable from '../lib/ConfigTable.svelte'
 
   let { cluster, id }: { cluster: Cluster; id: number } = $props()
 
-  let data = $state<BrokerDetail>()
-  let error = $state('')
-
-  function load() {
-    api
-      .broker(cluster.name, id)
-      .then((b) => (data = b))
-      .catch((e) => (error = e.message))
-  }
-  load()
+  const broker = resource(() => api.broker(cluster.name, id))
+  broker.load()
+  const data = $derived(broker.data)
 
   async function save(changes: ConfigChange[]) {
     await api.alterBrokerConfigs(cluster.name, id, changes)
-    data = await api.broker(cluster.name, id)
+    await broker.load()
   }
 
   const used = (d: { total_bytes: number; usable_bytes: number }) =>
@@ -33,8 +27,8 @@
   {#if data?.controller}<span class="badge accent">controller</span>{/if}
 </div>
 
-{#if error}
-  <div class="error">{error}</div>
+{#if broker.error && !data}
+  <div class="error">{broker.error}</div>
 {:else if !data}
   <div class="empty"><Pending /></div>
 {:else}

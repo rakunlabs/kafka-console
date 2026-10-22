@@ -49,14 +49,9 @@ func (c *Client) Message(ctx context.Context, topic string, ref RecordRef) (*Mes
 		return nil, ErrInvalid{errors.New("partition and offset must be non-negative")}
 	}
 
-	records, err := c.fetchExact(ctx, topic, []RecordRef{ref})
+	rec, err := c.fetchOne(ctx, topic, ref)
 	if err != nil {
 		return nil, err
-	}
-
-	rec, ok := records[ref]
-	if !ok {
-		return nil, fmt.Errorf("message no longer exists (deleted by retention or compaction): %w", ErrNotFound)
 	}
 
 	d := c.decodeRecord(ctx, rec, false, DecodeAs{})
@@ -76,17 +71,25 @@ func (c *Client) RawRecord(ctx context.Context, topic string, ref RecordRef) (*k
 		return nil, ErrInvalid{errors.New("partition and offset must be non-negative")}
 	}
 
+	return c.fetchOne(ctx, topic, ref)
+}
+
+// errGone says a wanted record was read past, or lies outside what its
+// partition still holds.
+const errGone = "message no longer exists (deleted by retention or compaction)"
+
+// fetchOne reads one exact record.
+func (c *Client) fetchOne(ctx context.Context, topic string, ref RecordRef) (*kgo.Record, error) {
 	records, err := c.fetchExact(ctx, topic, []RecordRef{ref})
+	if rec, ok := records[ref]; ok {
+		return rec, nil
+	}
+
 	if err != nil {
 		return nil, err
 	}
 
-	rec, ok := records[ref]
-	if !ok {
-		return nil, fmt.Errorf("message no longer exists (deleted by retention or compaction): %w", ErrNotFound)
-	}
-
-	return rec, nil
+	return nil, fmt.Errorf("%s: %w", errGone, ErrNotFound)
 }
 
 // Resend copies records byte for byte, key, value and headers included, to a
@@ -119,8 +122,10 @@ func (c *Client) Resend(ctx context.Context, topic string, req ResendRequest) ([
 		return nil, err
 	}
 
+	// A timeout still sends what was read; the rest is reported as not read.
 	records, err := c.fetchExact(ctx, topic, req.Records)
-	if err != nil {
+	timedOut := errors.Is(err, context.DeadlineExceeded) || errors.Is(err, errIncomplete)
+	if err != nil && !timedOut {
 		return nil, err
 	}
 
@@ -141,7 +146,10 @@ func (c *Client) Resend(ctx context.Context, topic string, req ResendRequest) ([
 
 		src, ok := records[ref]
 		if !ok {
-			out[i].Error = "message no longer exists (deleted by retention or compaction)"
+			out[i].Error = errGone
+			if timedOut {
+				out[i].Error = "not read before the read stopped; retry"
+			}
 
 			continue
 		}
@@ -157,14 +165,8 @@ func (c *Client) Resend(ctx context.Context, topic string, req ResendRequest) ([
 
 	// Produced in the order given, which is the order the user saw them in,
 	// so per-key order is preserved within the batch.
-	// Results arrive in completion order, not the order produced.
-	at := make(map[*kgo.Record]int, len(batch))
-	for j, rec := range batch {
-		at[rec] = index[j]
-	}
-
-	for _, r := range producer.ProduceSync(pctx, batch...) {
-		i := at[r.Record]
+	for j, r := range produceInOrder(pctx, producer, batch) {
+		i := index[j]
 		if r.Err != nil {
 			out[i].Error = r.Err.Error()
 
@@ -185,7 +187,9 @@ func (c *Client) Resend(ctx context.Context, topic string, req ResendRequest) ([
 const exactGap = chunkSize
 
 // fetchExact reads specific offsets. Nearby offsets of a partition are read
-// in one window; each round reads the next window of every partition.
+// in one window; each round reads the next window of every partition. A
+// record missing from the result was not found; with a timeout error, it
+// may not have been reached.
 func (c *Client) fetchExact(ctx context.Context, topic string, refs []RecordRef) (map[RecordRef]*kgo.Record, error) {
 	want := map[RecordRef]bool{}
 	byPartition := map[int32][]int64{}
@@ -281,11 +285,11 @@ func (c *Client) fetchExact(ctx context.Context, topic string, refs []RecordRef)
 			return true
 		})
 		if err != nil {
-			if errors.Is(err, context.DeadlineExceeded) {
-				break
+			if rctx.Err() != nil && ctx.Err() == nil {
+				return found, fmt.Errorf("read %s; %w", topic, context.DeadlineExceeded)
 			}
 
-			return nil, err
+			return found, err
 		}
 	}
 

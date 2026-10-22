@@ -31,6 +31,8 @@ export type AppInfo = {
   info: string
   version: string
   features: Features
+  /** The most messages one read returns. */
+  max_limit?: number
 }
 
 export type Broker = {
@@ -154,7 +156,14 @@ export type Message = {
   decode_error?: string
 }
 
-export type TailEvent = { message?: Message; scanned: number; matched: number; error?: string }
+export type TailEvent = {
+  message?: Message
+  scanned: number
+  matched: number
+  error?: string
+  script_errors?: number
+  first_error?: string
+}
 
 export type ConfigChange = { key: string; value?: string | null; op?: 'set' | 'delete' }
 
@@ -519,7 +528,7 @@ export type MessageStreamEvent =
   | { type: 'done'; scanned: number; result: ConsumeResult }
   | { type: 'error'; scanned: number; error: string }
 
-// messageStream reads messages like api.messages, but hands each match over
+// messageStream reads messages from the messages endpoint, handing each match over
 // as soon as the server finds it. Aborting signal stops the read on the
 // server too. Like other reads, it stops when its page is left.
 export async function messageStream(
@@ -594,8 +603,6 @@ export const api = {
     request<void>('POST', `/clusters/${enc(c)}/topics/${enc(t)}/partitions`, { total }),
   deleteRecords: (c: string, t: string, body: { partitions?: number[]; strategy: string; offset?: number; timestamp?: number }) =>
     request<{ partition: number; low_watermark: number; error?: string }[]>('POST', `/clusters/${enc(c)}/topics/${enc(t)}/delete-records`, body),
-  messages: (c: string, t: string, params: Record<string, string | number | boolean | undefined>) =>
-    request<ConsumeResult>('GET', `/clusters/${enc(c)}/topics/${enc(t)}/messages?${query(params)}`),
   message: (c: string, t: string, partition: number, offset: number) =>
     request<Message>('GET', `/clusters/${enc(c)}/topics/${enc(t)}/messages/${partition}/${offset}`),
   produce: (c: string, t: string, body: ProduceBody) =>

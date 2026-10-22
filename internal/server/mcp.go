@@ -18,8 +18,10 @@ import (
 	"github.com/rakunlabs/kafka-console/internal/kafka"
 )
 
-// mcpEndpoints returns the configured endpoints, or one read-only-by-default
-// endpoint per cluster at /mcp/<cluster>.
+// mcpOptIn are tools with no counterpart in the console, off unless an
+// endpoint switches them on: transform_messages rewrites messages in bulk.
+var mcpOptIn = []string{"transform_messages"}
+
 // mcpTools is the endpoint's tool policy with the tools of switched-off
 // features removed, so a feature that is off is off for MCP too. An endpoint
 // cannot switch such a tool back on.
@@ -34,7 +36,10 @@ func mcpTools(endpoint map[string]bool, f config.Features) map[string]bool {
 		"delete_consumer_group": !f.DeleteGroupEnabled(),
 	}
 
-	tools := make(map[string]bool, len(endpoint)+len(off))
+	tools := make(map[string]bool, len(endpoint)+len(off)+len(mcpOptIn))
+	for _, name := range mcpOptIn {
+		tools[name] = false
+	}
 	for name, on := range endpoint {
 		tools[name] = on
 	}
@@ -47,6 +52,8 @@ func mcpTools(endpoint map[string]bool, f config.Features) map[string]bool {
 	return tools
 }
 
+// mcpEndpoints returns the configured endpoints, or one read-only-by-default
+// endpoint per cluster at /mcp/<cluster>.
 func mcpEndpoints(cfg *config.Config) map[string]*config.MCPEndpoint {
 	if len(cfg.MCP.Endpoints) > 0 {
 		return cfg.MCP.Endpoints
@@ -82,6 +89,11 @@ func mcpHandler(cfg *config.Config, registry *kafka.Registry) (*mcpRoutes, error
 		return nil, err
 	}
 
+	proxies, err := parseProxies(cfg.Server.TrustedProxies)
+	if err != nil {
+		return nil, fmt.Errorf("server.trusted_proxies; %w", err)
+	}
+
 	byPath := make(map[string]http.Handler)
 	for name, endpoint := range mcpEndpoints(cfg) {
 		local, err := mcpPath(endpoint.Path)
@@ -103,6 +115,7 @@ func mcpHandler(cfg *config.Config, registry *kafka.Registry) (*mcpRoutes, error
 			Tools:        mcpTools(endpoint.Tools, cfg.ClusterFeatures(endpoint.Cluster)),
 			Path:         path,
 			OutputDir:    cfg.MCP.OutputDir,
+			User:         func(h http.Header) string { return h.Get(mcpUserHeader) },
 		}); err != nil {
 			return nil, fmt.Errorf("endpoint %q: %w", name, err)
 		}
@@ -114,6 +127,7 @@ func mcpHandler(cfg *config.Config, registry *kafka.Registry) (*mcpRoutes, error
 	var handler http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		byPath[r.URL.Path].ServeHTTP(w, r)
 	})
+	handler = mcpAuditUser(cfg.Server.UserHeader, proxies, handler)
 	handler = mcpGuard(cfg.MCP, handler)
 	if len(cfg.MCP.AllowOrigins) > 0 {
 		handler = mcors.Middleware(mcors.WithConfig(mcors.Cors{

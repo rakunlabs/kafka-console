@@ -142,7 +142,7 @@ func TestReassign(t *testing.T) {
 	}
 	t.Cleanup(fake.Close)
 
-	c, err := New("test", &config.Cluster{Brokers: fake.ListenAddrs()}, config.Cache{})
+	c, err := New("test", &config.Cluster{Brokers: fake.ListenAddrs()}, Settings{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +200,7 @@ func TestReassign(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ro, err := New("ro", &config.Cluster{Brokers: fake.ListenAddrs(), ReadOnly: true}, config.Cache{})
+	ro, err := New("ro", &config.Cluster{Brokers: fake.ListenAddrs(), ReadOnly: true}, Settings{})
 	if err != nil {
 		t.Fatal(err)
 	}

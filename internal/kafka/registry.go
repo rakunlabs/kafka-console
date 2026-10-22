@@ -16,7 +16,7 @@ func NewRegistry(cfg *config.Config) (*Registry, error) {
 	r := &Registry{clients: make(map[string]*Client, len(cfg.Clusters))}
 
 	for _, name := range cfg.ClusterNames() {
-		client, err := New(name, cfg.Clusters[name], cfg.CacheFor(name))
+		client, err := New(name, cfg.Clusters[name], Settings{Cache: cfg.CacheFor(name), Limits: cfg.LimitsFor(name)})
 		if err != nil {
 			r.Close()
 

@@ -11,9 +11,6 @@ export function partitionList(text: string): number[] | undefined {
   return [...new Set(parts.map(Number))]
 }
 
-export function compact(n: number) {
-  return new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 }).format(n)
-}
 
 export function bytes(n: number) {
   if (n < 1024) return `${n} B`

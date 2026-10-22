@@ -33,8 +33,8 @@ far behind they are.
   - The ACLs that apply to each topic and group.
   - Optional documentation page per topic, from Markdown files; see [Topic documentation](#topic-documentation).
 - **Messages:**
-  - Browse by offset, timestamp, newest, oldest, or the last N of each partition. "Load older" continues a read where it stopped.
-  - Text search, JavaScript filters, live tail, JSON tree view.
+  - Browse newest, oldest, from an offset, or the last N of each partition, within an optional time range (last 15 minutes to 7 days, or custom from/to). "Load older" continues a read where it stopped.
+  - Text search, JavaScript filters, live tail, JSON tree view. A search reads until it fills the limit, reaches the end of the range or is stopped, showing matches as they arrive.
   - Read keys and values as JSON, text, MessagePack, CBOR, hex, base64 or an unsigned integer when the automatic choice is wrong. Protobuf without a registry, from local `.proto` files; see [Protobuf without a registry](#protobuf-without-a-registry).
   - Show fields of JSON values as columns, and times as local, UTC, relative or Unix. Both are kept in the browser.
   - Download a key or value exactly as stored, including values too large to show.
@@ -105,6 +105,7 @@ server:
   # base_path: /kafka    # serve under a sub-path behind a reverse proxy
   # user_header: X-User  # header your auth proxy sets; logged on every write
   # trusted_proxies: ["10.0.0.0/8"]  # only these may set user_header and X-Forwarded-For
+  # idle_timeout: 2m     # close idle keep-alive connections
 
 # features:              # every feature is on unless set to false; see Features below
 #   create_topic: false
@@ -114,6 +115,12 @@ server:
 #   overview: 15s        # counts, health, brokers, groups
 #   disk_usage: 60s      # scans every broker's log dirs; the expensive one
 #   refresh: 30s         # Refresh reads again only past this age; newer results are reused
+
+# limits:                # per cluster connection; a cluster's own limits override these
+#   reads: 16            # browse/search/resend reads at once; more wait their turn
+#   idle_readers: 4      # readers kept connected between reads
+#   streams: 32          # live tails and replays at once; more are refused
+#   mcp_reads: 8         # readers MCP tools hold at once, apart from the UI's reads
 
 clusters:
   local:
@@ -130,6 +137,8 @@ clusters:
     read_only: true      # refuses produce, topic changes, offset resets
     cache:               # overrides the global cache settings for this cluster
       disk_usage: 5m
+    limits:              # overrides the global limits for this cluster
+      mcp_reads: 2
     description: |       # Markdown, shown in a box on the cluster overview
       **Production** cluster. Owner: platform team.
       Runbook: [wiki](https://wiki.example.com/kafka-prod)
@@ -371,20 +380,29 @@ MCP writes use kafka-mcp's `confirm` previews, not the UI's typed confirmation;
 `confirm_writes` is a UI confirmation, not an MCP permission. Call `server_config` to
 verify the endpoint, cluster and effective tool policy before acting.
 
+`transform_messages` (rewrite messages with JavaScript and write them as new
+ones) has no counterpart in the console, so it is off unless an endpoint
+switches it on with `tools: { transform_messages: true }`. Tools of a console
+feature that is switched off (`features`) are off for MCP too.
+
 Tool definitions, batch results, mutation guards and audit logging come directly
 from `kafka-mcp/pkg/kafkamcp`, the only kafka-mcp package the console imports;
 they are not reimplemented here. The console builds one MCP server per
 endpoint and serves it on its own router, with its own bearer-token and origin
 checks. MCP borrows the
-console's existing Kafka, admin and Schema Registry clients, and its cached
-manual-partition producer. No broker/TLS/SASL/OAuth configuration is converted
-or reloaded. Message scans use the console's reader factory to create isolated
-short-lived consumers, since consuming state cannot safely be shared between
-concurrent calls. MCP never closes the console's clients.
+console's existing Kafka, admin and Schema Registry clients, its cached
+manual-partition producer, its bulk producer for batch writes (`produce_message`
+with `input_file`, `transform_messages`) and its `protobuf` topic mappings. No
+broker/TLS/SASL/OAuth configuration is converted or reloaded. Message scans
+borrow readers from the console's pool, at most `limits.mcp_reads` at a time
+and apart from the UI's own reads, so an agent cannot starve the UI or open
+unbounded connections; a call over the limit waits until its timeout. MCP
+never closes the console's clients.
 `server_config` reports authentication as `host-managed`, with the console's
 configured brokers and SASL user; credentials are never passed on.
-Its tool audit records identify the endpoint, configured principal when supplied, and MCP client;
-the console's `server.user_header` does not add a person to these records.
+Tool audit records go to the console's log and identify the endpoint, configured
+principal, MCP client and the user from `server.user_header`, under the same
+`trusted_proxies` rules as the UI's audit lines.
 
 The bearer token is optional only when a trusted authenticating proxy or network
 boundary already protects MCP. Proxy protection must cover `/mcp` as well as

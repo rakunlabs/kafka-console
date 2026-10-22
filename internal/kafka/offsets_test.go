@@ -60,3 +60,26 @@ func TestResetToPerPartitionOffsets(t *testing.T) {
 		}
 	}
 }
+
+// A reset names an existing group; committing to a mistyped name would
+// create a new group instead.
+func TestResetOffsetsRefusesAnUnknownGroup(t *testing.T) {
+	c := fakeCluster(t, map[string]int32{"orders": 1})
+	seed(t, c, "orders", 0, 5, time.Now())
+
+	for _, dry := range []bool{true, false} {
+		_, err := c.ResetOffsets(t.Context(), "biling", ResetRequest{Topic: "orders", Strategy: "earliest", DryRun: dry})
+		if !errors.Is(err, ErrNotFound) {
+			t.Fatalf("dry run %v: %v, want not found", dry, err)
+		}
+	}
+
+	groups, err := c.admin.ListGroups(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, created := groups["biling"]; created {
+		t.Fatal("a reset created the group it was given")
+	}
+}

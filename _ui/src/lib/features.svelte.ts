@@ -17,6 +17,7 @@ let current = $state<Features>(off)
 let loaded = $state(false)
 let label = $state('')
 let version = $state('')
+let maxLimit = $state(1000)
 
 api
   .info()
@@ -24,6 +25,7 @@ api
     current = { ...off, ...r.features }
     label = r.info
     version = r.version ?? ''
+    maxLimit = r.max_limit ?? maxLimit
     loaded = true
   })
   // Without /info the optional pages stay off, but stop waiting for it.
@@ -43,5 +45,9 @@ export const app = {
   /** Server build version, e.g. "v1.4.0". */
   get version() {
     return version
+  },
+  /** The most messages one read returns. */
+  get maxLimit() {
+    return maxLimit
   },
 }

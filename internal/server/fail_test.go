@@ -26,6 +26,11 @@ func TestFailStatus(t *testing.T) {
 		{fmt.Errorf("topic; %w", kafka.ErrNotFound), http.StatusNotFound},
 		{kafka.ErrInvalid{Err: errors.New("bad")}, http.StatusBadRequest},
 		{kerr.LeaderNotAvailable, http.StatusBadGateway},
+		{fmt.Errorf("create topic; %w", kerr.TopicAlreadyExists), http.StatusConflict},
+		{fmt.Errorf("create topic; %w", kerr.InvalidReplicationFactor), http.StatusBadRequest},
+		{fmt.Errorf("delete group; %w", kerr.GroupIDNotFound), http.StatusNotFound},
+		{fmt.Errorf("delete group; %w", kerr.NonEmptyGroup), http.StatusConflict},
+		{fmt.Errorf("read; %w", context.Canceled), statusClientClosed},
 	} {
 		var he *ada.HTTPError
 		if !errors.As(fail(tc.err), &he) || he.Code != tc.want {

@@ -2,6 +2,8 @@
   import { onDestroy, untrack } from 'svelte'
   import { api, tail, messageStream, isAbort, rawURL, type Cluster, type ConsumeResult, type Message } from '../lib/api'
   import Pending from '../lib/Pending.svelte'
+  import { app } from '../lib/features.svelte'
+  import { copyText } from '../lib/resource.svelte'
   import { fmt } from '../lib/format'
   import { prefs, loadColumns, saveColumns, loadDetailWidth, saveDetailWidth, loadWidths, saveWidths } from '../lib/prefs.svelte'
   import ViewSettings from '../lib/ViewSettings.svelte'
@@ -57,9 +59,31 @@
   let offset = $state(untrack(() => at?.offset ?? 0))
   // For "last": how many of the newest records of each partition.
   let lastN = $state(100)
-  let timestamp = $state('')
   let limit = $state(50)
-  let maxScan = $state(10000)
+  // Time range, in any read direction: a span back from now, or custom
+  // bounds (datetime-local text, either may be left open).
+  let range = $state('')
+  let since = $state('')
+  let until = $state('')
+  const spans: [string, string, number][] = [
+    ['15m', 'Last 15 min', 15 * 60_000], ['1h', 'Last hour', 3_600_000], ['6h', 'Last 6 hours', 6 * 3_600_000],
+    ['24h', 'Last 24 hours', 86_400_000], ['7d', 'Last 7 days', 7 * 86_400_000],
+  ]
+  // The range in unix milliseconds, a span measured from the moment of the read.
+  function timeRange(): { since?: number; until?: number } {
+    if (range === 'custom') {
+      return { since: since ? new Date(since).getTime() : undefined, until: until ? new Date(until).getTime() : undefined }
+    }
+    const span = spans.find(([id]) => id === range)
+    return span ? { since: Date.now() - span[2] } : {}
+  }
+  const rangeError = $derived(range === 'custom' && !!since && !!until && new Date(until) < new Date(since) ? 'The end of the time range is before its start' : '')
+  // datetime-local text for unix milliseconds, in local time.
+  function localInput(ms?: number) {
+    if (ms === undefined) return ''
+    const d = new Date(ms - new Date(ms).getTimezoneOffset() * 60_000)
+    return d.toISOString().slice(0, 19)
+  }
   let filter = $state('')
   let search = $state('')
   // The term the current result was fetched with; highlighting follows the
@@ -99,6 +123,10 @@
     // Enter in the search box or ⌘Enter in the filter can fetch while a
     // tail runs; the fetch replaces the list, so the tail must not feed it.
     if (live) stopLive()
+    if (!more && rangeError) {
+      error = rangeError
+      return
+    }
     reading?.abort()
     const ctl = (reading = new AbortController())
     const gen = ++shownGen
@@ -110,9 +138,8 @@
         start,
         partitions: partition,
         offset: start === 'offset' ? offset : start === 'last' ? lastN : undefined,
-        timestamp: start === 'timestamp' && timestamp ? new Date(timestamp).getTime() : undefined,
+        ...timeRange(),
         limit,
-        max_scan: maxScan,
         filter: showFilter ? filter : undefined,
         q: search.trim() || undefined,
         raw,
@@ -233,7 +260,7 @@
   // Live tail: newest first, capped so a busy topic cannot exhaust memory.
   const liveCap = 2000
   let live = $state(false)
-  let liveStats = $state({ scanned: 0, matched: 0 })
+  let liveStats = $state({ scanned: 0, matched: 0, scriptErrors: 0, firstError: '' })
   let paused = $state(false)
   let stop: (() => void) | undefined
 
@@ -272,15 +299,18 @@
     picked = new Set()
     live = true
     paused = false
-    liveStats = { scanned: 0, matched: 0 }
+    liveStats = { scanned: 0, matched: 0, scriptErrors: 0, firstError: '' }
     result = { messages: [], scanned: 0, script_errors: 0, stopped_by: 'live', elapsed_ms: 0 }
     selected = undefined
-    // "newest" in live mode means only messages that arrive from now on.
+    // "newest" in live mode means only messages that arrive from now on;
+    // oldest with a time range follows on from the range's start.
+    const from = timeRange().since
+    const fromTime = start === 'oldest' && from !== undefined
     stop = tail(cluster.name, topic, {
-      start,
+      start: fromTime ? 'timestamp' : start,
       partitions: partition,
       offset: start === 'offset' ? offset : start === 'last' ? lastN : undefined,
-      timestamp: start === 'timestamp' && timestamp ? new Date(timestamp).getTime() : undefined,
+      timestamp: fromTime ? from : undefined,
       filter: showFilter ? filter : undefined,
       q: search.trim() || undefined,
       raw,
@@ -288,7 +318,7 @@
       value_as: valueAs || undefined,
     }, {
       event: (e) => {
-        liveStats = { scanned: e.scanned, matched: e.matched }
+        liveStats = { scanned: e.scanned, matched: e.matched, scriptErrors: e.script_errors ?? 0, firstError: e.first_error ?? '' }
         // A fetch error mid-stream is passing; the tail keeps going, so it
         // is shown above the rows instead of in place of them.
         if (e.error) liveError = e.error
@@ -378,9 +408,9 @@
   const stopped: Record<string, string> = {
     end: 'Reached end of range',
     limit: 'Limit reached',
-    max_scan: 'Scan limit reached',
     timeout: 'Timed out',
     cancelled: 'Stopped',
+    incomplete: 'Broker stopped sending; load more to continue',
     reading: 'Reading…',
   }
 
@@ -456,11 +486,10 @@
 
   // Which field was copied last, so only its button shows the tick.
   let copied = $state<'key' | 'value' | null>(null)
-  function copy(text: string, what: 'key' | 'value' = 'value') {
-    navigator.clipboard?.writeText(text).then(() => {
-      copied = what
-      setTimeout(() => (copied = null), 1200)
-    }, () => {})
+  async function copy(text: string, what: 'key' | 'value' = 'value') {
+    if (!(await copyText(text))) return
+    copied = what
+    setTimeout(() => (copied = null), 1200)
   }
 
   // j/k (or arrows) walk the list without leaving the detail pane.
@@ -659,6 +688,12 @@
     saveDetailWidth(null)
   }
 
+  // The replay dialog starts from the range shown here.
+  function rangeSeed() {
+    const t = timeRange()
+    return { since: localInput(t.since), until: localInput(t.until) }
+  }
+
   // Last: load() resets state declared throughout this script before its
   // first await.
   load()
@@ -687,7 +722,7 @@
 
 <ResendDialog {cluster} {topic} messages={resendList} bind:open={resending} />
 <ReplayDialog {cluster} {topic} {partitions} bind:open={replaying}
-  seed={{ partition, start, offset, timestamp, search: search.trim(), filter: showFilter ? filter : '' }} />
+  seed={{ partition, start, offset, ...rangeSeed(), search: search.trim(), filter: showFilter ? filter : '' }} />
 <ImportDialog {cluster} {topic} {partitions} bind:open={importing} />
 {#if editError}<div class="error" role="alert">{editError}</div>{/if}
 
@@ -709,14 +744,11 @@
         <option value="newest">Newest</option>
         <option value="oldest">Oldest</option>
         <option value="offset">From offset</option>
-        <option value="timestamp">From time</option>
         <option value="last">Last N per partition</option>
       </select>
     </label>
     {#if start === 'offset'}
       <label class="f"><span class="fl">Offset</span><input type="number" min="0" class="w-num" bind:value={offset} /></label>
-    {:else if start === 'timestamp'}
-      <label class="f"><span class="fl">Time</span><input type="datetime-local" step="1" bind:value={timestamp} /></label>
     {:else if start === 'last'}
       <label class="f" title="Read the newest N records of each partition, oldest first"><span class="fl">N</span><input type="number" min="1" class="w-sm" bind:value={lastN} /></label>
     {/if}
@@ -727,8 +759,23 @@
         {#each partitions as p (p)}<option value={String(p)}>{p}</option>{/each}
       </select>
     </label>
-    <label class="f" title="Messages to return"><span class="fl">Limit</span><input type="number" min="1" max="1000" class="w-sm" bind:value={limit} /></label>
-    <label class="f" title="Stop after reading this many records, matched or not"><span class="fl">Max scan</span><input type="number" min="1" class="w-num" bind:value={maxScan} /></label>
+    <label class="f" title="Messages to return"><span class="fl">Limit</span><input type="number" min="1" max={app.maxLimit} class="w-sm" bind:value={limit} /></label>
+    <label class="f" title="Only messages whose timestamp is in this range, read in the chosen direction. The read runs until the limit, the end of the range, or Stop.">
+      <span class="fl">Time</span>
+      <select bind:value={range}>
+        <option value="">Any time</option>
+        {#each spans as [id, label] (id)}<option value={id}>{label}</option>{/each}
+        <option value="custom">Custom…</option>
+      </select>
+    </label>
+    {#if range === 'custom'}
+      <label class="f" class:bad={!!rangeError} title="Leave empty to start at the oldest message">
+        <span class="fl">From</span><input type="datetime-local" step="1" bind:value={since} aria-invalid={!!rangeError} />
+      </label>
+      <label class="f" class:bad={!!rangeError} title={rangeError || 'Leave empty to read up to the newest message'}>
+        <span class="fl">To</span><input type="datetime-local" step="1" bind:value={until} aria-invalid={!!rangeError} />
+      </label>
+    {/if}
     <label class="f switch" class:on={showFilter} title="Filter with a JavaScript expression">
       <input type="checkbox" bind:checked={showFilter} /><Code size={13} />JS filter
     </label>
@@ -789,6 +836,7 @@
       {#if live}<span class="badge ok"><span class="sq live"></span>live</span>{:else}<span class="badge"><span class="sq idle"></span>stopped</span>{/if}
       {fmt(result.messages.length)} messages shown · {fmt(liveStats.matched)} matched · {fmt(liveStats.scanned)} scanned
       {#if paused}<span class="badge warn">paused</span>{/if}
+      {#if liveStats.scriptErrors > 0}<span class="badge danger" title={liveStats.firstError}>{fmt(liveStats.scriptErrors)} filter errors</span>{/if}
       {#if result.messages.length >= liveCap}<span>· keeping last {fmt(liveCap)}</span>{/if}
     {:else}
       {fmt(result.messages.length)} {searched ? `matching “${searched}”` : 'messages'} · {fmt(result.scanned)} scanned · {result.elapsed_ms} ms · {stopped[result.stopped_by] ?? result.stopped_by}
@@ -801,7 +849,7 @@
     {#if picked.size}
       <span class="pickbar"><b>{picked.size}</b> selected
         <button class="ghost small" onclick={() => (picked = new Set())}><X size={12} />Clear</button>
-        <button class="primary small" disabled={cluster.read_only} onclick={() => resend(pickedMessages)}><Repeat size={13} />Resend…</button>
+        {#if !cluster.read_only}<button class="primary small" onclick={() => resend(pickedMessages)}><Repeat size={13} />Resend…</button>{/if}
       </span>
     {/if}
     {#if !cluster.read_only || result.messages.length}
@@ -1084,6 +1132,7 @@
   .f input:not([type='checkbox']):focus, .f select:focus { outline: none; }
   .f:has(input:focus-visible, select:focus-visible) { box-shadow: inset 0 -2px 0 var(--focus); }
   .w-sm { width: 56px; }
+  .f.bad { box-shadow: inset 0 -2px 0 var(--danger); }
   .list mark { background: var(--cta); color: var(--cta-text); padding: 0 1px; border-radius: 1px; }
   .search { gap: 6px; padding-right: 2px; min-width: 240px; flex: 1 1 240px; }
   .search input[type='search'] { flex: 1; min-width: 0; font-weight: 400; }

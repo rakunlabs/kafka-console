@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -199,7 +198,12 @@ func Start(ctx context.Context, cfg *config.Config, registry *kafka.Registry, ui
 		}
 	}
 
-	return server.StartWithContext(ctx, cfg.Server.Host+":"+cfg.Server.Port)
+	return server.StartWithContext(ctx, cfg.Server.Host+":"+cfg.Server.Port,
+		ada.WithHTTPServerFunc(func(hs *http.Server) *http.Server {
+			hs.IdleTimeout = cfg.Server.IdleTimeout
+
+			return hs
+		}))
 }
 
 type clusterInfo struct {
@@ -217,7 +221,10 @@ type clusterInfo struct {
 }
 
 func (s *Server) appInfo(c *ada.Context) error {
-	return c.SendJSON(map[string]any{"info": s.info, "version": config.Version, "features": s.features})
+	return c.SendJSON(map[string]any{
+		"info": s.info, "version": config.Version, "features": s.features,
+		"max_limit": kafka.MaxLimit,
+	})
 }
 
 // featuresOf is the cluster's features; an unknown cluster gets the global
@@ -295,6 +302,15 @@ func fail(err error) error {
 		return ada.WrapHTTPError(http.StatusNotImplemented, err)
 	case errors.Is(err, context.DeadlineExceeded):
 		return ada.WrapHTTPError(http.StatusGatewayTimeout, err)
+	case errors.Is(err, context.Canceled):
+		// The caller went away; nobody reads this answer.
+		return ada.WrapHTTPError(statusClientClosed, err)
+	case kafkaIs(err, kafkaNotFound):
+		return ada.WrapHTTPError(http.StatusNotFound, err)
+	case kafkaIs(err, kafkaConflict):
+		return ada.WrapHTTPError(http.StatusConflict, err)
+	case kafkaIs(err, kafkaInvalid):
+		return ada.WrapHTTPError(http.StatusBadRequest, err)
 	default:
 		// Kafka errors carry no secrets and the operator needs them.
 		if hint := kafka.ExplainConnErr(err); hint != "" {
@@ -469,42 +485,25 @@ func (s *Server) messages(c *ada.Context) error {
 
 	q := c.Request.URL.Query()
 
-	ints := map[string]int64{}
-	for _, key := range []string{"offset", "timestamp", "limit", "max_scan", "timeout"} {
-		v := q.Get(key)
-		if v == "" {
-			continue
-		}
-
-		n, err := strconv.ParseInt(v, 10, 64)
-		if err != nil || (key != "timestamp" && n < 0) {
-			return ada.WrapHTTPError(http.StatusBadRequest, fmt.Errorf("%s must be a non-negative integer", key))
-		}
-
-		ints[key] = n
-	}
-
-	switch q.Get("start") {
-	case "", "newest", "oldest", "offset", "timestamp", "last":
-	default:
-		return ada.WrapHTTPError(http.StatusBadRequest, fmt.Errorf("unknown start %q", q.Get("start")))
+	p, err := parseRead(q, []string{"newest", "oldest", "offset", "timestamp", "last"},
+		"offset", "timestamp", "since", "until", "limit", "timeout")
+	if err != nil {
+		return err
 	}
 
 	req := kafka.ConsumeRequest{
-		Start:     q.Get("start"),
-		Offset:    ints["offset"],
-		Timestamp: ints["timestamp"],
-		Limit:     int(ints["limit"]),
-		MaxScan:   int(ints["max_scan"]),
-		Filter:    q.Get("filter"),
-		Search:    q.Get("q"),
-		Timeout:   time.Duration(ints["timeout"]) * time.Second,
-		Raw:       q.Get("raw") == "true",
-		As:        kafka.DecodeAs{Key: q.Get("key_as"), Value: q.Get("value_as")},
-	}
-
-	if req.Partitions, err = partitions(q.Get("partitions")); err != nil {
-		return err
+		Start:      p.start,
+		Offset:     p.ints["offset"],
+		Timestamp:  p.ints["timestamp"],
+		Since:      p.optional("since"),
+		Until:      p.optional("until"),
+		Limit:      int(p.ints["limit"]),
+		Filter:     p.filter,
+		Search:     p.search,
+		Timeout:    time.Duration(p.ints["timeout"]) * time.Second,
+		Raw:        p.raw,
+		As:         p.as,
+		Partitions: p.partitions,
 	}
 
 	if req.After, err = resumeAt(q); err != nil {
@@ -517,10 +516,6 @@ func (s *Server) messages(c *ada.Context) error {
 
 	res, err := cl.Consume(c.Request.Context(), c.Request.PathValue("topic"), req)
 	if err != nil {
-		if strings.HasPrefix(err.Error(), "script ") {
-			return ada.WrapHTTPError(http.StatusBadRequest, err)
-		}
-
 		return fail(err)
 	}
 
@@ -542,50 +537,20 @@ type messageStreamEvent struct {
 // messageStream sends each match as a newline-delimited JSON event as soon
 // as it is found. Closing the connection stops the read on the server.
 func (s *Server) messageStream(c *ada.Context, cl *kafka.Client, req kafka.ConsumeRequest) error {
-	w := c.Response
-	rc := http.NewResponseController(w)
-	enc := json.NewEncoder(w)
-	started := false
-
-	send := func(e messageStreamEvent) bool {
-		if !started {
-			started = true
-
-			w.Header().Set("Content-Type", "application/x-ndjson")
-			w.Header().Set("Cache-Control", "no-cache")
-			w.Header().Set("X-Accel-Buffering", "no")
-			w.WriteHeader(http.StatusOK)
-		}
-
-		if enc.Encode(e) != nil {
-			return false
-		}
-
-		return rc.Flush() == nil
-	}
+	out := newStream(c.Response, ndjson)
 
 	res, err := cl.ConsumeStream(c.Request.Context(), c.Request.PathValue("topic"), req, func(e kafka.ConsumeEvent) bool {
 		if e.Message != nil {
-			return send(messageStreamEvent{Type: "message", Message: e.Message, Scanned: e.Scanned})
+			return out.line(messageStreamEvent{Type: "message", Message: e.Message, Scanned: e.Scanned})
 		}
 
-		return send(messageStreamEvent{Type: "progress", Scanned: e.Scanned, Next: e.Next})
+		return out.line(messageStreamEvent{Type: "progress", Scanned: e.Scanned, Next: e.Next})
 	})
 	if err != nil {
-		if !started {
-			if strings.HasPrefix(err.Error(), "script ") {
-				return ada.WrapHTTPError(http.StatusBadRequest, err)
-			}
-
-			return fail(err)
-		}
-
-		send(messageStreamEvent{Type: "error", Error: err.Error()})
-
-		return nil
+		return out.fail(err, func() { out.line(messageStreamEvent{Type: "error", Error: err.Error()}) })
 	}
 
-	send(messageStreamEvent{Type: "done", Scanned: res.Scanned, Result: res})
+	out.line(messageStreamEvent{Type: "done", Scanned: res.Scanned, Result: res})
 
 	return nil
 }
@@ -786,12 +751,6 @@ func (s *Server) resetOffsets(c *ada.Context) error {
 	return c.SendJSON(map[string]any{"dry_run": req.DryRun, "partitions": plan})
 }
 
-func queryInt(v string) int64 {
-	n, _ := strconv.ParseInt(v, 10, 64)
-
-	return n
-}
-
 const (
 	maxBody       = 4 << 20
 	maxImportBody = 64 << 20 // a batch of 500 records with 64 KiB values and keys
@@ -817,6 +776,35 @@ func limitBody(next http.Handler) http.Handler {
 
 // denied reports Kafka refusing the console's credentials an operation:
 // the request was understood, the principal may not do it.
+// statusClientClosed is nginx's code for a request its client abandoned.
+const statusClientClosed = 499
+
+// Broker refusals the caller can act on, by what they mean; anything else
+// stays a 502, the broker's own failure.
+var (
+	kafkaNotFound = []error{kerr.UnknownTopicOrPartition, kerr.GroupIDNotFound, kerr.UnknownTopicID}
+	kafkaConflict = []error{
+		kerr.TopicAlreadyExists, kerr.NonEmptyGroup, kerr.GroupSubscribedToTopic,
+		kerr.ReassignmentInProgress, kerr.ConcurrentTransactions,
+	}
+	kafkaInvalid = []error{
+		kerr.InvalidPartitions, kerr.InvalidReplicationFactor, kerr.InvalidReplicaAssignment,
+		kerr.InvalidConfig, kerr.InvalidTopicException, kerr.PolicyViolation, kerr.InvalidRequest,
+		kerr.InvalidGroupID, kerr.MessageTooLarge, kerr.RecordListTooLarge, kerr.InvalidRecord,
+		kerr.UnsupportedCompressionType, kerr.InvalidTimestamp,
+	}
+)
+
+func kafkaIs(err error, kinds []error) bool {
+	for _, k := range kinds {
+		if errors.Is(err, k) {
+			return true
+		}
+	}
+
+	return false
+}
+
 func denied(err error) bool {
 	if _, ok := errors.AsType[*kadm.AuthError](err); ok {
 		return true

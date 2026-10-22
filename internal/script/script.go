@@ -30,7 +30,6 @@ const reinterruptInterval = 50 * time.Millisecond
 type Script struct {
 	runtime *goja.Runtime
 	fn      goja.Callable
-	source  string
 }
 
 // Compile prepares a predicate for evaluation.
@@ -90,7 +89,7 @@ func Compile(source string, parameters ...string) (*Script, error) {
 		return nil, fmt.Errorf("script did not produce a function")
 	}
 
-	return &Script{runtime: runtime, fn: fn, source: source}, nil
+	return &Script{runtime: runtime, fn: fn}, nil
 }
 
 // singleFunction reports whether a program is one expression statement whose
@@ -134,12 +133,6 @@ func (s *Script) Call(arguments ...goja.Value) (bool, error) {
 	}
 
 	return result.ToBoolean(), nil
-}
-
-// Evaluate runs the script and returns what it returned, for callers that need
-// a value rather than a match, such as a grouping key.
-func (s *Script) Evaluate(arguments ...goja.Value) (goja.Value, error) {
-	return s.fn(goja.Undefined(), arguments...)
 }
 
 // Interrupt stops a script that is currently running. It is safe to call from

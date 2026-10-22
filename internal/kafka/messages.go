@@ -19,14 +19,22 @@ import (
 	"github.com/rakunlabs/kafka-console/internal/script"
 )
 
+// MaxLimit is the most messages one read returns.
+const MaxLimit = 1000
+
 const (
-	defaultLimit       = 50
-	maxLimit           = 1000
-	defaultMaxScan     = 10_000
-	maxScanCap         = 1_000_000
-	defaultTimeout     = 15 * time.Second
-	maxTimeout         = 2 * time.Minute
-	chunkSize          = 500
+	defaultLimit   = 50
+	maxLimit       = MaxLimit
+	defaultTimeout = 15 * time.Second
+	maxTimeout     = 2 * time.Minute
+	// A streamed read shows its progress and can be stopped by its client,
+	// so it may run much longer than a plain one.
+	maxStreamTimeout = 30 * time.Minute
+	chunkSize        = 500
+	// roundBudget bounds the records one round buffers across partitions,
+	// so a search over a topic with many partitions does not hold
+	// chunkSize records of each of them at once.
+	roundBudget        = 20_000
 	pollTimeout        = 2 * time.Second
 	maxEmptyPolls      = 2
 	defaultValueCutoff = 64 * 1024
@@ -68,12 +76,16 @@ type ConsumeRequest struct {
 	Start     string
 	Offset    int64
 	Timestamp int64
+	// Since and Until bound the read to a time range in unix milliseconds,
+	// both inclusive, in any direction; a timestamp start sets Since.
+	// Records whose own timestamp falls outside it are skipped, as
+	// producers may set timestamps out of order.
+	Since, Until *int64
 	// After continues a previous read: per partition, where it stopped (its
 	// ConsumeResult.Next). Partitions missing from it are done.
-	After   map[int32]int64
-	Limit   int
-	MaxScan int
-	Filter  string
+	After  map[int32]int64
+	Limit  int
+	Filter string
 	// Search keeps messages whose key, value or headers contain this text,
 	// case-insensitively. Applied before Filter, which is far more costly.
 	Search  string
@@ -134,26 +146,41 @@ func (c *Client) consume(ctx context.Context, topic string, req ConsumeRequest, 
 	}
 
 	req.Limit = clamp(req.Limit, defaultLimit, maxLimit)
-	req.MaxScan = clamp(req.MaxScan, defaultMaxScan, maxScanCap)
+
+	limitTime := maxTimeout
+	if emit != nil {
+		limitTime = maxStreamTimeout
+	}
 
 	if req.Timeout <= 0 {
 		req.Timeout = defaultTimeout
+		if emit != nil {
+			req.Timeout = maxStreamTimeout
+		}
 	}
 
-	req.Timeout = min(req.Timeout, maxTimeout)
+	req.Timeout = min(req.Timeout, limitTime)
+
+	if req.Start == "timestamp" {
+		since := req.Timestamp
+		if req.Since != nil {
+			since = max(since, *req.Since)
+		}
+
+		req.Since = &since
+	}
+
+	if req.Since != nil && req.Until != nil && *req.Until < *req.Since {
+		return nil, ErrInvalid{errors.New("the end of the time range is before its start")}
+	}
 
 	if req.Start == "" {
 		req.Start = "newest"
 	}
 
-	var filter *script.Script
-	if strings.TrimSpace(req.Filter) != "" {
-		var err error
-
-		filter, err = script.Compile(req.Filter, filterParameters...)
-		if err != nil {
-			return nil, err
-		}
+	filter, err := compileFilter(req.Filter)
+	if err != nil {
+		return nil, err
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, req.Timeout)
@@ -201,6 +228,15 @@ func (c *Client) consume(ctx context.Context, topic string, req ConsumeRequest, 
 		return false
 	}
 
+	// The read's own deadline is a timeout; the caller going away is not.
+	stopped := func() string {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return "timeout"
+		}
+
+		return "cancelled"
+	}
+
 	visit := func(rec *kgo.Record) bool {
 		// Before this record counts as seen: a read stopped right after the
 		// report continues with it.
@@ -216,17 +252,21 @@ func (c *Client) consume(ctx context.Context, topic string, req ConsumeRequest, 
 			seen[rec.Partition] = rec.Offset + 1
 		}
 
+		if !inTime(req, rec) {
+			return true
+		}
+
 		d := c.decodeRecord(ctx, rec, req.Raw, req.As)
 
 		if !textMatch(req.Search, rec, d) {
-			return result.Scanned < req.MaxScan
+			return true
 		}
 
 		if filter != nil {
 			ok, err := filter.Call(filterArguments(filter, rec, d)...)
 			if err != nil {
 				if ctx.Err() != nil {
-					result.StoppedBy = "timeout"
+					result.StoppedBy = stopped()
 
 					return false
 				}
@@ -236,11 +276,11 @@ func (c *Client) consume(ctx context.Context, topic string, req ConsumeRequest, 
 					result.FirstError = err.Error()
 				}
 
-				return result.Scanned < req.MaxScan
+				return true
 			}
 
 			if !ok {
-				return result.Scanned < req.MaxScan
+				return true
 			}
 		}
 
@@ -263,25 +303,22 @@ func (c *Client) consume(ctx context.Context, topic string, req ConsumeRequest, 
 			return false
 		}
 
-		return result.Scanned < req.MaxScan
+		return true
 	}
 
-	// A round reads what is still needed. Without a search or filter every
-	// record is kept, so each partition needs at most the rest of the limit
-	// (all of it could sit in one partition). With one, max_scan bounds the
-	// whole round and is spread over the partitions.
+	// A round reads what is still needed. Without a search or filter nearly
+	// every record is kept, so each partition needs at most the rest of the
+	// limit (all of it could sit in one partition); the few skipped for an
+	// out-of-range timestamp only cost another round. Otherwise how many will
+	// match is unknown, so rounds read full chunks until the limit, the end,
+	// a stop or the timeout.
 	matchAll := req.Search == "" && filter == nil
 	need := func(live int64) int64 {
-		left := int64(req.MaxScan - result.Scanned)
-		if left <= 0 {
-			return 0
-		}
-
 		if matchAll {
 			return int64(req.Limit - matched)
 		}
 
-		return (left + live - 1) / live
+		return roundBudget / live
 	}
 
 	cur := newCursor(windows, newestFirst)
@@ -292,34 +329,25 @@ func (c *Client) consume(ctx context.Context, topic string, req ConsumeRequest, 
 
 	for round := cur.next(need); len(round) > 0; round = cur.next(need) {
 		if err := scan(ctx, reader, topic, round, newestFirst, visit); err != nil {
-			if errors.Is(err, context.DeadlineExceeded) {
-				result.StoppedBy = "timeout"
-
-				break
-			}
-
-			if ctx.Err() == nil {
+			switch {
+			case ctx.Err() != nil:
+				result.StoppedBy = stopped()
+			case errors.Is(err, errIncomplete):
+				result.StoppedBy = "incomplete"
+			default:
 				return nil, err
 			}
-
-			result.StoppedBy = "timeout"
 
 			break
 		}
 
 		if ctx.Err() != nil {
-			result.StoppedBy = "timeout"
+			result.StoppedBy = stopped()
 
 			break
 		}
 
 		if result.StoppedBy != "" {
-			break
-		}
-
-		if result.Scanned >= req.MaxScan {
-			result.StoppedBy = "max_scan"
-
 			break
 		}
 	}
@@ -358,23 +386,26 @@ func (c *Client) consume(ctx context.Context, topic string, req ConsumeRequest, 
 
 	// Only a reader whose scans all finished is reused; one cut off by a
 	// timeout or error may still have a fetch in flight.
-	sound = result.StoppedBy != "timeout" && ctx.Err() == nil
+	sound = ctx.Err() == nil && result.StoppedBy != "incomplete"
 
 	return result, nil
 }
 
 func (c *Client) windows(ctx context.Context, topic string, req ConsumeRequest) ([]window, error) {
-	var at *int64
-	if req.Start == "timestamp" {
-		at = &req.Timestamp
-	}
-
-	b, err := c.bounds(ctx, topic, false, at)
+	b, err := c.bounds(ctx, topic, false, req.Since)
 	if err != nil {
 		return nil, err
 	}
 
 	starts, ends, atTime := b.starts, b.ends, b.atTime
+
+	// The first offset produced after Until ends each window.
+	var untilTime kadm.ListedOffsets
+	if req.Until != nil {
+		if untilTime, err = c.admin.ListOffsetsAfterMilli(ctx, *req.Until+1, topic); err != nil {
+			return nil, fmt.Errorf("list offsets by time; %w", accessErr(err))
+		}
+	}
 
 	wanted := map[int32]bool{}
 	for _, p := range req.Partitions {
@@ -395,12 +426,21 @@ func (c *Client) windows(ctx context.Context, topic string, req ConsumeRequest) 
 
 		w := window{partition: s.Partition, start: s.Offset, end: e.Offset}
 
+		if req.Until != nil {
+			if t, ok := untilTime.Lookup(topic, s.Partition); ok && t.Err == nil && t.Offset >= 0 {
+				w.end = min(w.end, t.Offset)
+			}
+		}
+
 		switch req.Start {
 		case "last":
 			w.start = max(w.end-max(req.Offset, 0), w.start)
 		case "offset":
 			w.start = min(max(req.Offset, w.start), w.end)
-		case "timestamp":
+		}
+
+		// Nothing produced since then: the partition has nothing in range.
+		if req.Since != nil {
 			if t, ok := atTime.Lookup(topic, s.Partition); ok && t.Err == nil && t.Offset >= 0 {
 				w.start = max(t.Offset, w.start)
 			} else {
@@ -451,6 +491,14 @@ func (c *Client) windows(ctx context.Context, topic string, req ConsumeRequest) 
 	sort.Slice(out, func(i, j int) bool { return out[i].partition < out[j].partition })
 
 	return out, nil
+}
+
+// inTime reports whether a record's timestamp is inside the requested time
+// range, when there is one.
+func inTime(req ConsumeRequest, rec *kgo.Record) bool {
+	ms := rec.Timestamp.UnixMilli()
+
+	return (req.Since == nil || ms >= *req.Since) && (req.Until == nil || ms <= *req.Until)
 }
 
 // resumeFrom is where each partition continues: just past the last record
@@ -538,8 +586,14 @@ func (c *cursor) next(perPartition func(live int64) int64) []window {
 	return round
 }
 
+// errIncomplete says a scan gave up on partitions that stopped sending
+// records before the end of their window, as a slow or moving leader can.
+// What was visited is contiguous per partition, so the read can continue
+// from where it stopped.
+var errIncomplete = errors.New("the broker sent no more records before the end of the range")
+
 func scan(ctx context.Context, client *kgo.Client, topic string, round []window, newestFirst bool, visit func(*kgo.Record) bool) error {
-	active := make(map[int32]int64, len(round))
+	active := make(windowEnds, len(round))
 	offsets := make(map[int32]kgo.Offset, len(round))
 	parts := make([]int32, 0, len(round))
 
@@ -589,26 +643,9 @@ func scan(ctx context.Context, client *kgo.Client, topic string, round []window,
 		empty = 0
 
 		fetches.EachRecord(func(rec *kgo.Record) {
-			end, ok := active[rec.Partition]
-			if !ok {
-				return
+			if keep, _ := active.accept(rec); keep {
+				buffered = append(buffered, rec)
 			}
-
-			if rec.Offset >= end {
-				delete(active, rec.Partition)
-
-				return
-			}
-
-			if rec.Offset == end-1 {
-				delete(active, rec.Partition)
-			}
-
-			if isControl(rec) {
-				return
-			}
-
-			buffered = append(buffered, rec)
 		})
 	}
 
@@ -616,8 +653,16 @@ func scan(ctx context.Context, client *kgo.Client, topic string, round []window,
 	// order even when its timestamps are not (producers set them): a read
 	// that stops mid-round then has visited a contiguous run per partition,
 	// which is what lets it continue without skipping records.
+	//
+	// A partition left unfinished arrived from its window's start, so read
+	// newest first its records would not join what was visited before;
+	// they are left for the continued read instead.
 	byPart := map[int32][]*kgo.Record{}
 	for _, rec := range buffered {
+		if _, unfinished := active[rec.Partition]; unfinished && newestFirst {
+			continue
+		}
+
 		byPart[rec.Partition] = append(byPart[rec.Partition], rec)
 	}
 
@@ -649,6 +694,10 @@ func scan(ctx context.Context, client *kgo.Client, topic string, round []window,
 		if !visit(rec) {
 			return nil
 		}
+	}
+
+	if len(active) > 0 {
+		return errIncomplete
 	}
 
 	return nil
@@ -713,6 +762,39 @@ func (c *Client) decodeRecord(ctx context.Context, rec *kgo.Record, raw bool, as
 // ─── JS filter ────────────────────────────────────────────
 
 var filterParameters = []string{"value", "key", "headers", "partition", "offset", "timestamp", "raw"}
+
+// compileFilter compiles a message filter, or returns nil for none. A filter
+// that does not compile is the caller's to fix.
+func compileFilter(source string) (*script.Script, error) {
+	if strings.TrimSpace(source) == "" {
+		return nil, nil
+	}
+
+	filter, err := script.Compile(source, filterParameters...)
+	if err != nil {
+		return nil, ErrInvalid{err}
+	}
+
+	return filter, nil
+}
+
+// streamScriptBudget bounds one filter call of a tail or replay, so a
+// runaway script cannot stall a stream that otherwise runs for long.
+const streamScriptBudget = 2 * time.Second
+
+// evalFilter runs filter on one record within streamScriptBudget.
+func evalFilter(ctx context.Context, filter *script.Script, rec *kgo.Record, d recordView) (bool, error) {
+	fctx, cancel := context.WithTimeout(ctx, streamScriptBudget)
+	defer cancel()
+
+	guard := script.Guard(fctx, filter, "filter timed out")
+	ok, err := filter.Call(filterArguments(filter, rec, d)...)
+
+	guard()
+	filter.Close()
+
+	return ok, err
+}
 
 // CheckFilter reports the problems the message filter would be rejected for,
 // without reading any data.

@@ -3,6 +3,8 @@ package kafka
 import (
 	"bytes"
 	"strings"
+	"unicode/utf8"
+	"unsafe"
 
 	"github.com/twmb/franz-go/pkg/kgo"
 )
@@ -18,12 +20,11 @@ func textMatch(q string, rec *kgo.Record, d recordView) bool {
 
 	needle := []byte(strings.ToLower(q))
 
-	has := func(b []byte) bool {
-		return len(b) >= len(needle) && bytes.Contains(bytes.ToLower(b), needle)
-	}
+	has := func(b []byte) bool { return containsFold(b, needle) }
+	hasText := func(s string) bool { return containsFold(unsafe.Slice(unsafe.StringData(s), len(s)), needle) }
 
 	if d.key != nil {
-		if has([]byte(d.key.Text)) {
+		if hasText(d.key.Text) {
 			return true
 		}
 	} else if has(rec.Key) {
@@ -31,7 +32,7 @@ func textMatch(q string, rec *kgo.Record, d recordView) bool {
 	}
 
 	if d.value != nil {
-		if has([]byte(d.value.Text)) {
+		if hasText(d.value.Text) {
 			return true
 		}
 	} else if has(rec.Value) {
@@ -39,10 +40,62 @@ func textMatch(q string, rec *kgo.Record, d recordView) bool {
 	}
 
 	for _, h := range rec.Headers {
-		if has([]byte(h.Key)) || has(h.Value) {
+		if hasText(h.Key) || has(h.Value) {
 			return true
 		}
 	}
 
 	return false
+}
+
+// containsFold reports whether lower, already lower case, appears in b
+// case-insensitively. ASCII text, the common case, is compared in place
+// without copying b; anything else is lowered first, because lowering can
+// change a character's length in bytes.
+func containsFold(b, lower []byte) bool {
+	n := len(lower)
+	if n == 0 {
+		return true
+	}
+
+	if !isASCII(b) || !isASCII(lower) {
+		return bytes.Contains(bytes.ToLower(b), lower)
+	}
+
+	first := lower[0]
+
+	for i := 0; i+n <= len(b); i++ {
+		if toLowerASCII(b[i]) != first {
+			continue
+		}
+
+		j := 1
+		for j < n && toLowerASCII(b[i+j]) == lower[j] {
+			j++
+		}
+
+		if j == n {
+			return true
+		}
+	}
+
+	return false
+}
+
+func isASCII(b []byte) bool {
+	for _, c := range b {
+		if c >= utf8.RuneSelf {
+			return false
+		}
+	}
+
+	return true
+}
+
+func toLowerASCII(c byte) byte {
+	if 'A' <= c && c <= 'Z' {
+		return c + 'a' - 'A'
+	}
+
+	return c
 }

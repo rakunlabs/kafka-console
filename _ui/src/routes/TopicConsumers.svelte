@@ -1,6 +1,8 @@
 <script lang="ts">
+  import { lagReading } from '../lib/lag'
   import Pending from '../lib/Pending.svelte'
   import { api, type Cluster, type TopicConsumer } from '../lib/api'
+  import { resource } from '../lib/resource.svelte'
   import { fmt, stateBadge } from '../lib/format'
   import { href } from '../lib/router.svelte'
   import PartitionOffsets from '../lib/PartitionOffsets.svelte'
@@ -9,22 +11,10 @@
 
   let { cluster, topic }: { cluster: Cluster; topic: string } = $props()
 
-  let groups = $state<TopicConsumer[]>()
-  let error = $state('')
-  let loading = $state(false)
-
-  async function load() {
-    loading = true
-    try {
-      groups = await api.topicConsumers(cluster.name, topic)
-      error = ''
-    } catch (e: any) {
-      error = e.message
-    } finally {
-      loading = false
-    }
-  }
+  const consumers = resource(() => api.topicConsumers(cluster.name, topic))
+  const load = consumers.load
   load()
+  const groups = $derived(consumers.data)
 
   // Clients that own at least one partition of this topic, per group.
   function clients(g: TopicConsumer) {
@@ -54,13 +44,7 @@
   // alone, where the topic's consumer list would redo every group's.
   async function reading(group: string) {
     const g = await api.group(cluster.name, group)
-    const rows = g.partitions.filter((p) => p.topic === topic && !p.no_access)
-    return {
-      lag: rows.reduce((s, p) => s + Math.max(p.lag, 0), 0),
-      committed: rows.reduce((s, p) => s + Math.max(p.committed, 0), 0),
-      high: rows.reduce((s, p) => s + p.high, 0),
-      parts: rows.map((p) => ({ topic: p.topic, partition: p.partition, committed: p.committed, lag: p.lag })),
-    }
+    return lagReading(g.partitions, (p) => p.topic === topic)
   }
   const messageAt = (t: string, partition: number, offset: number) =>
     href(cluster.name, 'topics', t, { p: String(partition), o: String(offset) })
@@ -81,11 +65,11 @@
       {#if allOpen}<ChevronsDownUp size={14} />Collapse all{:else}<ChevronsUpDown size={14} />Expand all{/if}
     </button>
   {/if}
-  <button onclick={load} disabled={loading}><RefreshCw size={14} class={loading ? 'animate-spin' : ''} />Refresh</button>
+  <button onclick={load} disabled={consumers.loading}><RefreshCw size={14} class={consumers.loading ? 'animate-spin' : ''} />Refresh</button>
 </div>
 
-{#if error}
-  <div class="error">{error}</div>
+{#if consumers.error && !groups}
+  <div class="error">{consumers.error}</div>
 {:else if !groups}
   <div class="empty"><Pending /></div>
 {:else if !groups.length}

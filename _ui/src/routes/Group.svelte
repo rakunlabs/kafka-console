@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { lagReading } from '../lib/lag'
   import { resizable } from '../lib/resizable'
   import Pending from '../lib/Pending.svelte'
   import { api, type Cluster, type GroupDetail, type ResetPlan } from '../lib/api'
@@ -73,13 +74,7 @@
   // Fresh readings for the catch-up estimate; the page's own data is left alone.
   async function reading(topic?: string) {
     const g = await api.group(cluster.name, name)
-    const rows = g.partitions.filter((p) => !p.no_access && (!topic || p.topic === topic))
-    return {
-      lag: rows.reduce((s, p) => s + Math.max(p.lag, 0), 0),
-      committed: rows.reduce((s, p) => s + Math.max(p.committed, 0), 0),
-      high: rows.reduce((s, p) => s + p.high, 0),
-      parts: rows.map((p) => ({ topic: p.topic, partition: p.partition, committed: p.committed, lag: p.lag })),
-    }
+    return lagReading(g.partitions, (p) => !topic || p.topic === topic)
   }
   const messageAt = (topic: string, partition: number, offset: number) =>
     href(cluster.name, 'topics', topic, { p: String(partition), o: String(offset) })
@@ -184,11 +179,11 @@
   <span class="spacer"></span>
   <div class="acts">
   <button onclick={load} disabled={loading}><RefreshCw size={14} class={loading ? 'animate-spin' : ''} />Refresh</button>
-  <button disabled={cluster.read_only || !data} title={cluster.read_only ? 'This cluster is read-only' : ''} onclick={() => (addingTopic = true)}><Plus size={14} />Add topic</button>
+  {#if !cluster.read_only}<button disabled={!data} onclick={() => (addingTopic = true)}><Plus size={14} />Add topic</button>{/if}
   <button disabled={!hasCommits || backingUp} title="Download the committed offsets as a JSON file" onclick={backup}><Download size={14} />Back up offsets</button>
-  <button disabled={cluster.read_only || !data} title={cluster.read_only ? 'This cluster is read-only' : 'Commit offsets from a backup file'} onclick={() => (restoring = true)}><Upload size={14} />Restore…</button>
-  {#if cluster.features.delete_group}
-    <button class="danger" disabled={cluster.read_only || !data || data.members.length > 0}
+  {#if !cluster.read_only}<button disabled={!data} title="Commit offsets from a backup file" onclick={() => (restoring = true)}><Upload size={14} />Restore…</button>{/if}
+  {#if cluster.features.delete_group && !cluster.read_only}
+    <button class="danger" disabled={!data || data.members.length > 0}
       title={data && data.members.length > 0 ? 'Cannot delete a group with active members' : ''}
       onclick={() => { deleteError = ''; deleting = true }}><Trash2 size={14} />Delete group</button>
   {/if}
@@ -221,9 +216,9 @@
       {/if}
       <span class="spacer"></span>
       <span class="acts">
-      <button disabled={cluster.read_only || denied} title={denied ? 'No permission to read this topic' : ''} onclick={() => openReset(t.topic)}><RotateCcw size={14} />Reset all partitions…</button>
-      {#if cluster.features.delete_group}
-      <button class="danger" disabled={cluster.read_only || (data?.members.length ?? 0) > 0}
+      {#if !cluster.read_only}<button disabled={denied} title={denied ? 'No permission to read this topic' : ''} onclick={() => openReset(t.topic)}><RotateCcw size={14} />Reset all partitions…</button>{/if}
+      {#if cluster.features.delete_group && !cluster.read_only}
+      <button class="danger" disabled={(data?.members.length ?? 0) > 0}
         title={(data?.members.length ?? 0) > 0 ? 'Cannot delete offsets for a group with active members' : 'Deletes committed offsets for this topic'}
         onclick={() => { dropError = ''; dropTopic = t.topic; dropping = true }}>Delete offsets</button>
       {/if}
