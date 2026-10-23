@@ -9,9 +9,31 @@
     children,
     footer,
     locked = false,
-  }: { title: string; open: boolean; width?: number; children: Snippet; footer?: Snippet; /** Work is running: Esc and the close button do nothing. */ locked?: boolean } = $props()
+    dismissable = false,
+  }: {
+    title: string; open: boolean; width?: number; children: Snippet; footer?: Snippet
+    /** Work is running: Esc and the close button do nothing. */ locked?: boolean
+    /** A click outside closes it. Only for dialogs with nothing to lose. */ dismissable?: boolean
+  } = $props()
 
   let dialog: HTMLDialogElement
+
+  // A click outside closes only when it also started outside: a press inside
+  // (selecting text, dragging) released over the backdrop fires click on the
+  // dialog too, and must not close it.
+  let downOutside = false
+  const outside = (e: MouseEvent) => {
+    const r = dialog.getBoundingClientRect()
+    return e.target === dialog && (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom)
+  }
+  function down(e: PointerEvent) {
+    downOutside = dismissable && e.button === 0 && outside(e)
+  }
+  function click(e: MouseEvent) {
+    const close = downOutside && outside(e) && !locked
+    downOutside = false
+    if (close) open = false
+  }
 
   $effect(() => {
     if (open && !dialog.open) dialog.showModal()
@@ -19,7 +41,7 @@
   })
 </script>
 
-<dialog bind:this={dialog} class="ticks" oncancel={(e) => locked && e.preventDefault()} onclose={() => (open = false)} style:width="{width}px">
+<dialog bind:this={dialog} class="ticks" oncancel={(e) => locked && e.preventDefault()} onclose={() => (open = false)} onpointerdown={down} onclick={click} style:width="{width}px">
   {#if open}
     <header>
       <h2>{title}</h2>

@@ -330,7 +330,7 @@ mcp:
   enabled: true
   auth_token: "replace-with-a-secret" # or KAFKA_CONSOLE_MCP_AUTH_TOKEN
   # allow_writes: false             # default; separate from the UI's permissions
-  # public_url: https://kafka.example.com # address for download links behind a proxy
+  # public_url: https://kafka.example.com # rarely needed: links use the address the agent connected to
   # link_key: "..."        # or KAFKA_CONSOLE_MCP_LINK_KEY; same on every instance (default: auth_token)
 ```
 
@@ -473,9 +473,15 @@ it expires, and run an upload command once. The key comes from
 `mcp.link_key`, or `mcp.auth_token` when that is unset. **Running several
 console instances behind one address? Give them the same key**: the link holds
 the whole request, so any instance can serve a link another made, with nothing
-shared between them. Browser origins are checked as for the endpoint. Links use
-the address the agent reached the console at, honouring `X-Forwarded-Proto` and
-`X-Forwarded-Host`; set `mcp.public_url` when a proxy hides the real one.
+shared between them. Browser origins are checked as for the endpoint.
+
+Links are built on the address the agent connected to the MCP endpoint with, so
+usually nothing needs setting. Behind a reverse proxy the console honours
+`X-Forwarded-Proto` and `X-Forwarded-Host`. Set `mcp.public_url` only when
+links would otherwise point somewhere the agent cannot reach: a proxy that
+rewrites the host without sending `X-Forwarded-Host`, or one that serves the
+console under a path prefix (`https://example.com/kafka/`) that
+`server.base_path` does not cover.
 
 For separate endpoint policies, configure an explicit map. Every console
 cluster is visible to `list_clusters` and `compare_clusters`:

@@ -20,10 +20,10 @@
 
   let connecting = $state<MCPEndpoint>()
   let open = $state(false)
-  let client = $state<MCPClient>('opencode')
+  let client = $state<MCPClient>('claude')
   const clients: { id: MCPClient; label: string; where: string; check: string }[] = [
-    { id: 'opencode', label: 'OpenCode', where: 'Add to opencode.json', check: 'opencode mcp list' },
     { id: 'claude', label: 'Claude Code', where: 'Run in a terminal', check: 'claude mcp get <name>, or /mcp in Claude Code' },
+    { id: 'opencode', label: 'OpenCode', where: 'Add to opencode.json', check: 'opencode mcp list' },
     { id: 'codex', label: 'Codex', where: 'Add to ~/.codex/config.toml', check: '/mcp in Codex' },
   ]
   const current = $derived(clients.find((c) => c.id === client)!)
@@ -55,7 +55,7 @@
   </section>
 {/if}
 
-<Modal title="Connect an AI agent" bind:open width={620}>
+<Modal title="Connect an AI agent" bind:open width={620} dismissable>
   {#if connecting}
     <p class="faint small">Gives an MCP client access to <b class="mono">{cluster.name}</b>
       {connecting.read_only ? 'without write access.' : 'including writes. MCP tools still ask for confirmation before changing data.'}</p>
@@ -78,9 +78,6 @@
     {/if}
     <p class="faint small">Check the connection with {current.check}, then ask the agent to call <code>server_config</code>.</p>
   {/if}
-  {#snippet footer()}
-    <button class="primary" onclick={() => (open = false)}>Done</button>
-  {/snippet}
 </Modal>
 
 <style>

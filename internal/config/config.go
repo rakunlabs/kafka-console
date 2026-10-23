@@ -227,9 +227,10 @@ type MCP struct {
 	AllowWrites  bool     `cfg:"allow_writes"`
 	AuthToken    string   `cfg:"auth_token" log:"-"`
 	AllowOrigins []string `cfg:"allow_origins"`
-	// PublicURL is the address agents reach the console at, such as
-	// https://kafka.example.com, for download and upload links when a proxy
-	// hides it. Empty means the address each request arrived at.
+	// PublicURL overrides the address download and upload links are built
+	// on, such as https://kafka.example.com. Empty, the usual case, uses the
+	// address each request arrived at, honouring X-Forwarded-Proto and
+	// X-Forwarded-Host. Set it only when a proxy hides that address.
 	PublicURL string `cfg:"public_url"`
 	// LinkKey seals download and upload links, which carry the request they
 	// run, so every console instance behind one address must share it: a
