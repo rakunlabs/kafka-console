@@ -683,10 +683,14 @@ func (s *Server) groups(c *ada.Context) error {
 	}
 
 	q := c.Request.URL.Query()
-	query := kafka.GroupQuery{Search: q.Get("q"), SortByLag: q.Get("sort") == "lag"}
+	query := kafka.GroupQuery{Search: q.Get("q"), Sort: q.Get("sort"), Desc: q.Get("desc") == "true"}
 
-	if s := q.Get("sort"); s != "" && s != "name" && s != "lag" {
-		return ada.WrapHTTPError(http.StatusBadRequest, fmt.Errorf("unknown sort %q", s))
+	switch query.Sort {
+	case "":
+		query.Sort = "name"
+	case "name", "lag", "members":
+	default:
+		return ada.WrapHTTPError(http.StatusBadRequest, fmt.Errorf("unknown sort %q", query.Sort))
 	}
 
 	if query.Offset, query.Limit, err = pageParams(q); err != nil {

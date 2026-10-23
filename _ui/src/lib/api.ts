@@ -264,7 +264,7 @@ export type GroupSummary = {
 
 export type GroupPage = { groups: GroupSummary[]; total: number }
 
-export type GroupQuery = { q?: string; sort?: 'name' | 'lag'; offset?: number; limit?: number }
+export type GroupQuery = { q?: string; sort?: 'name' | 'lag' | 'members'; desc?: boolean; offset?: number; limit?: number }
 
 export type Member = { id: string; instance_id?: string; client_id: string; host: string }
 

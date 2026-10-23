@@ -11,6 +11,7 @@
   import { forgetNames } from '../lib/names'
   import { paged } from '../lib/paged.svelte'
   import { ArrowDown, ArrowUp, Plus } from '@lucide/svelte'
+  import { nextSort } from '../lib/sort'
 
   let { cluster }: { cluster: Cluster } = $props()
 
@@ -35,12 +36,9 @@
   })
   list.watch(() => search)
 
+  const ariaSort = (key: SortKey) => (sortKey === key ? (sortDesc ? 'descending' : 'ascending') : undefined)
   function sort(key: SortKey) {
-    if (sortKey === key) sortDesc = !sortDesc
-    else {
-      sortKey = key
-      sortDesc = key !== 'name'
-    }
+    ;({ key: sortKey, desc: sortDesc } = nextSort({ key: sortKey, desc: sortDesc }, key))
   }
 
   // Create topic
@@ -101,13 +99,13 @@
     <table use:resizable={'topics'}>
       <thead>
         <tr>
-          <th><button class="ghost th" onclick={() => sort('name')}>Name {#if sortKey === 'name'}{#if sortDesc}<ArrowDown size={12} />{:else}<ArrowUp size={12} />{/if}{/if}</button></th>
-          <th class="num"><button class="ghost th" onclick={() => sort('partitions')}>Partitions {#if sortKey === 'partitions'}{#if sortDesc}<ArrowDown size={12} />{:else}<ArrowUp size={12} />{/if}{/if}</button></th>
+          <th aria-sort={ariaSort('name')}><button class="ghost th" onclick={() => sort('name')}>Name {#if sortKey === 'name'}{#if sortDesc}<ArrowDown size={12} />{:else}<ArrowUp size={12} />{/if}{/if}</button></th>
+          <th class="num" aria-sort={ariaSort('partitions')}><button class="ghost th" onclick={() => sort('partitions')}>Partitions {#if sortKey === 'partitions'}{#if sortDesc}<ArrowDown size={12} />{:else}<ArrowUp size={12} />{/if}{/if}</button></th>
           <th class="num" title="Replication factor: copies of each partition"><abbr>RF</abbr></th>
-          <th class="num"><button class="ghost th" onclick={() => sort('messages')} title="Reads offsets of every matching topic; slower on large clusters">Messages {#if sortKey === 'messages'}{#if sortDesc}<ArrowDown size={12} />{:else}<ArrowUp size={12} />{/if}{/if}</button></th>
-          <th class="num"><button class="ghost th" onclick={() => sort('size')} title="Reads log sizes of every matching topic; slower on large clusters">Size {#if sortKey === 'size'}{#if sortDesc}<ArrowDown size={12} />{:else}<ArrowUp size={12} />{/if}{/if}</button></th>
+          <th class="num" aria-sort={ariaSort('messages')}><button class="ghost th" onclick={() => sort('messages')} title="Reads offsets of every matching topic; slower on large clusters">Messages {#if sortKey === 'messages'}{#if sortDesc}<ArrowDown size={12} />{:else}<ArrowUp size={12} />{/if}{/if}</button></th>
+          <th class="num" aria-sort={ariaSort('size')}><button class="ghost th" onclick={() => sort('size')} title="Reads log sizes of every matching topic; slower on large clusters">Size {#if sortKey === 'size'}{#if sortDesc}<ArrowDown size={12} />{:else}<ArrowUp size={12} />{/if}{/if}</button></th>
           <th>Cleanup</th>
-          <th class="num"><button class="ghost th" onclick={() => sort('under_replicated')}>Under-replicated {#if sortKey === 'under_replicated'}{#if sortDesc}<ArrowDown size={12} />{:else}<ArrowUp size={12} />{/if}{/if}</button></th>
+          <th class="num" aria-sort={ariaSort('under_replicated')}><button class="ghost th" onclick={() => sort('under_replicated')}>Under-replicated {#if sortKey === 'under_replicated'}{#if sortDesc}<ArrowDown size={12} />{:else}<ArrowUp size={12} />{/if}{/if}</button></th>
         </tr>
       </thead>
       <tbody>

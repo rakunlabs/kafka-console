@@ -169,7 +169,7 @@ func TestReadsWithPartialAccess(t *testing.T) {
 		}
 	}
 
-	_, err = c.Groups(ctx, GroupQuery{SortByLag: true})
+	_, err = c.Groups(ctx, GroupQuery{Sort: "lag", Desc: true})
 	check("groups by lag", err)
 
 	_, err = c.Topic(ctx, "open")

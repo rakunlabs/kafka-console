@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -92,13 +93,15 @@ func (c *Client) topicGroups(ctx context.Context, topic string) ([]string, error
 }
 
 // GroupQuery selects one page of the group list. Lag is computed for the
-// returned page alone unless the list is sorted by lag, which needs every
-// matching group's lag first. A search also matches topic names, which
-// reads committed offsets (but no lag) of every group.
+// returned page alone unless the list is sorted by lag or members, which
+// needs every matching group described first. A search also matches topic
+// names, which reads committed offsets (but no lag) of every group.
 type GroupQuery struct {
-	Search    string
-	SortByLag bool
-	Offset    int
+	Search string
+	// Sort is name (default), lag or members; Desc reverses it.
+	Sort   string
+	Desc   bool
+	Offset int
 	// Limit is the page size; 0 returns every matching group.
 	Limit int
 }
@@ -131,7 +134,11 @@ func (c *Client) Groups(ctx context.Context, q GroupQuery) (*GroupPage, error) {
 
 	page := &GroupPage{Total: len(names), Groups: []GroupSummary{}}
 
-	if !q.SortByLag {
+	heavy := q.Sort == "lag" || q.Sort == "members"
+	if !heavy {
+		if q.Desc {
+			slices.Reverse(names)
+		}
 		names = pageOf(names, q.Offset, q.Limit)
 	}
 
@@ -140,14 +147,40 @@ func (c *Client) Groups(ctx context.Context, q GroupQuery) (*GroupPage, error) {
 		return nil, err
 	}
 
-	if q.SortByLag {
-		sort.SliceStable(summaries, func(i, j int) bool { return summaries[i].Lag > summaries[j].Lag })
+	if heavy {
+		sortGroups(summaries, q.Sort, q.Desc)
 		summaries = pageOf(summaries, q.Offset, q.Limit)
+	} else if q.Desc {
+		// groupSummaries returns name order; the page itself is already the
+		// right slice of the reversed list.
+		slices.Reverse(summaries)
 	}
 
 	page.Groups = summaries
 
 	return page, nil
+}
+
+// sortGroups orders by lag or members, falling back to name so pages are
+// stable.
+func sortGroups(gs []GroupSummary, key string, desc bool) {
+	sort.SliceStable(gs, func(i, j int) bool {
+		a, b := gs[i], gs[j]
+		var d int64
+		switch key {
+		case "lag":
+			d = a.Lag - b.Lag
+		case "members":
+			d = int64(a.Members - b.Members)
+		}
+		if desc {
+			d = -d
+		}
+		if d != 0 {
+			return d < 0
+		}
+		return a.Name < b.Name
+	})
 }
 
 func anyContains(set map[string]bool, sub string) bool {

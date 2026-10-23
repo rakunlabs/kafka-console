@@ -64,7 +64,7 @@
         <button role="tab" aria-selected={client === c.id} class:active={client === c.id} onclick={() => (client = c.id)}>{c.label}</button>
       {/each}
     </div>
-    <div class="snip">
+    <div class="snip theme-dark">
       <div class="snip-head">
         <span class="faint small">{current.where}</span>
         <button class="ghost small" onclick={() => copy('snippet', snippet)}>
@@ -94,8 +94,12 @@
   .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); }
   .tabs button { border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; padding: 6px 10px; color: var(--text-2); }
   .tabs button.active { border-bottom-color: var(--text); color: var(--text); font-weight: 600; }
-  .snip { border: 1px solid var(--border-strong); background: var(--surface-2); }
+  /* min-width 0 keeps a long command from widening the dialog: only the
+     code scrolls, and the copy button stays in view. */
+  .snip { min-width: 0; border: 1px solid var(--border); border-radius: var(--radius); color: var(--text); background: var(--bg); }
   .snip-head { display: flex; align-items: center; justify-content: space-between; padding: 4px 6px 4px 10px; border-bottom: 1px solid var(--border); }
-  pre { margin: 0; padding: 10px 12px; font-size: 12px; overflow-x: auto; white-space: pre; }
+  .snip-head button { color: var(--text-2); }
+  .snip-head button:hover { color: var(--text); background: var(--surface-2); }
+  pre { margin: 0; padding: 10px 12px; font: 12px/1.55 var(--mono); overflow-x: auto; white-space: pre; }
   @media (max-width: 639.98px) { .url { flex-basis: 100%; order: 1; } }
 </style>
