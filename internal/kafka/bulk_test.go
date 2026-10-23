@@ -133,16 +133,25 @@ func TestReplayRange(t *testing.T) {
 			Search: "failed", Filter: "return value.n !== 6", DryRun: true,
 		})
 		done := events[len(events)-1]
-		// Offsets 4..7 on both partitions; FAILED are 4 and 6; 6 is filtered out.
+		// The fast path uses Kafka's time index for both bounds: offsets 4..7
+		// on both partitions; FAILED and n !== 6 keep offset 4 on each.
 		if events[0].Total != 8 || done.Scanned != 8 || done.Matched != 2 || done.Written != 0 {
 			t.Fatalf("done: %+v plan: %+v", done, events[0])
 		}
 	})
 
-	t.Run("dry run without a predicate does not read", func(t *testing.T) {
+	t.Run("dry run without a predicate estimates quickly", func(t *testing.T) {
 		done := collect(t, c, "orders", ReplayRequest{DryRun: true, Limit: 15})
 		last := done[len(done)-1]
-		if last.Matched != 15 || last.Scanned != 0 {
+		if last.Matched != 15 || last.Scanned != 0 || !last.Estimated || last.StoppedBy != "end" {
+			t.Fatalf("done: %+v", last)
+		}
+	})
+
+	t.Run("exact dry run counts records and respects the limit", func(t *testing.T) {
+		done := collect(t, c, "orders", ReplayRequest{DryRun: true, Limit: 15, Exact: true})
+		last := done[len(done)-1]
+		if last.Matched != 15 || last.Scanned != 15 || last.Estimated || last.StoppedBy != "limit" {
 			t.Fatalf("done: %+v", last)
 		}
 	})
@@ -191,6 +200,109 @@ func TestReplayReadOnly(t *testing.T) {
 	}
 	if _, err := c.Import(context.Background(), "t", ImportRequest{}); !errors.Is(err, ErrReadOnly) {
 		t.Fatalf("read-only import allowed: %v", err)
+	}
+}
+
+func TestReplayReviewedPlan(t *testing.T) {
+	c := fakeCluster(t, map[string]int32{"src": 1, "dst": 1})
+	seed(t, c, "src", 0, 3, time.Now())
+	preview := collect(t, c, "src", ReplayRequest{DryRun: true, Exact: true})
+	seed(t, c, "src", 0, 2, time.Now())
+	actual := collect(t, c, "src", ReplayRequest{Target: "dst", Plan: preview[0].Plan})
+	if done := actual[len(actual)-1]; done.Written != 3 {
+		t.Fatalf("reviewed 3 records, wrote %+v", done)
+	}
+	for _, plan := range [][]ReplayRange{
+		{{Partition: 0, Start: -1, End: 3}},
+		{{Partition: 0, Start: 3, End: 2}},
+		{{Partition: 0, End: 1}, {Partition: 0, End: 2}},
+		{{Partition: 9, End: 1}},
+		{{Partition: 0, End: 100}},
+	} {
+		if _, err := c.ReplayPlan(t.Context(), "src", ReplayRequest{Plan: plan}); err == nil {
+			t.Fatalf("accepted invalid/unavailable plan: %+v", plan)
+		}
+	}
+	if plan, err := c.ReplayPlan(t.Context(), "src", ReplayRequest{Plan: []ReplayRange{}}); err != nil || len(plan) != 0 {
+		t.Fatalf("empty snapshot expanded: %+v, %v", plan, err)
+	}
+	if _, err := c.DeleteRecords(t.Context(), "src", DeleteRecordsRequest{Strategy: "offset", Offset: 1}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := c.ReplayPlan(t.Context(), "src", ReplayRequest{Plan: preview[0].Plan})
+	var conflict ErrConflict
+	if !errors.As(err, &conflict) {
+		t.Fatalf("retained range changed, wanted another review: %v", err)
+	}
+}
+
+func TestReplayUnorderedTimestamps(t *testing.T) {
+	base := time.UnixMilli(1_760_000_000_000)
+	for _, tc := range []struct {
+		name     string
+		from, to RangeBound
+		want     int64
+	}{
+		{"from", RangeBound{Type: "timestamp", Timestamp: base.Add(50 * time.Second).UnixMilli()}, RangeBound{}, 2},
+		{"to", RangeBound{}, RangeBound{Type: "timestamp", Timestamp: base.Add(50 * time.Second).UnixMilli()}, 3},
+		{"both inclusive", RangeBound{Type: "timestamp", Timestamp: base.Add(2 * time.Second).UnixMilli()}, RangeBound{Type: "timestamp", Timestamp: base.Add(50 * time.Second).UnixMilli()}, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := fakeCluster(t, map[string]int32{"src": 1, "dst": 1})
+			p, err := c.producer(true, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, seconds := range []int{1, 100, 2, 50} {
+				if err := p.ProduceSync(t.Context(), &kgo.Record{Topic: "src", Partition: 0, Value: []byte("x"), Timestamp: base.Add(time.Duration(seconds) * time.Second)}).FirstErr(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			req := ReplayRequest{Target: "dst", From: tc.from, To: tc.to, DryRun: true, KeepTimestamp: true, Exact: true}
+			preview := collect(t, c, "src", req)
+			if done := preview[len(preview)-1]; done.Matched != tc.want {
+				t.Fatalf("preview: %+v", done)
+			}
+			req.Plan, req.DryRun = preview[0].Plan, false
+			actual := collect(t, c, "src", req)
+			if done := actual[len(actual)-1]; done.Written != tc.want {
+				t.Fatalf("write: %+v", done)
+			}
+		})
+	}
+}
+
+func TestReplayCountsCommittedRecordsNotOffsets(t *testing.T) {
+	c := fakeCluster(t, map[string]int32{"src": 1, "dst": 1})
+	opts := append(append([]kgo.Opt(nil), c.options...), kgo.TransactionalID("replay-count"))
+	p, err := kgo.NewClient(opts...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	for _, commit := range []bool{true, false} {
+		if err := p.BeginTransaction(); err != nil {
+			t.Fatal(err)
+		}
+		if err := p.ProduceSync(t.Context(), &kgo.Record{Topic: "src", Value: []byte("x")}).FirstErr(); err != nil {
+			t.Fatal(err)
+		}
+		if err := p.EndTransaction(t.Context(), kgo.TransactionEndTry(commit)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seed(t, c, "src", 0, 1, time.Now())
+	quick := collect(t, c, "src", ReplayRequest{DryRun: true})
+	if done := quick[len(quick)-1]; !done.Estimated || done.Scanned != 0 || done.Matched != quick[0].Total {
+		t.Fatalf("quick preview should estimate from offsets: plan=%+v done=%+v", quick[0], done)
+	}
+	preview := collect(t, c, "src", ReplayRequest{DryRun: true, Exact: true})
+	if done := preview[len(preview)-1]; done.Matched != 2 || done.Scanned != 2 || preview[0].Total <= 2 {
+		t.Fatalf("counted offsets/aborted records: plan=%+v done=%+v", preview[0], done)
+	}
+	actual := collect(t, c, "src", ReplayRequest{Target: "dst", Plan: preview[0].Plan})
+	if done := actual[len(actual)-1]; done.Written != 2 {
+		t.Fatalf("preview and write disagree: %+v", done)
 	}
 }
 

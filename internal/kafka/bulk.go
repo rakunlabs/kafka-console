@@ -34,6 +34,9 @@ type RangeBound struct {
 }
 
 type ReplayRequest struct {
+	// Plan reuses the exact offset windows returned by a reviewed dry run.
+	// Nil resolves From/To now; a present empty plan replays nothing.
+	Plan []ReplayRange `json:"plan"`
 	// Partitions empty means every partition.
 	Partitions []int32    `json:"partitions"`
 	From       RangeBound `json:"from"`
@@ -46,6 +49,10 @@ type ReplayRequest struct {
 	KeepTimestamp bool     `json:"keep_timestamp"`
 	MarkSource    bool     `json:"mark_source"`
 	ExtraHeaders  []Header `json:"extra_headers"`
+	// Exact checks every later offset for out-of-order producer timestamps
+	// and counts committed records in previews. Otherwise a timestamp To
+	// uses Kafka's time index and a predicate-free preview is an estimate.
+	Exact bool `json:"exact"`
 	// Limit stops after this many matching records; 0 means maxReplay.
 	Limit int `json:"limit"`
 	// DryRun counts matching records without writing.
@@ -68,9 +75,11 @@ type ReplayEvent struct {
 	Plan []ReplayRange `json:"plan,omitempty"`
 	// Total is the number of offsets in the plan, an upper bound on records:
 	// compaction and transaction markers leave gaps.
-	Total        int64  `json:"total"`
-	Scanned      int64  `json:"scanned"`
-	Matched      int64  `json:"matched"`
+	Total   int64 `json:"total"`
+	Scanned int64 `json:"scanned"`
+	Matched int64 `json:"matched"`
+	// Estimated means Matched is an offset-count upper bound, not a scan.
+	Estimated    bool   `json:"estimated,omitempty"`
 	Written      int64  `json:"written"`
 	Failed       int64  `json:"failed"`
 	ScriptErrors int64  `json:"script_errors"`
@@ -151,6 +160,12 @@ func (c *Client) ReplayPlan(ctx context.Context, topic string, req ReplayRequest
 	if err := validBound(req.To, "newest", "to"); err != nil {
 		return nil, err
 	}
+	if req.From.Type == "timestamp" && req.To.Type == "timestamp" && req.To.Timestamp < req.From.Timestamp {
+		return nil, ErrInvalid{errors.New("the end of the time range is before its start")}
+	}
+	if req.Plan != nil {
+		return c.reviewedReplayPlan(ctx, topic, req.Plan)
+	}
 
 	// The last stable offset, not the high watermark: records past it belong
 	// to open transactions and a read-committed reader would wait for them.
@@ -167,8 +182,7 @@ func (c *Client) ReplayPlan(ctx context.Context, topic string, req ReplayRequest
 	starts, ends, fromTime := b.starts, b.ends, b.atTime
 
 	var toTime kadm.ListedOffsets
-
-	if req.To.Type == "timestamp" {
+	if req.To.Type == "timestamp" && !req.Exact {
 		if toTime, err = c.admin.ListOffsetsAfterMilli(ctx, req.To.Timestamp+1, topic); err != nil {
 			return nil, fmt.Errorf("list offsets by time; %w", accessErr(err))
 		}
@@ -226,10 +240,16 @@ func (c *Client) ReplayPlan(ctx context.Context, topic string, req ReplayRequest
 
 		switch req.To.Type {
 		case "offset":
-			r.End = req.To.Offset + 1
+			if req.To.Offset < high {
+				r.End = req.To.Offset + 1
+			}
 		case "timestamp":
-			r.End = timeOffset(toTime, topic, p, high)
+			if !req.Exact {
+				r.End = timeOffset(toTime, topic, p, high)
+			}
 		}
+		// Exact keeps the captured stable end; records are still checked by
+		// timestamp individually in both modes.
 
 		r.Start = min(max(r.Start, low), high)
 		r.End = min(max(r.End, r.Start), high)
@@ -238,6 +258,33 @@ func (c *Client) ReplayPlan(ctx context.Context, topic string, req ReplayRequest
 
 	sortRanges(out)
 
+	return out, nil
+}
+
+// reviewedReplayPlan validates a snapshot without expanding or silently
+// clamping it. Retention advancing past a window requires another review.
+func (c *Client) reviewedReplayPlan(ctx context.Context, topic string, plan []ReplayRange) ([]ReplayRange, error) {
+	if len(plan) == 0 {
+		return []ReplayRange{}, nil
+	}
+	b, err := c.bounds(ctx, topic, true, nil)
+	if err != nil {
+		return nil, err
+	}
+	seen := map[int32]bool{}
+	out := append([]ReplayRange(nil), plan...)
+	for _, r := range out {
+		if r.Partition < 0 || r.Start < 0 || r.End < r.Start || seen[r.Partition] {
+			return nil, ErrInvalid{fmt.Errorf("invalid reviewed range for partition %d", r.Partition)}
+		}
+		seen[r.Partition] = true
+		s, okS := b.starts.Lookup(topic, r.Partition)
+		e, okE := b.ends.Lookup(topic, r.Partition)
+		if !okS || !okE || s.Err != nil || e.Err != nil || r.Start < s.Offset || r.End > e.Offset {
+			return nil, ErrConflict{fmt.Errorf("reviewed range for partition %d is no longer available; review the replay again", r.Partition)}
+		}
+	}
+	sortRanges(out)
 	return out, nil
 }
 
@@ -375,8 +422,11 @@ func (c *Client) Replay(ctx context.Context, topic string, req ReplayRequest, em
 		return nil
 	}
 
-	if req.DryRun && filter == nil && req.Search == "" {
+	// Without a predicate, a quick preview reports the offset count as an
+	// upper bound immediately. Exact scans to count committed records.
+	if req.DryRun && filter == nil && req.Search == "" && !req.Exact {
 		ev.Matched = min(total, limit)
+		ev.Estimated = true
 		done("end")
 
 		return nil
@@ -480,6 +530,10 @@ func (c *Client) Replay(ctx context.Context, topic string, req ReplayRequest, em
 		}
 
 		ev.Scanned++
+		ms := rec.Timestamp.UnixMilli()
+		if req.From.Type == "timestamp" && ms < req.From.Timestamp || req.To.Type == "timestamp" && ms > req.To.Timestamp {
+			return
+		}
 
 		// Decoding is only for the search and filter; copies use raw bytes.
 		if req.Search != "" || filter != nil {

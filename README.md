@@ -33,32 +33,34 @@ far behind they are.
   - The ACLs that apply to each topic and group.
   - Optional documentation page per topic, from Markdown files; see [Topic documentation](#topic-documentation).
 - **Messages:**
-  - Browse newest, oldest, from an offset, or the last N of each partition, within an optional time range (last 15 minutes to 7 days, or custom from/to). "Load older" continues a read where it stopped.
+  - One Start selector: newest, oldest, from an offset, the last N of each partition, a recent time range (15 minutes to 7 days), or custom from/to. Time ranges show the newest matching messages first. They use Kafka's time index by default; turn on Exact time to also find out-of-order producer timestamps, at the cost of scanning later offsets. "Load older" or "Load more" continues the same read where it stopped, even after the form is edited.
+  - Live tail always shows messages that arrive from now on. Search, partition, JavaScript filter and key/value decoding still apply; Start, time range and limit do not.
   - Text search, JavaScript filters, live tail, JSON tree view. A search reads until it fills the limit, reaches the end of the range or is stopped, showing matches as they arrive.
   - Read keys and values as JSON, text, MessagePack, CBOR, hex, base64 or an unsigned integer when the automatic choice is wrong. Protobuf without a registry, from local `.proto` files; see [Protobuf without a registry](#protobuf-without-a-registry).
   - Show fields of JSON values as columns, and times as local, UTC, relative or Unix. Both are kept in the browser.
   - Download a key or value exactly as stored, including values too large to show.
   - Resend messages to another topic.
   - Open a message in Produce to edit its key, value or headers, review changes, and send a new record to the same or another topic.
-  - Replay a range by offset or time, with the same search and JS filter, to another topic or back into the same one. Shows a count before writing and progress while it runs.
-  - Import records from a file: a JSON or CSV export from this console, JSON lines, or one value per line. Can keep partitions, timestamps and schema IDs. The file is read as a stream, so any size works. Every record is checked before any is written, and a stopped or failed import can resume from the first unwritten record.
+  - Replay a range by offset or time, with the same search and JS filter, to another topic or back into the same one. Review fixes the offset range; Write uses that same range, excluding records appended after review. Without a search or filter, review quickly shows an upper-bound estimate from offsets. Exact count and time check scans first, counts committed records and finds out-of-order timestamps. Shows progress while it runs.
+  - Import records from a file: a JSON or CSV export from this console, JSON lines, or one value per line. Can keep partitions, timestamps and schema IDs. The file is read as a stream, so any size works. Every record is checked before any is written. A stopped or failed import can resume; if a response is lost, the batch's outcome is unknown and resending it requires acknowledging the risk of duplicates. Import does not guarantee exactly-once delivery.
+  - New CSV exports preserve null keys and tombstones separately from empty strings, plus schema and truncation metadata. Older CSV files still import with their original interpretation (empty key means null, empty value means an empty string); use JSON or a new export when that distinction matters. Truncated or undecodable exports are refused rather than silently re-imported.
 - **Produce:** key, headers, partition, compression, base64, or JSON encoded with a registry schema.
 - **Consumer groups:**
   - Per-partition lag and catch-up estimate.
-  - Reset offsets with a preview: earliest, latest, offset, timestamp or shift.
+  - Reset offsets with a preview: earliest, latest, offset, timestamp or shift. Apply uses the exact reviewed offsets; changed commits or targets outside the retained range require a new preview.
   - Back up a group's offsets to a JSON file and restore them, or copy another group's offsets on the same topic.
   - Create a group or add a topic to one.
 - **Schema Registry:**
   - Avro, Protobuf and JSON Schema decoding.
   - Subjects, versions, compatibility, create and delete.
   - Filter by registry context; each subject links to the topics it is named after.
-- **Security:** ACLs, SCRAM users, client quotas.
+- **Security:** ACLs, SCRAM users, client quotas. Editing a quota preserves its complete entity, including combined user/client-id and default components.
 - **Operator safety:**
   - Per-cluster `read_only` and `confirm_writes` flags, and a `color` that tints the UI.
   - Switch off features such as topic create or delete; see [Features](#features-1).
   - An audit log line for every write.
   - Confirmation before destructive actions.
-- **MCP (optional):** expose the shared [kafka-mcp](https://github.com/denizgursoy/kafka-mcp) tools on the same HTTP server, read-only by default.
+- **MCP (optional):** expose the shared [kafka-mcp](https://github.com/denizgursoy/kafka-mcp) tools on the same HTTP server, read-only by default. Includes setup examples for OpenCode, Claude Code and Codex; see [Connect an AI coding agent](#connect-an-ai-coding-agent).
 - **Large clusters:** works with thousands of topics and groups. Lists page, pickers load names only, and Overview reports only unhealthy topics.
 
 ## Quick start
@@ -328,25 +330,152 @@ mcp:
   enabled: true
   auth_token: "replace-with-a-secret" # or KAFKA_CONSOLE_MCP_AUTH_TOKEN
   # allow_writes: false             # default; separate from the UI's permissions
-  # output_dir: /var/lib/kafka-console/exports
+  # public_url: https://kafka.example.com # address for download links behind a proxy
+  # link_key: "..."        # or KAFKA_CONSOLE_MCP_LINK_KEY; same on every instance (default: auth_token)
 ```
 
 Each configured cluster gets a Streamable HTTP endpoint at `/mcp/<cluster>`
 on the console's existing port. `server.base_path` prefixes these paths too:
 `base_path: /kafka` makes the local URL `/kafka/mcp/local`. Unknown MCP paths
-return 404, not the UI. Connect an MCP client, for example:
+return 404, not the UI.
 
-```json
+### Connect an AI coding agent
+
+When MCP is on, each cluster's **Overview** shows its MCP address with a copy
+button and **Connect an agent…**, which gives ready-to-paste setup for
+OpenCode, Claude Code and Codex. The address uses the host the browser reached
+the console at, so it is correct behind a proxy. The token is never shown.
+
+Build the MCP address from the console URL, `server.base_path` and the
+cluster name:
+
+```text
+<console-url><base_path>/mcp/<cluster>
+```
+
+| Console setup | MCP address |
+|---|---|
+| `http://localhost:8080`, cluster `local` | `http://localhost:8080/mcp/local` |
+| `https://kafka.example.com`, `base_path: /kafka`, cluster `prod` | `https://kafka.example.com/kafka/mcp/prod` |
+| Explicit endpoint `path: /agents/prod` | `https://kafka.example.com/agents/prod` |
+
+URL-encode cluster names that contain spaces or other reserved characters.
+Use HTTPS outside localhost. Put the token in an environment variable for the
+agent rather than in a project file:
+
+```sh
+export KAFKA_CONSOLE_MCP_AUTH_TOKEN="replace-with-the-console-token"
+```
+
+<details>
+<summary>OpenCode</summary>
+
+Add this to `opencode.json` or `opencode.jsonc`:
+
+```jsonc
 {
+  "$schema": "https://opencode.ai/config.json",
   "mcp": {
     "kafka-local": {
       "type": "remote",
       "url": "http://localhost:8080/mcp/local",
-      "headers": {"Authorization": "Bearer {env:KAFKA_CONSOLE_MCP_AUTH_TOKEN}"}
+      "oauth": false,
+      "headers": {
+        "Authorization": "Bearer {env:KAFKA_CONSOLE_MCP_AUTH_TOKEN}"
+      },
+      "enabled": true
     }
   }
 }
 ```
+
+Check it with `opencode mcp list`.
+</details>
+
+<details>
+<summary>Claude Code</summary>
+
+Add the server for the current project:
+
+```sh
+claude mcp add --transport http kafka-local \
+  http://localhost:8080/mcp/local \
+  --header "Authorization: Bearer $KAFKA_CONSOLE_MCP_AUTH_TOKEN"
+```
+
+Check it with `claude mcp get kafka-local`, or run `/mcp` inside Claude Code.
+To share the address in `.mcp.json` without committing the token:
+
+```json
+{
+  "mcpServers": {
+    "kafka-local": {
+      "type": "http",
+      "url": "http://localhost:8080/mcp/local",
+      "headers": {
+        "Authorization": "Bearer ${KAFKA_CONSOLE_MCP_AUTH_TOKEN}"
+      }
+    }
+  }
+}
+```
+</details>
+
+<details>
+<summary>Codex</summary>
+
+Add this to `~/.codex/config.toml`, or to `.codex/config.toml` in a trusted
+project:
+
+```toml
+[mcp_servers.kafka-local]
+url = "http://localhost:8080/mcp/local"
+bearer_token_env_var = "KAFKA_CONSOLE_MCP_AUTH_TOKEN"
+```
+
+Start Codex from a shell where `KAFKA_CONSOLE_MCP_AUTH_TOKEN` is set, then use
+`/mcp` to check the connection.
+</details>
+
+After connecting, ask the agent to call `server_config` first. It shows the
+cluster, endpoint path and effective tool policy. If you omit
+`mcp.auth_token`, remove the authorization header and keep the endpoint behind a
+trusted authenticating proxy or private network.
+
+### Files from an agent
+
+Agents save and send files on the user's own machine; nothing is stored on the
+console's host. `search_messages` and `transform_messages` with `download`,
+and `produce_message` with `upload`, return a link and a `curl`
+command that the agent runs where the user is working. The data streams
+between that machine and Kafka while the command runs, so message bodies never
+pass through the model either.
+
+```text
+Find every order over 500 in orders-dlq and save them to orders.csv
+```
+
+```sh
+curl -fsS -o 'orders.csv.part' 'https://kafka.example.com/mcp/prod/files/Q2x…' && mv 'orders.csv.part' 'orders.csv'
+```
+
+A download is JSON lines, or CSV with `format: "csv"`, in this console's export
+layout, so it loads on a topic's **Messages** page with **Import…**. Values are
+never cut, nulls stay null, binary payloads keep their bytes, and Avro,
+Protobuf and JSON Schema values keep their schema ID. A `transform_messages`
+download imports too, or goes back through a `produce_message` upload.
+
+Links are served at `<endpoint path>/files/` and expire after 10 minutes. They
+need no bearer token, because the agent's `curl` does not carry the MCP
+client's headers. Instead each link carries its request sealed with AES-GCM, so
+it shows nothing in proxy logs and cannot be changed; treat it as a secret until
+it expires, and run an upload command once. The key comes from
+`mcp.link_key`, or `mcp.auth_token` when that is unset. **Running several
+console instances behind one address? Give them the same key**: the link holds
+the whole request, so any instance can serve a link another made, with nothing
+shared between them. Browser origins are checked as for the endpoint. Links use
+the address the agent reached the console at, honouring `X-Forwarded-Proto` and
+`X-Forwarded-Host`; set `mcp.public_url` when a proxy hides the real one.
 
 For separate endpoint policies, configure an explicit map. Every console
 cluster is visible to `list_clusters` and `compare_clusters`:
@@ -392,7 +521,7 @@ endpoint and serves it on its own router, with its own bearer-token and origin
 checks. MCP borrows the
 console's existing Kafka, admin and Schema Registry clients, its cached
 manual-partition producer, its bulk producer for batch writes (`produce_message`
-with `input_file`, `transform_messages`) and its `protobuf` topic mappings. No
+with `upload`, `transform_messages`) and its `protobuf` topic mappings. No
 broker/TLS/SASL/OAuth configuration is converted or reloaded. Message scans
 borrow readers from the console's pool, at most `limits.mcp_reads` at a time
 and apart from the UI's own reads, so an agent cannot starve the UI or open

@@ -50,6 +50,8 @@
   let skip = $state(0)
   let resumeAt = $state(0)
   let rewritten = $state(0)
+  let uncertain = $state<SendResult['uncertain']>()
+  let acceptDuplicates = $state(false)
   let byPartition = $state<Record<number, number>>({})
   let error = $state('')
   let stop = false
@@ -109,6 +111,8 @@
     problems = []
     byPartition = {}
     fatal = error = ''
+    uncertain = undefined
+    acceptDuplicates = false
   }
 
   async function load(f: File | undefined) {
@@ -191,6 +195,8 @@
     merge(r)
     resumeAt = r.resumeAt
     rewritten = r.rewritten
+    uncertain = r.uncertain
+    acceptDuplicates = false
     error = r.error
     phase = 'done'
   }
@@ -220,7 +226,7 @@
       <FileUp size={18} />
       {#if file}<span><b class="mono">{file.name}</b> · {bytes(file.size)} · choose another file or drop it here</span>
       {:else}<span>Choose a file or drop it here</span>{/if}
-      <span class="faint small">A JSON or CSV export from this console, JSON lines, or one value per line. Any size: the file is read in a stream.</span>
+      <span class="faint small">A JSON or CSV export from this console or kafka-mcp, JSON lines, or one value per line. Any size: the file is read in a stream.</span>
     </label>
 
     {#if file}
@@ -350,6 +356,11 @@
         {error ? 'The import stopped' : 'Stopped'}. Items up to {fmt(resumeAt - 1)} are written.
         {#if rewritten}{fmt(rewritten)} later {rewritten === 1 ? 'record' : 'records'} of the failed batch were written too and will be written again on resume.{/if}
       </p>
+      {#if uncertain}
+        <div class="error" role="alert">The result of items {fmt(uncertain.first)}–{fmt(uncertain.last)} is unknown.
+          Some or all may already be written. Resuming resends this batch and can create duplicates.</div>
+        <label class="check"><input type="checkbox" bind:checked={acceptDuplicates} /> I understand that resuming may duplicate these records.</label>
+      {/if}
     {/if}
     {#if Object.keys(byPartition).length}
       <p class="faint small mono">{Object.entries(byPartition).map(([p, n]) => `p${p}: ${fmt(n)}`).join(' · ')}</p>
@@ -370,7 +381,7 @@
       <button class="danger" onclick={() => (stop = true)}><Square size={13} />Stop after this batch</button>
     {:else}
       {#if !finished && resumeAt}
-        <button disabled={cluster.read_only || (cluster.confirm_writes && confirm !== topic)} onclick={() => run(resumeAt - 1)}><StepForward size={14} />Resume from item {fmt(resumeAt)}</button>
+        <button disabled={cluster.read_only || (cluster.confirm_writes && confirm !== topic) || (!!uncertain && !acceptDuplicates)} onclick={() => run(resumeAt - 1)}><StepForward size={14} />Resume from item {fmt(resumeAt)}</button>
       {/if}
       <button class="primary" onclick={() => (open = false)}>Done</button>
     {/if}

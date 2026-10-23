@@ -1,10 +1,16 @@
 <script lang="ts">
-  import { onDestroy, untrack } from 'svelte'
-  import { api, tail, messageStream, isAbort, rawURL, type Cluster, type ConsumeResult, type Message } from '../lib/api'
+  import { onDestroy, untrack, type ComponentProps } from 'svelte'
+  import { api, rawURL, type Cluster, type Message } from '../lib/api'
+  import { messageFeed } from '../lib/messageFeed.svelte'
+  import { liveCap, tailQuery } from '../lib/messageFeed'
   import Pending from '../lib/Pending.svelte'
   import { app } from '../lib/features.svelte'
   import { copyText } from '../lib/resource.svelte'
   import { fmt } from '../lib/format'
+  import { exportJSON, exportCSV } from '../lib/messageExport'
+  import { resendOrder } from '../lib/resend'
+  import { messageStart, startProblem, timeStarts, type MessageStart } from '../lib/messageStart'
+  const messageStartsAtTime = (start: MessageStart) => start === 'custom' || timeStarts.some((preset) => preset.value === start)
   import { prefs, loadColumns, saveColumns, loadDetailWidth, saveDetailWidth, loadWidths, saveWidths } from '../lib/prefs.svelte'
   import ViewSettings from '../lib/ViewSettings.svelte'
   import ColResizer from '../lib/ColResizer.svelte'
@@ -54,30 +60,19 @@
     }
   }
 
-  let start = $state(untrack(() => (at ? 'offset' : 'newest')))
+  let start = $state<MessageStart>(untrack(() => (at ? 'offset' : 'newest')))
   let partition = $state(untrack(() => (at ? String(at.partition) : '')))
   let offset = $state(untrack(() => at?.offset ?? 0))
   // For "last": how many of the newest records of each partition.
   let lastN = $state(100)
   let limit = $state(50)
-  // Time range, in any read direction: a span back from now, or custom
-  // bounds (datetime-local text, either may be left open).
-  let range = $state('')
+  // Custom time bounds are only active when selected in Start.
   let since = $state('')
   let until = $state('')
-  const spans: [string, string, number][] = [
-    ['15m', 'Last 15 min', 15 * 60_000], ['1h', 'Last hour', 3_600_000], ['6h', 'Last 6 hours', 6 * 3_600_000],
-    ['24h', 'Last 24 hours', 86_400_000], ['7d', 'Last 7 days', 7 * 86_400_000],
-  ]
-  // The range in unix milliseconds, a span measured from the moment of the read.
-  function timeRange(): { since?: number; until?: number } {
-    if (range === 'custom') {
-      return { since: since ? new Date(since).getTime() : undefined, until: until ? new Date(until).getTime() : undefined }
-    }
-    const span = spans.find(([id]) => id === range)
-    return span ? { since: Date.now() - span[2] } : {}
-  }
-  const rangeError = $derived(range === 'custom' && !!since && !!until && new Date(until) < new Date(since) ? 'The end of the time range is before its start' : '')
+  // Exact time checks later offsets for out-of-order producer timestamps.
+  // The default uses Kafka's time index and stays fast on large topics.
+  let exactTime = $state(false)
+  const rangeError = $derived(startProblem(start, since, until))
   // datetime-local text for unix milliseconds, in local time.
   function localInput(ms?: number) {
     if (ms === undefined) return ''
@@ -86,9 +81,6 @@
   }
   let filter = $state('')
   let search = $state('')
-  // The term the current result was fetched with; highlighting follows the
-  // result, not whatever is being typed next.
-  let searched = $state('')
   let showFilter = $state(false)
   let raw = $state(false)
   // How keys and values are read when the automatic choice is wrong, e.g.
@@ -100,257 +92,57 @@
     ['hex', 'Hex'], ['base64', 'Base64'], ['uint', 'Unsigned int'],
   ]
 
-  // Raw: results are replaced, never edited, so their (up to thousands of)
-  // messages need no deep proxies.
-  let result = $state.raw<ConsumeResult>()
-  let loading = $state(false)
-  let error = $state('')
   let selected = $state.raw<Message>()
-  // The read in flight. A new Fetch or Stop aborts it, on the server too.
-  let reading: AbortController | undefined
+  const feed = messageFeed(() => ({ cluster: cluster.name, topic }), {
+    reset: () => { selected = undefined; expanded = new Set(); picked = new Set() },
+    trim: (kept) => {
+      if ([...picked].some((k) => !kept.has(k))) picked = new Set([...picked].filter((k) => kept.has(k)))
+      if (selected && !kept.has(mkey(selected))) selected = undefined
+    },
+  })
+  const result = $derived(feed.state.result)
+  const shownQuery = $derived(feed.state.query)
+  const loading = $derived(feed.state.loading)
+  const loadingMore = $derived(feed.state.loadingMore)
+  const error = $derived(feed.state.error)
+  const searched = $derived(feed.state.searched)
+  const live = $derived(feed.state.live)
+  const paused = $derived(feed.state.paused)
+  const liveStats = $derived(feed.state.liveStats)
+  const liveError = $derived(feed.state.liveError)
+  const stopReading = feed.stopReading
+  const stopLive = feed.stopLive
+  onDestroy(feed.dispose)
 
-  // The query of the shown result, so "Load more" continues that read even
-  // after the form was edited.
-  let shownQuery = $state.raw<Record<string, string | number | boolean | undefined>>({})
-  // Bumped by whatever replaces the shown result (a fetch, a tail), so a
-  // read it cut off does not write over it.
-  let shownGen = 0
-
-  // more continues the shown read from where it stopped, appending to it.
-  // Matches are shown as the server finds them; Stop keeps what arrived and
-  // the read can still be continued from where it was stopped.
-  async function load(more = false) {
-    // Enter in the search box or ⌘Enter in the filter can fetch while a
-    // tail runs; the fetch replaces the list, so the tail must not feed it.
-    if (live) stopLive()
-    if (!more && rangeError) {
-      error = rangeError
-      return
-    }
-    reading?.abort()
-    const ctl = (reading = new AbortController())
-    const gen = ++shownGen
-    const current = () => gen === shownGen
-    const prev = more ? result : undefined
-    if (!more) {
-      searched = search.trim()
-      shownQuery = {
-        start,
-        partitions: partition,
-        offset: start === 'offset' ? offset : start === 'last' ? lastN : undefined,
-        ...timeRange(),
-        limit,
-        filter: showFilter ? filter : undefined,
-        q: search.trim() || undefined,
-        raw,
-        key_as: keyAs || undefined,
-        value_as: valueAs || undefined,
-      }
-    }
-    const query = shownQuery
-    const newestFirst = query.start === 'newest'
-    const after = more && prev ? Object.entries(prev.next ?? {}).map(([p, o]) => `${p}:${o}`).join(',') : undefined
-    loading = true
-    loadingMore = more
-    error = ''
-
-    const began = performance.now()
-    const base = prev?.messages ?? []
-    let got: Message[] = []
-    let scanned = 0
-    // Where a stopped read continues: the server's last report, moved past
-    // the matches that arrived after it.
-    let next: Record<string, number> = { ...(prev?.next ?? {}) }
-    let pending = false
-    let finished = false
-    const show = (stoppedBy: string, extra: Partial<ConsumeResult> = {}) => {
-      result = {
-        messages: got.length ? [...base, ...got] : base,
-        scanned: (prev?.scanned ?? 0) + scanned,
-        script_errors: (prev?.script_errors ?? 0) + (extra.script_errors ?? 0),
-        first_error: extra.first_error ?? prev?.first_error,
-        stopped_by: stoppedBy,
-        elapsed_ms: Math.round(performance.now() - began),
-        next,
-      }
-    }
-    // Rows are added a few times a second, not per message.
-    let timer: ReturnType<typeof setTimeout> | undefined
-    const schedule = () => {
-      if (pending) return
-      pending = true
-      timer = setTimeout(() => {
-        pending = false
-        if (current()) show('reading')
-      }, 100)
-    }
-
-    if (!more) {
-      selected = undefined
-      expanded = new Set()
-      picked = new Set()
-      show('reading')
-    }
-
-    try {
-      await messageStream(cluster.name, topic, { ...query, after }, (e) => {
-        scanned = e.scanned
-        switch (e.type) {
-          case 'message': {
-            const m = e.message
-            got.push(m)
-            const p = String(m.partition)
-            const at = newestFirst ? m.offset : m.offset + 1
-            if (next[p] === undefined || (newestFirst ? at < next[p] : at > next[p])) next[p] = at
-            schedule()
-            break
-          }
-          case 'progress':
-            if (e.next) next = e.next
-            schedule()
-            break
-          case 'done':
-            finished = true
-            next = e.result.next ?? {}
-            show(e.result.stopped_by, e.result)
-            break
-          case 'error':
-            throw new Error(e.error)
-        }
-      }, ctl.signal)
-      if (!finished && current()) show('cancelled')
-    } catch (e: any) {
-      if (!current()) {
-        // Replaced by a newer read or a tail; it owns the list now.
-      } else if (isAbort(e)) {
-        // Stopped: keep what arrived, and let Load more continue from there.
-        show('cancelled')
-      } else {
-        error = e.message
-        if (!more) result = undefined
-      }
-    } finally {
-      clearTimeout(timer)
-      if (reading === ctl) {
-        reading = undefined
-        loading = false
-        loadingMore = false
-      }
+  // What to show, apart from where to start; live tail uses only this.
+  function view() {
+    return {
+      partitions: partition, filter: showFilter ? filter : undefined,
+      q: search.trim() || undefined, raw, key_as: keyAs || undefined, value_as: valueAs || undefined,
     }
   }
-  let loadingMore = $state(false)
-  onDestroy(() => reading?.abort())
-
-  function stopReading() {
-    reading?.abort()
-    reading = undefined
-    loading = false
-    loadingMore = false
+  function query() {
+    return {
+      ...messageStart(start, { offset, lastN, since, until }), ...view(),
+      exact: messageStartsAtTime(start) && exactTime ? true : undefined,
+      limit,
+    }
+  }
+  function load(more = false) {
+    if (more) return feed.load({}, true)
+    if (rangeError) { feed.fail(rangeError); return }
+    return feed.load(query())
   }
 
-  // Rows that arrived over live tail. They flash once when inserted; the set
-  // is not reactive on purpose, it is only read as each row is created.
-  const fresh = new Set<string>()
   function arrived(node: HTMLElement, key: string) {
-    if (!fresh.delete(key)) return
+    if (!feed.fresh.delete(key)) return
     node.classList.add('arrived')
     node.addEventListener('animationend', () => node.classList.remove('arrived'), { once: true })
   }
 
-  // Live tail: newest first, capped so a busy topic cannot exhaust memory.
-  const liveCap = 2000
-  let live = $state(false)
-  let liveStats = $state({ scanned: 0, matched: 0, scriptErrors: 0, firstError: '' })
-  let paused = $state(false)
-  let stop: (() => void) | undefined
-
-  // A busy topic sends hundreds of messages a second; they are added in
-  // batches a few times a second, so the list re-renders per batch, not per
-  // message. Fast enough to read as live.
-  let incoming: Message[] = []
-  let frame: ReturnType<typeof setTimeout> | undefined
-  const liveEvery = 250
-  let liveError = $state('')
-  function flush() {
-    frame = undefined
-    if (!result || !incoming.length) return
-    const add = incoming.reverse()
-    incoming = []
-    const all = [...add, ...result.messages]
-    result = { ...result, messages: all.slice(0, liveCap) }
-    // Rows past the cap are gone: they can no longer be selected, resent
-    // or flashed, so nothing may keep pointing at them.
-    if (all.length > liveCap) {
-      const kept = new Set(result.messages.map(mkey))
-      for (const k of fresh) if (!kept.has(k)) fresh.delete(k)
-      if ([...picked].some((k) => !kept.has(k))) picked = new Set([...picked].filter((k) => kept.has(k)))
-      if (selected && !kept.has(mkey(selected))) selected = undefined
-    }
-  }
-
   function startLive() {
-    stopLive()
-    stopReading()
-    shownGen++
-    searched = search.trim()
-    error = ''
-    liveError = ''
-    expanded = new Set()
-    picked = new Set()
-    live = true
-    paused = false
-    liveStats = { scanned: 0, matched: 0, scriptErrors: 0, firstError: '' }
-    result = { messages: [], scanned: 0, script_errors: 0, stopped_by: 'live', elapsed_ms: 0 }
-    selected = undefined
-    // "newest" in live mode means only messages that arrive from now on;
-    // oldest with a time range follows on from the range's start.
-    const from = timeRange().since
-    const fromTime = start === 'oldest' && from !== undefined
-    stop = tail(cluster.name, topic, {
-      start: fromTime ? 'timestamp' : start,
-      partitions: partition,
-      offset: start === 'offset' ? offset : start === 'last' ? lastN : undefined,
-      timestamp: fromTime ? from : undefined,
-      filter: showFilter ? filter : undefined,
-      q: search.trim() || undefined,
-      raw,
-      key_as: keyAs || undefined,
-      value_as: valueAs || undefined,
-    }, {
-      event: (e) => {
-        liveStats = { scanned: e.scanned, matched: e.matched, scriptErrors: e.script_errors ?? 0, firstError: e.first_error ?? '' }
-        // A fetch error mid-stream is passing; the tail keeps going, so it
-        // is shown above the rows instead of in place of them.
-        if (e.error) liveError = e.error
-        else if (e.message) liveError = ''
-        if (e.message && !paused) {
-          fresh.add(`${e.message.partition}:${e.message.offset}`)
-          incoming.push(e.message)
-          frame ??= setTimeout(flush, liveEvery)
-        }
-      },
-      error: (msg) => {
-        error = msg
-        stop = undefined
-        live = false
-      },
-      end: () => {
-        stop = undefined
-        live = false
-      },
-    })
+    feed.startLive(tailQuery(view()))
   }
-
-  function stopLive() {
-    stop?.()
-    stop = undefined
-    live = false
-    clearTimeout(frame)
-    frame = undefined
-    flush()
-  }
-
-  onDestroy(stopLive)
 
   const hasMore = $derived(!live && !!result && result.stopped_by !== 'live' && (loadingMore || (!loading && Object.keys(result.next ?? {}).length > 0)))
 
@@ -362,27 +154,10 @@
     let body: string
     let type: string
     if (kind === 'json') {
-      // JSON values are spliced in as their text: parsing them would round
-      // large integers, and Import reads this file back.
-      body = '[\n' + list.map((m) => {
-        const raw = rawJSON(m)
-        const rest = JSON.stringify({ ...m, value: raw === undefined ? m.value : null }, null, 2)
-        return '  ' + (raw === undefined ? rest : rest.replace(/"value": null/, () => `"value": ${raw}`)).replaceAll('\n', '\n  ')
-      }).join(',\n') + '\n]\n'
+      body = exportJSON(list)
       type = 'application/json'
     } else {
-      const esc = (v: unknown) => {
-        const s = v === null || v === undefined ? '' : String(v)
-        return /[",\n]/.test(s) ? `"${s.replaceAll('"', '""')}"` : s
-      }
-      // Binary keys and values are base64 text; the encoding columns tell
-      // Import to decode them back to the original bytes.
-      const rows = [['partition', 'offset', 'timestamp', 'key', 'value', 'headers', 'key_encoding', 'value_encoding']]
-      for (const m of list) {
-        rows.push([String(m.partition), String(m.offset), m.timestamp, m.key ?? '', m.value ?? '', JSON.stringify(m.headers),
-          m.key_encoding === 'base64' ? 'base64' : '', m.value_encoding === 'base64' ? 'base64' : ''])
-      }
-      body = rows.map((r) => r.map(esc).join(',')).join('\n')
+      body = exportCSV(list)
       type = 'text/csv'
     }
     const a = document.createElement('a')
@@ -391,17 +166,6 @@
     a.click()
     // Revoking at once can cancel the download before it starts.
     setTimeout(() => URL.revokeObjectURL(a.href), 1000)
-  }
-
-  // The value's own JSON text when it is a JSON document, else undefined.
-  function rawJSON(m: Message) {
-    if (m.value === null || m.truncated || !m.value_format || m.value_format === 'text' || m.value_format === 'binary') return undefined
-    try {
-      JSON.parse(m.value)
-      return m.value.trim()
-    } catch {
-      return undefined
-    }
   }
 
 
@@ -461,8 +225,7 @@
   let importing = $state(false)
   let resendList = $state<Message[]>([])
   function resend(list: Message[]) {
-    // Oldest first, so per-key order survives the copy.
-    resendList = [...list].sort((a, b) => a.timestamp.localeCompare(b.timestamp) || a.partition - b.partition || a.offset - b.offset)
+    resendList = resendOrder(list)
     resending = true
   }
 
@@ -688,10 +451,17 @@
     saveDetailWidth(null)
   }
 
-  // The replay dialog starts from the range shown here.
+  // The replay dialog starts from the range shown here, taken when it opens
+  // so "Last 15 min" means the 15 minutes before opening.
   function rangeSeed() {
-    const t = timeRange()
+    if (rangeError) return { since: '', until: '' }
+    const t = messageStart(start, { offset, lastN, since, until })
     return { since: localInput(t.since), until: localInput(t.until) }
+  }
+  let replaySeed = $state<ComponentProps<typeof ReplayDialog>['seed']>()
+  function openReplay() {
+    replaySeed = { partition, start, offset, ...rangeSeed(), search: search.trim(), filter: showFilter ? filter : '' }
+    replaying = true
   }
 
   // Last: load() resets state declared throughout this script before its
@@ -721,8 +491,9 @@
 <svelte:window onkeydown={onkey} />
 
 <ResendDialog {cluster} {topic} messages={resendList} bind:open={resending} />
-<ReplayDialog {cluster} {topic} {partitions} bind:open={replaying}
-  seed={{ partition, start, offset, ...rangeSeed(), search: search.trim(), filter: showFilter ? filter : '' }} />
+{#if replaySeed}
+  <ReplayDialog {cluster} {topic} {partitions} bind:open={replaying} seed={replaySeed} />
+{/if}
 <ImportDialog {cluster} {topic} {partitions} bind:open={importing} />
 {#if editError}<div class="error" role="alert">{editError}</div>{/if}
 
@@ -738,19 +509,37 @@
         <button type="button" class="ghost clear" aria-label="Clear search" onclick={() => { search = ''; load() }}><X size={13} /></button>
       {/if}
     </label>
-    <label class="f">
+    <label class="f start" title="Choose where reading begins. Time ranges show the newest matching messages first; Load older continues the same range.">
       <span class="fl">Start</span>
-      <select bind:value={start}>
-        <option value="newest">Newest</option>
-        <option value="oldest">Oldest</option>
-        <option value="offset">From offset</option>
-        <option value="last">Last N per partition</option>
+      <select bind:value={start} aria-label="Start">
+        <optgroup label="Position">
+          <option value="newest">Newest</option>
+          <option value="oldest">Oldest</option>
+          <option value="offset">From offset</option>
+          <option value="last">Last N per partition</option>
+        </optgroup>
+        <optgroup label="Time">
+          {#each timeStarts as preset (preset.value)}<option value={preset.value}>{preset.label}</option>{/each}
+          <option value="custom">Custom time range…</option>
+        </optgroup>
       </select>
     </label>
     {#if start === 'offset'}
       <label class="f"><span class="fl">Offset</span><input type="number" min="0" class="w-num" bind:value={offset} /></label>
     {:else if start === 'last'}
       <label class="f" title="Read the newest N records of each partition, oldest first"><span class="fl">N</span><input type="number" min="1" class="w-sm" bind:value={lastN} /></label>
+    {:else if start === 'custom'}
+      <label class="f time-bound" class:bad={!!rangeError} title="Leave empty to start at the oldest message">
+        <span class="fl">From</span><input type="datetime-local" step="1" bind:value={since} aria-invalid={!!rangeError} />
+      </label>
+      <label class="f time-bound" class:bad={!!rangeError} title={rangeError || 'Leave empty to read up to the newest message'}>
+        <span class="fl">To</span><input type="datetime-local" step="1" bind:value={until} aria-invalid={!!rangeError} />
+      </label>
+    {/if}
+    {#if messageStartsAtTime(start)}
+      <label class="f switch" class:on={exactTime} title="Check every later offset for out-of-order producer timestamps. Slower on large topics.">
+        <input type="checkbox" bind:checked={exactTime} />Exact time
+      </label>
     {/if}
     <label class="f">
       <span class="fl">Partition</span>
@@ -760,22 +549,6 @@
       </select>
     </label>
     <label class="f" title="Messages to return"><span class="fl">Limit</span><input type="number" min="1" max={app.maxLimit} class="w-sm" bind:value={limit} /></label>
-    <label class="f" title="Only messages whose timestamp is in this range, read in the chosen direction. The read runs until the limit, the end of the range, or Stop.">
-      <span class="fl">Time</span>
-      <select bind:value={range}>
-        <option value="">Any time</option>
-        {#each spans as [id, label] (id)}<option value={id}>{label}</option>{/each}
-        <option value="custom">Custom…</option>
-      </select>
-    </label>
-    {#if range === 'custom'}
-      <label class="f" class:bad={!!rangeError} title="Leave empty to start at the oldest message">
-        <span class="fl">From</span><input type="datetime-local" step="1" bind:value={since} aria-invalid={!!rangeError} />
-      </label>
-      <label class="f" class:bad={!!rangeError} title={rangeError || 'Leave empty to read up to the newest message'}>
-        <span class="fl">To</span><input type="datetime-local" step="1" bind:value={until} aria-invalid={!!rangeError} />
-      </label>
-    {/if}
     <label class="f switch" class:on={showFilter} title="Filter with a JavaScript expression">
       <input type="checkbox" bind:checked={showFilter} /><Code size={13} />JS filter
     </label>
@@ -797,14 +570,13 @@
   <span class="spacer"></span>
   <div class="actions">
     {#if live}
-      <button type="button" onclick={() => (paused = !paused)}>{#if paused}<Play size={14} />Resume{:else}<Pause size={14} />Pause{/if}</button>
+      <button type="button" onclick={() => feed.pause(!paused)}>{#if paused}<Play size={14} />Resume{:else}<Pause size={14} />Pause{/if}</button>
       <button type="button" class="danger" onclick={stopLive}><Square size={13} />Stop</button>
     {:else if loading}
       <button type="button" class="danger" onclick={stopReading} title="Stop reading; the server stops scanning too (Esc)"><Square size={13} />Stop</button>
       <button class="primary" type="submit" disabled><Loader size={14} class="animate-spin" />Reading…</button>
     {:else}
-      <button type="button" onclick={startLive}
-        title={start === 'newest' ? 'Watch new messages as they arrive' : 'Read from the selected start and keep following'}><Radio size={14} />Live tail</button>
+      <button type="button" onclick={startLive} title="Watch messages that arrive from now on. Search, partition, filter and decoding still apply."><Radio size={14} />Live tail</button>
       <button class="primary" type="submit"><Play size={14} />Fetch</button>
     {/if}
   </div>
@@ -855,7 +627,7 @@
     {#if !cluster.read_only || result.messages.length}
       {#snippet tools()}
         {#if !cluster.read_only}
-          <button class="ghost small" onclick={() => (replaying = true)} title="Copy a range of this topic to another topic or back into it"><History size={13} />Replay range…</button>
+          <button class="ghost small" onclick={openReplay} title="Copy a range of this topic to another topic or back into it"><History size={13} />Replay range…</button>
           <button class="ghost small" onclick={() => (importing = true)} title="Write records from a JSON, CSV or text file"><Upload size={13} />Import…</button>
         {/if}
         {#if result?.messages.length}
@@ -1285,7 +1057,7 @@
     .fields { display: grid; grid-template-columns: 1fr 1fr; width: 100%; }
     .f { height: 40px; min-width: 0; }
     .f select, .f input:not([type='checkbox']) { height: 38px; min-width: 0; flex: 1; font-size: 16px; }
-    .search { grid-column: 1 / -1; min-width: 0; }
+    .search, .start, .time-bound { grid-column: 1 / -1; min-width: 0; }
     .switch { justify-content: center; }
     .w-sm, .w-num { width: auto; }
     .controls > .spacer { display: none; }

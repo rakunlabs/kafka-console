@@ -17,6 +17,14 @@ server:
 #   delete_group: false
 #   alter_broker: false  # broker config edits and partition reassignment
 
+# MCP for AI agents at http://localhost:8080/mcp/<cluster>; Overview shows the
+# address and setup for OpenCode, Claude Code and Codex.
+mcp:
+  enabled: true
+  # Set KAFKA_CONSOLE_MCP_AUTH_TOKEN when starting the console to require a
+  # bearer token; keep the token out of this file.
+  allow_writes: true     # local only: writes still need MCP's confirm preview
+
 clusters:
   local:
     brokers: ["localhost:19092"]

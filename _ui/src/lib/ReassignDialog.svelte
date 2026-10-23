@@ -1,7 +1,7 @@
 <script lang="ts">
   import Pending from './Pending.svelte'
   import { untrack } from 'svelte'
-  import { api, type Cluster, type Partition, type PartitionMove, type ReassignResult } from './api'
+  import { api, isAbort, type Cluster, type Partition, type PartitionMove, type ReassignResult } from './api'
   import Modal from './Modal.svelte'
   import { Scale, RotateCcw } from '@lucide/svelte'
 
@@ -45,7 +45,7 @@
       brokers = o.brokers.map((b) => b.id)
       moving = m
     } catch (e: any) {
-      error = e.message
+      if (!isAbort(e)) error = e.message
     } finally {
       busy = false
     }
@@ -89,7 +89,7 @@
       const by = new Map(p.map((x) => [x.partition, x.replicas]))
       rows = rows.map((r) => ({ ...r, text: (by.get(r.partition) ?? r.from).join(', ') }))
     } catch (e: any) {
-      error = e.message
+      if (!isAbort(e)) error = e.message
     } finally {
       busy = false
     }

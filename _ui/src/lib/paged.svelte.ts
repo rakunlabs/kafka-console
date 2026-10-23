@@ -45,11 +45,12 @@ export function paged<T, Q>(opts: {
       const limit = keep ? Math.min(Math.max(items.length, size), 500) : size
       const q = untrack(opts.query)
       const res = await withSignal(c.signal, () => opts.fetch(q, 0, limit))
+      if (ctl !== c || c.signal.aborted) return
       items = res.items
       total = res.total
       if (untrack(opts.cacheable)) remember(opts.key, res)
     } catch (e: any) {
-      if (!isAbort(e)) error = e.message
+      if (ctl === c && !isAbort(e)) error = e.message
     } finally {
       if (ctl === c) loading = false
     }
@@ -61,13 +62,14 @@ export function paged<T, Q>(opts: {
     more = true
     try {
       const res = await withSignal(c.signal, () => opts.fetch(untrack(opts.query), items.length, size))
+      if (ctl !== c || c.signal.aborted) return
       // Items created or deleted between pages shift the offsets; skip ones
       // already shown instead of listing them twice.
       const seen = new Set(items.map(opts.id))
       items = [...items, ...res.items.filter((t) => !seen.has(opts.id(t)))]
       total = res.total
     } catch (e: any) {
-      if (!isAbort(e)) error = e.message
+      if (ctl === c && !isAbort(e)) error = e.message
     } finally {
       if (ctl === c) more = false
     }
@@ -97,7 +99,7 @@ export function paged<T, Q>(opts: {
     })
     // Navigation aborts the page's reads anyway; this also covers the list
     // unmounting while its page stays (another tab of the same topic).
-    $effect(() => () => ctl?.abort())
+    $effect(() => () => stop())
   }
 
   return {

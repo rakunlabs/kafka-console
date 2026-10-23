@@ -223,12 +223,23 @@ func (c *Config) ClusterFeatures(name string) Features {
 // MCP is opt-in and read-only unless AllowWrites is explicitly enabled.
 // Cluster read_only remains a lower bound regardless of endpoint policy.
 type MCP struct {
-	Enabled      bool                    `cfg:"enabled"`
-	AllowWrites  bool                    `cfg:"allow_writes"`
-	AuthToken    string                  `cfg:"auth_token" log:"-"`
-	AllowOrigins []string                `cfg:"allow_origins"`
-	OutputDir    string                  `cfg:"output_dir"`
-	Endpoints    map[string]*MCPEndpoint `cfg:"endpoints"`
+	Enabled      bool     `cfg:"enabled"`
+	AllowWrites  bool     `cfg:"allow_writes"`
+	AuthToken    string   `cfg:"auth_token" log:"-"`
+	AllowOrigins []string `cfg:"allow_origins"`
+	// PublicURL is the address agents reach the console at, such as
+	// https://kafka.example.com, for download and upload links when a proxy
+	// hides it. Empty means the address each request arrived at.
+	PublicURL string `cfg:"public_url"`
+	// LinkKey seals download and upload links, which carry the request they
+	// run, so every console instance behind one address must share it: a
+	// link made on one then opens on another. Empty uses auth_token; without
+	// either each process makes a random key and links open only there.
+	LinkKey string `cfg:"link_key" log:"-"`
+	// OutputDir is read only to refuse it: tool files now pass straight
+	// between the agent's machine and Kafka and are never stored here.
+	OutputDir string                  `cfg:"output_dir"`
+	Endpoints map[string]*MCPEndpoint `cfg:"endpoints"`
 }
 
 // MCPEndpoint is one MCP server over a cluster. Without explicit endpoints,
@@ -492,6 +503,10 @@ func (c *Config) validate() error {
 
 	if err := c.Limits.validate("limits"); err != nil {
 		return err
+	}
+
+	if c.MCP.OutputDir != "" {
+		return fmt.Errorf("mcp.output_dir is no longer supported: agents download and upload files straight to and from their own machine through one-time links, and nothing is stored on the console's host. Remove it")
 	}
 
 	for name, cluster := range c.Clusters {

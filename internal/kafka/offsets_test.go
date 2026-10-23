@@ -83,3 +83,86 @@ func TestResetOffsetsRefusesAnUnknownGroup(t *testing.T) {
 		t.Fatal("a reset created the group it was given")
 	}
 }
+
+func TestResetAppliesReviewedTargets(t *testing.T) {
+	for _, strategy := range []string{"latest", "shift", "offsets"} {
+		t.Run(strategy, func(t *testing.T) {
+			c := fakeCluster(t, map[string]int32{"orders": 1})
+			seed(t, c, "orders", 0, 5, time.Now())
+			if _, err := c.CreateGroup(t.Context(), CreateGroupRequest{Group: "billing", Topic: "orders", Offsets: []PartitionOffset{{Partition: 0, Offset: 1}}}); err != nil {
+				t.Fatal(err)
+			}
+			preview, err := c.ResetOffsets(t.Context(), "billing", ResetRequest{Topic: "orders", Strategy: strategy, Shift: 2, Offsets: []PartitionOffset{{Partition: 0, Offset: 100}}, DryRun: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			seed(t, c, "orders", 0, 3, time.Now())
+			actual, err := c.ResetOffsets(t.Context(), "billing", ResetRequest{Topic: "orders", Plan: preview})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if actual[0].To != preview[0].To {
+				t.Fatalf("preview=%+v actual=%+v", preview, actual)
+			}
+			commits, err := c.admin.FetchOffsets(t.Context(), "billing")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if o, _ := commits.Lookup("orders", 0); o.At != preview[0].To {
+				t.Fatalf("committed %d, reviewed %d", o.At, preview[0].To)
+			}
+		})
+	}
+}
+
+func TestResetRefusesChangedReviewedState(t *testing.T) {
+	for _, change := range []string{"commit", "retention"} {
+		t.Run(change, func(t *testing.T) {
+			c := fakeCluster(t, map[string]int32{"orders": 2})
+			for p := range int32(2) {
+				seed(t, c, "orders", p, 10, time.Now())
+			}
+			if _, err := c.CreateGroup(t.Context(), CreateGroupRequest{Group: "billing", Topic: "orders", Offsets: []PartitionOffset{{Partition: 0, Offset: 1}, {Partition: 1, Offset: 1}}}); err != nil {
+				t.Fatal(err)
+			}
+			preview, err := c.ResetOffsets(t.Context(), "billing", ResetRequest{Topic: "orders", Strategy: "offset", Offset: 3, DryRun: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if change == "commit" {
+				_, err = c.ResetOffsets(t.Context(), "billing", ResetRequest{Topic: "orders", Strategy: "offsets", Offsets: []PartitionOffset{{Partition: 1, Offset: 2}}})
+			} else {
+				_, err = c.DeleteRecords(t.Context(), "orders", DeleteRecordsRequest{Partitions: []int32{1}, Strategy: "offset", Offset: 5})
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = c.ResetOffsets(t.Context(), "billing", ResetRequest{Topic: "orders", Plan: preview})
+			var conflict ErrConflict
+			if !errors.As(err, &conflict) {
+				t.Fatalf("wanted re-preview conflict, got %v", err)
+			}
+			commits, err := c.admin.FetchOffsets(t.Context(), "billing")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if o, _ := commits.Lookup("orders", 0); o.At != 1 {
+				t.Fatalf("partial commit despite refusal: %d", o.At)
+			}
+		})
+	}
+}
+
+func TestResetRefusesMalformedReviewedPlan(t *testing.T) {
+	c := fakeCluster(t, map[string]int32{"orders": 1})
+	for _, plan := range [][]ResetPlan{
+		{}, {{Partition: -1}}, {{From: -2}}, {{To: 3, Low: 4, High: 5}}, {{To: 6, High: 5}},
+		{{High: 5}, {High: 5}},
+	} {
+		_, err := c.ResetOffsets(t.Context(), "billing", ResetRequest{Topic: "orders", Plan: plan})
+		var invalid ErrInvalid
+		if !errors.As(err, &invalid) {
+			t.Fatalf("accepted malformed plan %+v: %v", plan, err)
+		}
+	}
+}

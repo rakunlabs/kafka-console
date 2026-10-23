@@ -2,6 +2,7 @@
   import { names } from './names'
   import { replay, type Cluster, type TopicName, type ReplayBody, type ReplayEvent, type ReplayRange } from './api'
   import { fmt } from './format'
+  import { reviewedReplay } from './replay'
   import { href } from './router.svelte'
   import Modal from './Modal.svelte'
   import TopicPicker from './TopicPicker.svelte'
@@ -38,6 +39,7 @@
   let keepTimestamp = $state(false)
   let mark = $state(true)
   let limit = $state<number | ''>('')
+  let exact = $state(false)
   let confirm = $state('')
   let topics = $state.raw<TopicName[]>([])
 
@@ -45,6 +47,7 @@
   let plan = $state<ReplayRange[]>([])
   let ev = $state<ReplayEvent>()
   let counted = $state<ReplayEvent>()
+  let reviewed: ReplayBody | undefined
   let error = $state('')
   let abort: AbortController | undefined
 
@@ -74,10 +77,12 @@
       keepTimestamp = false
       mark = true
       limit = ''
+      exact = false
       confirm = ''
       phase = 'edit'
       plan = []
       ev = counted = undefined
+      reviewed = undefined
       error = ''
       names(cluster.name).then((n) => (topics = n.topics)).catch(() => {})
     }
@@ -103,27 +108,38 @@
       keep_timestamp: keepTimestamp,
       mark_source: mark,
       limit: limit === '' ? undefined : Number(limit),
+      exact: exact || undefined,
       dry_run: dry,
     }
   }
 
   async function run(dry: boolean) {
+    if (!dry && !reviewed) return
     abort?.abort()
     const ctl = new AbortController()
     abort = ctl
     error = ''
     ev = undefined
     phase = dry ? 'counting' : 'running'
+    const request = dry ? body(true) : structuredClone(reviewed!)
+    const source = topic
+    const clusterName = cluster.name
+    if (dry) reviewed = undefined
     try {
-      await replay(cluster.name, topic, body(dry), (e) => {
+      await replay(clusterName, source, request, (e) => {
+        if (abort !== ctl) return
         if (e.type === 'plan') plan = e.plan ?? []
         ev = e
       }, ctl.signal)
+      if (abort !== ctl || !open) return
       if (dry) {
+        if (!ev) throw new Error('The review ended without a result. Review the replay again.')
+        reviewed = reviewedReplay(request, plan, ev)
         counted = ev
         phase = 'counted'
       } else phase = 'done'
     } catch (e: any) {
+      if (abort !== ctl || !open) return
       const last = ev as ReplayEvent | undefined
       if (ctl.signal.aborted) {
         phase = dry ? 'edit' : 'done'
@@ -138,6 +154,7 @@
   function edit() {
     phase = 'edit'
     counted = undefined
+    reviewed = undefined
   }
 
   const invalidRange = $derived(
@@ -169,7 +186,7 @@
   {#if phase === 'edit' || phase === 'counting'}
     <p class="lead">
       Copies every record in the range, oldest first per partition, with key, value and headers byte for byte.
-      The range is fixed when the replay starts, so records written meanwhile are not included.
+      Review fixes the offset range. Records written after that review are not included.
     </p>
 
     <div class="grid2">
@@ -222,11 +239,13 @@
       <label class="mode" class:on={!elsewhere}><input type="radio" name="replay-dest" checked={!elsewhere} disabled={busy} onchange={() => (elsewhere = false)} /><Repeat size={14} />Same topic</label>
     </fieldset>
     {#if elsewhere}
-      <TopicPicker {topics} bind:value={target} id="replay-target" />
+      {#if busy}<div class="mono">{target}</div>{:else}<TopicPicker {topics} bind:value={target} id="replay-target" />{/if}
     {:else}
       <div class="warnbox"><TriangleAlert size={15} /><span>Consumers of <span class="mono">{topic}</span> will receive these records again, as new records at the end.</span></div>
     {/if}
 
+    <label class="check"><input type="checkbox" bind:checked={exact} disabled={busy} /> Exact count and time check
+      <span class="hint">Scans the range to count committed records and checks every later offset for out-of-order timestamps. Slower on large topics.</span></label>
     <label class="check"><input type="checkbox" bind:checked={keepPartition} disabled={busy} /> Keep partition numbers
       <span class="hint">Off: the key decides the partition, as for any producer.</span></label>
     {#if missing.length}<p class="err">{dest} has {destInfo?.partitions} partitions; partition {missing.join(', ')} does not exist there.</p>{/if}
@@ -256,8 +275,9 @@
 
     {#if phase === 'counted' && shown}
       {#if shown.matched}
-        <p class="sum"><ListChecks size={15} /><span><b>{fmt(shown.matched)}</b> {shown.matched === 1 ? 'record' : 'records'} will be written to
+        <p class="sum"><ListChecks size={15} /><span>{shown.estimated ? 'Up to ' : ''}<b>{fmt(shown.matched)}</b> {shown.matched === 1 ? 'record' : 'records'} will be written to
           <b class="mono">{dest}</b>{shown.scanned ? ` (${fmt(shown.scanned)} read)` : ''}.</span></p>
+        {#if shown.estimated}<p class="faint small">Estimated from offsets. Transaction markers or compaction can make the actual number lower; turn on Exact count and time check to scan first.</p>{/if}
       {:else}
         <p class="sum">No record in the range matches. Nothing would be written.</p>
       {/if}

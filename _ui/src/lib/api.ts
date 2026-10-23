@@ -1,3 +1,5 @@
+import { HTTPError } from './http.ts'
+
 export type Cluster = {
   name: string
   brokers: string[]
@@ -13,7 +15,11 @@ export type Cluster = {
   description?: string
   // The cluster's features: its own settings over the global ones.
   features: Features
+  // MCP endpoints for agents; empty when MCP is off. Paths include base_path.
+  mcp?: MCPEndpoint[]
 }
+
+export type MCPEndpoint = { name: string; path: string; read_only: boolean; auth_token: boolean }
 
 export type TopicDoc = { html: string; source: string; file: string; modified: string }
 
@@ -341,33 +347,21 @@ async function request<T>(method: string, path: string, body?: unknown, opts: { 
   const scope = pageScope.signal
   const signals = [page ? scope : undefined, scoped].filter((s): s is AbortSignal => !!s)
   const signal = signals.length > 1 ? AbortSignal.any(signals) : signals[0]
-  let res: Response
-  try {
-    // Relative: resolves against the page URL, so it follows the server base_path.
-    res = await fetch(`api/v1${path}`, {
-      method,
-      headers: body === undefined ? undefined : { 'content-type': 'application/json' },
-      body: body === undefined ? undefined : JSON.stringify(body),
-      signal,
-    })
-  } catch (e) {
-    // Aborted because its page was left: the page is gone, so settle never.
-    // Its catch would only flash "aborted" over the next page, and its
-    // finally has nothing left to update. Other aborts (a Stop button, a
-    // newer search) reject normally so their own code can tell; see isAbort.
-    if (page && scope.aborted && isAbort(e)) return new Promise<T>(() => {})
-    throw e
-  }
+  // Relative: resolves against the page URL, so it follows the server base_path.
+  // Cancellation always settles. Callers ignore AbortError and guard stale
+  // state; keeping a request pending forever would skip their cleanup.
+  const res = await fetch(`api/v1${path}`, {
+    method,
+    headers: body === undefined ? undefined : { 'content-type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+    signal,
+  })
+  signal?.throwIfAborted()
 
   if (res.status === 204) return undefined as T
 
-  let text: string
-  try {
-    text = await res.text()
-  } catch (e) {
-    if (page && scope.aborted && isAbort(e)) return new Promise<T>(() => {})
-    throw e
-  }
+  const text = await res.text()
+  signal?.throwIfAborted()
   let data: any = undefined
   try {
     data = text ? JSON.parse(text) : undefined
@@ -377,7 +371,7 @@ async function request<T>(method: string, path: string, body?: unknown, opts: { 
 
   if (!res.ok) {
     const message = (data && typeof data === 'object' && data.message) || text || res.statusText
-    throw new Error(message)
+    throw new HTTPError(res.status, message)
   }
 
   return data as T
@@ -459,6 +453,7 @@ export type FilterProblem = { line: number; column: number; message: string }
 export type RangeBound = { type: string; offset?: number; timestamp?: number }
 
 export type ReplayBody = {
+  plan?: ReplayRange[]
   partitions?: number[]
   from: RangeBound
   to: RangeBound
@@ -469,6 +464,7 @@ export type ReplayBody = {
   keep_timestamp: boolean
   mark_source: boolean
   limit?: number
+  exact?: boolean
   dry_run: boolean
 }
 
@@ -480,6 +476,7 @@ export type ReplayEvent = {
   total: number
   scanned: number
   matched: number
+  estimated?: boolean
   written: number
   failed: number
   script_errors: number
@@ -654,7 +651,8 @@ export const api = {
     body: {
       topic: string
       partitions?: number[]
-      strategy: string
+      strategy?: string
+      plan?: ResetPlan[]
       offset?: number
       timestamp?: number
       shift?: number

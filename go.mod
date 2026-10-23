@@ -4,7 +4,7 @@ go 1.27.2
 
 require (
 	github.com/bufbuild/protocompile v0.14.1
-	github.com/denizgursoy/kafka-mcp v0.2.4
+	github.com/denizgursoy/kafka-mcp v0.2.6
 	github.com/dop251/goja v0.0.0-20261022125820-07c4b9d6265b
 	github.com/fxamacker/cbor/v2 v2.9.6
 	github.com/gomarkdown/markdown v0.0.0-20261022144421-6c848fa1b723

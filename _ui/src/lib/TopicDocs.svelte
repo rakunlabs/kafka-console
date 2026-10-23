@@ -1,7 +1,7 @@
 <script lang="ts">
   import Pending from './Pending.svelte'
   import { untrack } from 'svelte'
-  import { api, type Cluster, type TopicDoc } from './api'
+  import { api, isAbort, type Cluster, type TopicDoc } from './api'
   import { showTime } from './viewer'
 
   // A topic's documentation page from <docs.path>/<topic>.md. The server
@@ -16,6 +16,7 @@
   untrack(() => api.topicDoc(cluster.name, topic))
     .then((d) => (doc = d))
     .catch((e) => {
+      if (isAbort(e)) return
       if (/not found/i.test(e.message)) missing = true
       else error = e.message
     })

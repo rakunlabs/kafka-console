@@ -1,6 +1,7 @@
 <script lang="ts">
   import { api, type Cluster, type ResetPlan, type TopicConsumer } from './api'
   import { fmt } from './format'
+  import { reviewedOffsets } from './offsetReset'
   import Modal from './Modal.svelte'
   import { TriangleAlert, Eye, Check } from '@lucide/svelte'
 
@@ -78,7 +79,7 @@
     } catch {}
   }
 
-  const key = $derived(JSON.stringify([strategy, offset, shift, timestamp, source]))
+  const key = $derived(JSON.stringify([cluster.name, group, topic, partitions, strategy, offset, shift, timestamp, source]))
   // A preview describes the inputs it ran with; any edit voids it.
   $effect(() => {
     if (plan && key !== planKey) plan = undefined
@@ -138,11 +139,16 @@
   }
 
   async function preview() {
+    const gen = generation
+    const previewKey = key
     busy = true
     error = ''
+    plan = undefined
     try {
-      planKey = key
-      plan = (await api.resetOffsets(cluster.name, group, body(true))).partitions
+      const result = await api.resetOffsets(cluster.name, group, body(true))
+      if (gen !== generation || !open || previewKey !== key) return
+      planKey = previewKey
+      plan = result.partitions
     } catch (e: any) {
       error = e.message
     } finally {
@@ -154,7 +160,7 @@
     busy = true
     error = ''
     try {
-      plan = (await api.resetOffsets(cluster.name, group, body(false))).partitions
+      plan = (await api.resetOffsets(cluster.name, group, reviewedOffsets(topic, plan))).partitions
       done = true
       ondone?.()
     } catch (e: any) {
@@ -180,7 +186,7 @@
   const delta = (p: ResetPlan) => (p.from < 0 ? '—' : `${p.to - p.from > 0 ? '+' : ''}${(p.to - p.from).toLocaleString()}`)
 </script>
 
-<Modal title="Change offsets" bind:open width={600}>
+<Modal title="Change offsets" bind:open width={600} locked={busy}>
   <p class="lead">
     <span class="mono">{group}</span> on <span class="mono">{topic}</span> · <b>{target}</b>
   </p>
@@ -192,7 +198,7 @@
     </div>
   {/if}
 
-  <fieldset class="modes" aria-label="Target">
+  <fieldset class="modes" aria-label="Target" disabled={busy}>
     {#each [
       ['offset', 'Specific offset'],
       ['shift', 'Shift by'],
@@ -209,17 +215,17 @@
 
   {#if strategy === 'offset'}
     <label>Offset
-      <input type="number" min="0" class="mono" bind:value={offset} oninput={() => (touched = true)} />
+      <input type="number" min="0" class="mono" bind:value={offset} disabled={busy} oninput={() => (touched = true)} />
       {#if !single}<span class="hint">Applied to every selected partition, clamped to each one's range.</span>{/if}
     </label>
   {:else if strategy === 'shift'}
     <label>Messages to move
-      <input type="number" class="mono" bind:value={shift} />
+      <input type="number" class="mono" bind:value={shift} disabled={busy} />
       <span class="hint">Negative re-reads that many messages, positive skips ahead. Counted from each partition's committed offset.</span>
     </label>
   {:else if strategy === 'timestamp'}
     <label>Time
-      <input type="datetime-local" step="1" bind:value={timestamp} />
+      <input type="datetime-local" step="1" bind:value={timestamp} disabled={busy} />
       <span class="hint">Each partition moves to the first message at or after this time.</span>
     </label>
   {:else if strategy === 'copy'}
@@ -231,7 +237,7 @@
       <p class="hint">No other group has committed offsets on <span class="mono">{topic}</span>.</p>
     {:else}
       <label>Source group
-        <select bind:value={source}>
+        <select bind:value={source} disabled={busy}>
           {#each sources as s (s.group)}
             <option value={s.group}>{s.group} · {s.state || 'unknown'} · lag {fmt(s.lag)}</option>
           {/each}
@@ -280,7 +286,7 @@
   {#if error}<div class="error">{error}</div>{/if}
 
   {#snippet footer()}
-    <button onclick={() => (open = false)}>{done ? 'Close' : 'Cancel'}</button>
+    <button onclick={() => (open = false)} disabled={busy}>{done ? 'Close' : 'Cancel'}</button>
     {#if !done}
       <button onclick={preview} disabled={busy || invalid}><Eye size={14} />Preview</button>
       <button class="danger solid" disabled={busy || !plan || !moved.length || activeMembers > 0 || cluster.read_only}

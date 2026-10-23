@@ -2,7 +2,7 @@
   import { resizable } from './resizable'
   import Pending from './Pending.svelte'
   import { untrack } from 'svelte'
-  import { api, type ACL, type Cluster } from './api'
+  import { api, isAbort, type ACL, type Cluster } from './api'
   import { href } from './router.svelte'
 
   // The ACLs that apply to one topic or group, read-only. Editing stays on
@@ -15,7 +15,7 @@
   // The page remounts per resource, so the first values are the ones.
   untrack(() => api.resourceACLs(cluster.name, type, name))
     .then((r) => (acls = r))
-    .catch((e) => (error = e.message))
+    .catch((e) => { if (!isAbort(e)) error = e.message })
 
   // Why an ACL covers this resource, for rows that are not on its exact name.
   function via(a: ACL) {

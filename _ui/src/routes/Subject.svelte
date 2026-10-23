@@ -1,7 +1,7 @@
 <script lang="ts">
   import { copyText } from '../lib/resource.svelte'
   import Pending from '../lib/Pending.svelte'
-  import { api, type Cluster, type SubjectDetail } from '../lib/api'
+  import { api, isAbort, type Cluster, type SubjectDetail } from '../lib/api'
   import { href, go, router } from '../lib/router.svelte'
   import Modal from '../lib/Modal.svelte'
   import SchemaEditor from '../lib/SchemaEditor.svelte'
@@ -17,7 +17,7 @@
     try {
       data = await api.subject(cluster.name, name)
     } catch (e: any) {
-      error = e.message
+      if (!isAbort(e)) error = e.message
     }
   }
   load()

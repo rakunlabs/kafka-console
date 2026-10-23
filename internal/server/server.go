@@ -33,6 +33,17 @@ type Server struct {
 	// clusterFeatures is each cluster's features: the global ones with the
 	// cluster's own on top.
 	clusterFeatures map[string]features
+	// mcp lists each cluster's MCP endpoints for the UI's connect panel.
+	mcp map[string][]mcpEndpointInfo
+}
+
+// mcpEndpointInfo is what the UI needs to show how to connect an agent. It
+// never carries the token, only whether one is required.
+type mcpEndpointInfo struct {
+	Name      string `json:"name"`
+	Path      string `json:"path"`
+	ReadOnly  bool   `json:"read_only"`
+	AuthToken bool   `json:"auth_token"`
 }
 
 // features tells the UI which optional parts to show.
@@ -67,6 +78,11 @@ func Start(ctx context.Context, cfg *config.Config, registry *kafka.Registry, ui
 	}
 	for name := range cfg.Clusters {
 		s.clusterFeatures[name] = newFeatures(cfg.ClusterFeatures(name))
+	}
+
+	var err error
+	if s.mcp, err = mcpInfo(cfg); err != nil {
+		return err
 	}
 
 	server := ada.New()
@@ -218,6 +234,8 @@ type clusterInfo struct {
 	Description string `json:"description,omitempty"`
 	// Features are the cluster's own, with the global ones underneath.
 	Features features `json:"features"`
+	// MCP lists this cluster's agent endpoints; empty when MCP is off.
+	MCP []mcpEndpointInfo `json:"mcp"`
 }
 
 func (s *Server) appInfo(c *ada.Context) error {
@@ -263,6 +281,7 @@ func (s *Server) clusters(c *ada.Context) error {
 			Name: name, Brokers: cl.Brokers(), ReadOnly: cl.ReadOnly(), ConfirmWrites: cl.ConfirmWrites(), Color: cl.Color(),
 			SchemaRegistry: cl.HasRegistry(), Docs: cl.HasDocs(), Description: cl.Description(),
 			Features: s.featuresOf(name),
+			MCP:      nonNilEndpoints(s.mcp[name]),
 		})
 	}
 
@@ -502,6 +521,7 @@ func (s *Server) messages(c *ada.Context) error {
 		Search:     p.search,
 		Timeout:    time.Duration(p.ints["timeout"]) * time.Second,
 		Raw:        p.raw,
+		Exact:      q.Get("exact") == "true",
 		As:         p.as,
 		Partitions: p.partitions,
 	}

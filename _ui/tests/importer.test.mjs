@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { checkFile, sendFile } from '../src/lib/importer.ts'
+import { HTTPError } from '../src/lib/http.ts'
 
 const file = (n, bad = new Set()) =>
   new Blob([Array.from({ length: n }, (_, i) => (bad.has(i + 1) ? '{oops}' : JSON.stringify({ key: `k${i + 1}`, value: i + 1, partition: (i + 1) % 3 }))).join('\n')])
@@ -12,7 +13,7 @@ function server({ refuse = new Set(), fail = new Set(), dryRefuse = new Set() } 
   s.send = async (records, dry) => {
     s.calls.push({ dry, keys: records.map((r) => r.key) })
     const i = records.findIndex((r) => (dry ? dryRefuse : refuse).has(r.key))
-    if (i >= 0) throw new Error(`record ${i + 1}: refused ${records[i].key}`)
+    if (i >= 0) throw new HTTPError(400, `record ${i + 1}: refused ${records[i].key}`)
     if (dry) return records.map(() => ({ partition: -1, offset: -1 }))
     return records.map((r) => {
       if (fail.has(r.key)) return { partition: -1, offset: -1, error: `broker said no to ${r.key}` }
@@ -67,6 +68,7 @@ test('a refused batch stops before it and resuming completes the file exactly on
   const r = await sendFile(file(10), opts(s))
   assert.equal(r.error, 'item 7: refused k7')
   assert.equal(r.resumeAt, 5)
+  assert.equal(r.uncertain, undefined)
   assert.deepEqual(s.written, keys(1, 4))
   s.send = server().send
   const s2 = server()
@@ -109,4 +111,27 @@ test('a broken file reports the first unwritten item', async () => {
   assert.deepEqual(s.written, keys(1, 4))
   assert.equal(r.resumeAt, 5)
   assert.match(r.error, /not closed/)
+})
+
+test('a lost response marks the batch unknown even when the server wrote it', async () => {
+  const s = server()
+  const r = await sendFile(file(6), opts(s, { send: async (records, dry) => {
+    await s.send(records, dry)
+    throw new TypeError('Failed to fetch')
+  } }))
+  assert.deepEqual(s.written, keys(1, 4))
+  assert.equal(r.written, 0)
+  assert.equal(r.resumeAt, 1)
+  assert.deepEqual(r.uncertain, { first: 1, last: 4 })
+})
+
+test('timeouts, gateway errors and malformed responses are not safe refusals', async () => {
+  for (const reply of [new HTTPError(408, 'timeout'), new HTTPError(502, 'gateway'), [], 'not JSON']) {
+    const r = await sendFile(file(6), opts(server(), { send: async () => {
+      if (reply instanceof Error) throw reply
+      return reply
+    } }))
+    assert.deepEqual(r.uncertain, { first: 1, last: 4 })
+    assert.equal(r.resumeAt, 1)
+  }
 })

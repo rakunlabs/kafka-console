@@ -81,6 +81,9 @@ type ConsumeRequest struct {
 	// Records whose own timestamp falls outside it are skipped, as
 	// producers may set timestamps out of order.
 	Since, Until *int64
+	// Exact checks every later offset for out-of-order producer timestamps.
+	// Otherwise Until uses Kafka's time index to keep large ranges fast.
+	Exact bool
 	// After continues a previous read: per partition, where it stopped (its
 	// ConsumeResult.Next). Partitions missing from it are done.
 	After  map[int32]int64
@@ -399,9 +402,8 @@ func (c *Client) windows(ctx context.Context, topic string, req ConsumeRequest) 
 
 	starts, ends, atTime := b.starts, b.ends, b.atTime
 
-	// The first offset produced after Until ends each window.
 	var untilTime kadm.ListedOffsets
-	if req.Until != nil {
+	if req.Until != nil && !req.Exact {
 		if untilTime, err = c.admin.ListOffsetsAfterMilli(ctx, *req.Until+1, topic); err != nil {
 			return nil, fmt.Errorf("list offsets by time; %w", accessErr(err))
 		}
@@ -426,7 +428,9 @@ func (c *Client) windows(ctx context.Context, topic string, req ConsumeRequest) 
 
 		w := window{partition: s.Partition, start: s.Offset, end: e.Offset}
 
-		if req.Until != nil {
+		// The fast path uses the time index. Exact keeps the captured end so
+		// later offsets with older producer timestamps are checked too.
+		if req.Until != nil && !req.Exact {
 			if t, ok := untilTime.Lookup(topic, s.Partition); ok && t.Err == nil && t.Offset >= 0 {
 				w.end = min(w.end, t.Offset)
 			}

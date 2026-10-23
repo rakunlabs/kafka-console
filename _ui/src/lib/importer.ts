@@ -1,5 +1,6 @@
 import type { ImportRecord, ImportResult } from './api'
 import { readFile, FatalError, type FileFormat, type ItemShape } from './importFile.ts'
+import { importRefused } from './http.ts'
 
 export type ImportOptions = {
   format: FileFormat
@@ -85,6 +86,8 @@ export type SendResult = {
   // Records after resumeAt that were written anyway, from the failed batch,
   // and would be written again on resume.
   rewritten: number
+  // The response was lost or unreadable: any of this batch may be written.
+  uncertain?: { first: number; last: number }
   error: string
 }
 
@@ -102,9 +105,13 @@ export async function sendFile(file: Blob, o: ImportOptions, after = 0, onBatch?
     let res: ImportResult[]
     try {
       res = await o.send(b, false)
+      if (!Array.isArray(res) || res.length !== b.length || res.some((r) => !r || (!r.error &&
+        (!Number.isInteger(r.partition) || r.partition < 0 || !Number.isInteger(r.offset) || r.offset < 0)))) {
+        throw new Error('The server returned an incomplete import result')
+      }
     } catch (e: any) {
-      // Refused as a whole: nothing of it was written.
       out.resumeAt = first
+      if (!importRefused(e)) out.uncertain = { first, last: first + b.length - 1 }
       const m = recordRef.exec(e.message)
       throw new Error(m ? `item ${first + Number(m[1]) - 1}: ${e.message.slice(m[0].length)}` : e.message)
     }

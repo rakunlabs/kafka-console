@@ -131,3 +131,10 @@ func TestClusterNamesOrder(t *testing.T) {
 		t.Fatalf("without order %s, want a,b,c", got)
 	}
 }
+
+func TestValidateRefusesTheRemovedMCPOutputDir(t *testing.T) {
+	c := &Config{Clusters: map[string]*Cluster{"local": {Brokers: []string{"localhost:9092"}}}, MCP: MCP{OutputDir: "/tmp/exports"}}
+	if err := c.validate(); err == nil || !strings.Contains(err.Error(), "mcp.output_dir is no longer supported") {
+		t.Fatalf("an operator who sets the old directory must be told files no longer land there: %v", err)
+	}
+}

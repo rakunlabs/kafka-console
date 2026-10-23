@@ -2,7 +2,7 @@
   import { lagReading } from '../lib/lag'
   import { resizable } from '../lib/resizable'
   import Pending from '../lib/Pending.svelte'
-  import { api, type Cluster, type GroupDetail, type ResetPlan } from '../lib/api'
+  import { api, isAbort, type Cluster, type GroupDetail, type ResetPlan } from '../lib/api'
   import { fmt, stateBadge, partitionList } from '../lib/format'
   import { href, go } from '../lib/router.svelte'
   import PartitionOffsets from '../lib/PartitionOffsets.svelte'
@@ -14,6 +14,7 @@
   import LagEta from '../lib/LagEta.svelte'
   import MoreRows from '../lib/MoreRows.svelte'
   import ResourceACLs from '../lib/ResourceACLs.svelte'
+  import { reviewedOffsets } from '../lib/offsetReset'
 
   let { cluster, name }: { cluster: Cluster; name: string } = $props()
 
@@ -31,7 +32,7 @@
       const g = await api.group(cluster.name, name)
       if (id === seq) data = g
     } catch (e: any) {
-      if (id === seq) error = e.message
+      if (id === seq && !isAbort(e)) error = e.message
     } finally {
       if (id === seq) loading = false
     }
@@ -64,7 +65,7 @@
       data = g
       downloadBackup(backupOf(cluster.name, g))
     } catch (e: any) {
-      error = e.message
+      if (!isAbort(e)) error = e.message
     } finally {
       backingUp = false
     }
@@ -96,6 +97,7 @@
   }
 
   const resetParts = $derived(partitionList(reset.partitions))
+  const resetKey = $derived(JSON.stringify([cluster.name, name, reset]))
 
   function body(dry: boolean) {
     return {
@@ -109,10 +111,13 @@
   }
 
   async function preview() {
+    const key = resetKey
     busy = true
     resetError = ''
+    plan = undefined
     try {
-      plan = (await api.resetOffsets(cluster.name, name, body(true))).partitions
+      const result = await api.resetOffsets(cluster.name, name, body(true))
+      if (key === resetKey && resetting) plan = result.partitions
     } catch (e: any) {
       resetError = e.message
     } finally {
@@ -124,7 +129,7 @@
     busy = true
     resetError = ''
     try {
-      plan = (await api.resetOffsets(cluster.name, name, body(false))).partitions
+      plan = (await api.resetOffsets(cluster.name, name, reviewedOffsets(reset.topic, plan))).partitions
       done = true
       load()
     } catch (e: any) {
@@ -265,13 +270,13 @@
 <GroupTopicDialog {cluster} group={name} existingTopics={topics} activeMembers={data?.members.length ?? 0} bind:open={addingTopic} ondone={load} />
 <RestoreOffsetsDialog {cluster} group={name} activeMembers={data?.members.length ?? 0} bind:open={restoring} ondone={load} />
 
-<Modal title="Reset offsets: {reset.topic}" bind:open={resetting} width={560}>
+<Modal title="Reset offsets: {reset.topic}" bind:open={resetting} width={560} locked={busy}>
   {#if data && data.members.length > 0}
     <div class="error">This group has {data.members.length} active members. Stop the consumers before resetting offsets. You can still preview.</div>
   {/if}
   <div class="grid2">
     <label>Target
-      <select bind:value={reset.strategy} onchange={() => (plan = undefined)}>
+      <select bind:value={reset.strategy} disabled={busy} onchange={() => (plan = undefined)}>
         <option value="earliest">Earliest</option>
         <option value="latest">Latest</option>
         <option value="offset">Specific offset</option>
@@ -279,14 +284,14 @@
       </select>
     </label>
     {#if reset.strategy === 'offset'}
-      <label>Offset <input type="number" min="0" bind:value={reset.offset} oninput={() => (plan = undefined)} /></label>
+      <label>Offset <input type="number" min="0" bind:value={reset.offset} disabled={busy} oninput={() => (plan = undefined)} /></label>
     {:else if reset.strategy === 'timestamp'}
-      <label>Time <input type="datetime-local" step="1" bind:value={reset.timestamp} oninput={() => (plan = undefined)} /></label>
+      <label>Time <input type="datetime-local" step="1" bind:value={reset.timestamp} disabled={busy} oninput={() => (plan = undefined)} /></label>
     {:else}
       <div></div>
     {/if}
   </div>
-  <label>Partitions (empty = all) <input placeholder="0, 1, 2" bind:value={reset.partitions} oninput={() => (plan = undefined)} aria-invalid={!resetParts} /></label>
+  <label>Partitions (empty = all) <input placeholder="0, 1, 2" bind:value={reset.partitions} disabled={busy} oninput={() => (plan = undefined)} aria-invalid={!resetParts} /></label>
   {#if !resetParts}<div class="error small">Use partition numbers separated by commas, e.g. 0, 1, 2.</div>{/if}
 
   {#if plan}
@@ -310,7 +315,7 @@
   {#if resetError}<div class="error">{resetError}</div>{/if}
 
   {#snippet footer()}
-    <button onclick={() => (resetting = false)}>{done ? 'Close' : 'Cancel'}</button>
+    <button onclick={() => (resetting = false)} disabled={busy}>{done ? 'Close' : 'Cancel'}</button>
     {#if !done}
       <button onclick={preview} disabled={busy || !resetParts}>Preview</button>
       <button class="danger solid" disabled={busy || !plan || !resetParts || (data?.members.length ?? 0) > 0} onclick={apply}>Apply</button>

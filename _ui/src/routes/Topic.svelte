@@ -1,7 +1,7 @@
 <script lang="ts">
   import { resizable } from '../lib/resizable'
   import Pending from '../lib/Pending.svelte'
-  import { api, type Cluster, type TopicDetail, type Message } from '../lib/api'
+  import { api, isAbort, type Cluster, type TopicDetail, type Message } from '../lib/api'
   import { fmt, bytes, duration, sizeIEC, partitionList } from '../lib/format'
   import { Mail, Columns3, SlidersHorizontal, Send, Users, ArrowRight, Plus, Eraser, Trash2, RefreshCw, ShieldCheck, ArrowRightLeft, BookOpen } from '@lucide/svelte'
   import { href, go, router } from '../lib/router.svelte'
@@ -41,7 +41,7 @@
         data = t
         error = ''
       })
-      .catch((e) => id === seq && (error = e.message))
+      .catch((e) => id === seq && !isAbort(e) && (error = e.message))
       .finally(() => id === seq && (loading = false))
   }
   load()

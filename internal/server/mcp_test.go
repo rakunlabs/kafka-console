@@ -298,6 +298,129 @@ func TestMCPServesAnyConfiguredPath(t *testing.T) {
 
 type mcpBearerTransport struct{ token string }
 
+func TestMCPInfoForTheUI(t *testing.T) {
+	cfg := &config.Config{
+		Server: config.Server{BasePath: "/console"},
+		Clusters: map[string]*config.Cluster{
+			"prod":       {ReadOnly: true},
+			"stage":      {},
+			"team space": {},
+		},
+		MCP: config.MCP{Enabled: true, AllowWrites: true, AuthToken: "never-sent", Endpoints: map[string]*config.MCPEndpoint{
+			"stage-z": {Cluster: "stage", Path: "agents"},
+			"stage-a": {Cluster: "stage", Path: "/team//kafka/", ReadOnly: true},
+			"prod":    {Cluster: "prod", Path: "/mcp/prod"},
+			"spaced":  {Cluster: "team space", Path: "/mcp/team%20space"},
+		}},
+	}
+	info, err := mcpInfo(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, _ := json.Marshal(info)
+	if strings.Contains(string(encoded), "never-sent") {
+		t.Fatalf("token leaked to the UI: %s", encoded)
+	}
+	if got := info["stage"]; len(got) != 2 || got[0].Name != "stage-a" || got[0].Path != "/console/team/kafka" || !got[0].ReadOnly ||
+		got[1].Path != "/console/agents" || got[1].ReadOnly || !got[1].AuthToken {
+		t.Fatalf("stage endpoints: %+v", got)
+	}
+	if got := info["prod"]; len(got) != 1 || !got[0].ReadOnly {
+		t.Fatalf("read-only cluster must stay read-only: %+v", got)
+	}
+
+	cfg.MCP.AllowWrites = false
+	cfg.MCP.AuthToken = ""
+	if info, _ = mcpInfo(cfg); info["stage"][1].ReadOnly != true || info["stage"][1].AuthToken {
+		t.Fatalf("allow_writes false and missing token: %+v", info["stage"])
+	}
+
+	cfg.MCP.Enabled = false
+	if info, _ = mcpInfo(cfg); len(info) != 0 {
+		t.Fatalf("disabled MCP shown: %+v", info)
+	}
+
+	defaults, err := mcpInfo(&config.Config{Clusters: map[string]*config.Cluster{"team space": {}}, MCP: config.MCP{Enabled: true}})
+	if err != nil || defaults["team space"][0].Path != "/mcp/team%20space" {
+		t.Fatalf("default endpoint path must be URL-escaped: %+v %v", defaults, err)
+	}
+}
+
+// The address the UI shows must be one the router actually serves.
+func TestMCPInfoPathsAreServed(t *testing.T) {
+	cfg := &config.Config{
+		Server:   config.Server{BasePath: "/console"},
+		Clusters: map[string]*config.Cluster{"local": {Brokers: []string{"localhost:1"}}, "team space": {Brokers: []string{"localhost:1"}}},
+		MCP:      config.MCP{Enabled: true},
+	}
+	registry, err := kafka.NewRegistry(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer registry.Close()
+	server := ada.New()
+	if err := mountMCP(server, cfg, registry); err != nil {
+		t.Fatal(err)
+	}
+	host := httptest.NewServer(server)
+	defer host.Close()
+	info, err := mcpInfo(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, endpoints := range info {
+		for _, endpoint := range endpoints {
+			path := endpoint.Path
+			client := mcp.NewClient(&mcp.Implementation{Name: "console-test", Version: "1"}, nil)
+			session, err := client.Connect(t.Context(), &mcp.StreamableClientTransport{Endpoint: host.URL + path}, nil)
+			if err != nil {
+				t.Fatalf("%s: UI path %s is not served: %v", endpoint.Name, path, err)
+			}
+			_ = session.Close()
+		}
+	}
+}
+
+// Custom endpoints outside /mcp, written escaped or not, are served at the
+// address the UI shows.
+func TestMCPCustomEscapedPathsAreServed(t *testing.T) {
+	cfg := &config.Config{
+		Server:   config.Server{BasePath: "/console"},
+		Clusters: map[string]*config.Cluster{"local": {Brokers: []string{"localhost:1"}}},
+		MCP: config.MCP{Enabled: true, Endpoints: map[string]*config.MCPEndpoint{
+			"escaped": {Cluster: "local", Path: "/team%20kafka"},
+			"spaced":  {Cluster: "local", Path: "/other team"},
+		}},
+	}
+	registry, err := kafka.NewRegistry(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer registry.Close()
+	server := ada.New()
+	if err := mountMCP(server, cfg, registry); err != nil {
+		t.Fatal(err)
+	}
+	host := httptest.NewServer(server)
+	defer host.Close()
+	info, err := mcpInfo(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"escaped": "/console/team%20kafka", "spaced": "/console/other%20team"}
+	for _, endpoint := range info["local"] {
+		if endpoint.Path != want[endpoint.Name] {
+			t.Fatalf("%s: shown as %q, want %q", endpoint.Name, endpoint.Path, want[endpoint.Name])
+		}
+		client := mcp.NewClient(&mcp.Implementation{Name: "console-test", Version: "1"}, nil)
+		session, err := client.Connect(t.Context(), &mcp.StreamableClientTransport{Endpoint: host.URL + endpoint.Path}, nil)
+		if err != nil {
+			t.Fatalf("%s: %s is not served: %v", endpoint.Name, endpoint.Path, err)
+		}
+		_ = session.Close()
+	}
+}
+
 func (t mcpBearerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	r = r.Clone(r.Context())
 	r.Header.Set("Authorization", "Bearer "+t.token)
@@ -380,5 +503,72 @@ func TestMCPAuditUserComesFromTheConsole(t *testing.T) {
 				t.Fatalf("audit user %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// Download and upload links live below each endpoint. The agent's curl sends
+// no bearer token, so the links must not need one, while origins are still
+// refused and nothing else below the endpoint falls through to the UI.
+func TestMCPFileLinksAreRouted(t *testing.T) {
+	cfg := &config.Config{
+		Server:   config.Server{BasePath: "/console"},
+		Clusters: map[string]*config.Cluster{"local": {Brokers: []string{"localhost:1"}}},
+		MCP: config.MCP{Enabled: true, AuthToken: "secret", Endpoints: map[string]*config.MCPEndpoint{
+			"default": {Cluster: "local", Path: "/mcp/local"},
+			"custom":  {Cluster: "local", Path: "/agents/local"},
+		}},
+	}
+	registry, err := kafka.NewRegistry(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer registry.Close()
+	server := ada.New()
+	if err := mountMCP(server, cfg, registry); err != nil {
+		t.Fatal(err)
+	}
+	server.HandleFuncWildcard("/", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("SPA")) })
+
+	status := func(method, path, origin string) (int, string) {
+		w := httptest.NewRecorder()
+		r := httptest.NewRequestWithContext(t.Context(), method, path, nil)
+		if origin != "" {
+			r.Header.Set("Origin", origin)
+		}
+		server.ServeHTTP(w, r)
+		return w.Code, w.Body.String()
+	}
+
+	for _, prefix := range []string{"/console/mcp/local/files/", "/console/agents/local/files/"} {
+		if code, body := status(http.MethodGet, prefix+"unknown-token", ""); code != http.StatusNotFound || !strings.Contains(body, "not valid here") {
+			t.Fatalf("%s: an unknown link must reach the links handler without a token and answer 404: %d %s", prefix, code, body)
+		}
+		if code, _ := status(http.MethodGet, prefix+"unknown-token", "https://evil.example"); code != http.StatusForbidden {
+			t.Fatalf("%s: a browser origin that is not allowed must be refused: %d", prefix, code)
+		}
+	}
+	if code, body := status(http.MethodPost, "/console/mcp/local", ""); code != http.StatusUnauthorized {
+		t.Fatalf("the endpoint itself must still require the token: %d %s", code, body)
+	}
+	if code, body := status(http.MethodGet, "/console/mcp/local/other", ""); code != http.StatusNotFound || body == "SPA" {
+		t.Fatalf("other paths below an endpoint must not serve the UI: %d %s", code, body)
+	}
+}
+
+func TestMCPRefusesOverlappingFileLinksAndTheOldOutputDir(t *testing.T) {
+	cfg := &config.Config{
+		Clusters: map[string]*config.Cluster{"local": {Brokers: []string{"localhost:1"}}},
+		MCP: config.MCP{Enabled: true, Endpoints: map[string]*config.MCPEndpoint{
+			"a": {Cluster: "local", Path: "/mcp"},
+			"b": {Cluster: "local", Path: "/mcp/files"},
+		}},
+	}
+	registry, err := kafka.NewRegistry(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer registry.Close()
+	if err := mountMCP(ada.New(), cfg, registry); err == nil || !strings.Contains(err.Error(), "file links") {
+		t.Fatalf("an endpoint at another endpoint's link path must be refused: %v", err)
 	}
 }

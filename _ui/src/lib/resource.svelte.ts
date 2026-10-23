@@ -1,4 +1,5 @@
 import { isAbort, withSignal } from './api'
+import { onDestroy } from 'svelte'
 
 // A page's data from one read, reloadable. A load replaces the one still
 // running, on the server too, so a slow earlier answer can never overwrite
@@ -9,6 +10,7 @@ export function resource<T>(fetch: () => Promise<T>) {
   let error = $state('')
   let loading = $state(false)
   let ctl: AbortController | undefined
+  onDestroy(() => { ctl?.abort(); ctl = undefined })
 
   async function load() {
     ctl?.abort()
@@ -16,7 +18,7 @@ export function resource<T>(fetch: () => Promise<T>) {
     loading = true
     try {
       const value = await withSignal(c.signal, fetch)
-      if (ctl !== c) return
+      if (ctl !== c || c.signal.aborted) return
       data = value
       error = ''
     } catch (e: any) {

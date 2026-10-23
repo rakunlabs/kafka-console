@@ -2,11 +2,12 @@
   import { resizable } from '../lib/resizable'
   import Pending from '../lib/Pending.svelte'
   import { untrack } from 'svelte'
-  import { api, type Cluster, type Overview, type DiskUsage } from '../lib/api'
+  import { api, type Cluster } from '../lib/api'
   import { fmt, bytes } from '../lib/format'
   import { href } from '../lib/router.svelte'
   import { cached, remember } from '../lib/cache'
-  import { copyText } from '../lib/resource.svelte'
+  import { copyText, resource } from '../lib/resource.svelte'
+  import MCPPanel from '../lib/MCPPanel.svelte'
   import { ArrowRight, RefreshCw, Check, Copy } from '@lucide/svelte'
 
   let { cluster }: { cluster: Cluster } = $props()
@@ -15,36 +16,25 @@
   const key = untrack(() => `overview:${cluster.name}`)
   const diskKey = untrack(() => `disk-usage:${cluster.name}`)
   // A revisit shows the last result at once and refreshes behind it.
-  let data = $state<Overview | undefined>(cached(key))
-  let error = $state('')
-  let loading = $state(false)
+  let freshRead = false
+  const overview = resource(() => api.overview(cluster.name, freshRead).then((o) => remember(key, o)))
+  overview.data = cached(key)
+  const data = $derived(overview.data)
+  const error = $derived(overview.error)
+  const loading = $derived(overview.loading)
   // Disk usage scans every broker's log dirs, which can take far longer than
   // the rest, so it loads on its own and fills its tile when it arrives.
-  let disk = $state<DiskUsage | undefined>(cached(diskKey))
-  let diskLoading = $state(false)
-  let diskFailed = $state(false)
+  const diskUsage = resource(() => api.diskUsage(cluster.name, freshRead).then((d) => remember(diskKey, d)))
+  diskUsage.data = cached(diskKey)
+  const disk = $derived(diskUsage.data)
+  const diskLoading = $derived(diskUsage.loading)
+  const diskFailed = $derived(!!diskUsage.error)
 
   // The server keeps both for a few seconds; Refresh asks it for new ones.
   function load(fresh = false) {
-    loading = true
-    api
-      .overview(cluster.name, fresh)
-      .then((o) => {
-        data = remember(key, o)
-        error = ''
-      })
-      .catch((e) => (error = e.message))
-      .finally(() => (loading = false))
-
-    diskLoading = true
-    api
-      .diskUsage(cluster.name, fresh)
-      .then((d) => {
-        disk = remember(diskKey, d)
-        diskFailed = false
-      })
-      .catch(() => (diskFailed = true))
-      .finally(() => (diskLoading = false))
+    freshRead = fresh
+    overview.load()
+    diskUsage.load()
   }
   load()
 
@@ -133,6 +123,8 @@
     {@html cluster.description}
   </section>
 {/if}
+
+<MCPPanel {cluster} />
 
 {#if error}
   <div class="error">{error}</div>

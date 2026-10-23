@@ -95,6 +95,8 @@ func mcpHandler(cfg *config.Config, registry *kafka.Registry) (*mcpRoutes, error
 	}
 
 	byPath := make(map[string]http.Handler)
+	files := make(map[string]http.Handler)
+	var paths []string
 	for name, endpoint := range mcpEndpoints(cfg) {
 		local, err := mcpPath(endpoint.Path)
 		if err != nil {
@@ -104,8 +106,19 @@ func mcpHandler(cfg *config.Config, registry *kafka.Registry) (*mcpRoutes, error
 		if path == "/healthz" {
 			return nil, fmt.Errorf("endpoint %q: path %q is the health check", name, local)
 		}
-		if _, taken := byPath[path]; taken {
+		// Requests are matched on their decoded path, so a default endpoint
+		// for a cluster named "team space" (/mcp/team%20space) is reachable.
+		decoded, err := url.PathUnescape(path)
+		if err != nil {
+			return nil, fmt.Errorf("endpoint %q: path %q: %w", name, local, err)
+		}
+		if _, taken := byPath[decoded]; taken {
 			return nil, fmt.Errorf("endpoint %q: path %q is used twice", name, local)
+		}
+		paths = append(paths, decoded)
+		links, err := kafkamcp.NewFiles(decoded, mcpLinkKey(cfg.MCP))
+		if err != nil {
+			return nil, fmt.Errorf("endpoint %q: %w", name, err)
 		}
 
 		server := mcp.NewServer(&mcp.Implementation{Name: "kafka-console-" + name, Version: config.Version}, nil)
@@ -114,21 +127,42 @@ func mcpHandler(cfg *config.Config, registry *kafka.Registry) (*mcpRoutes, error
 			Destinations: endpoint.Destinations,
 			Tools:        mcpTools(endpoint.Tools, cfg.ClusterFeatures(endpoint.Cluster)),
 			Path:         path,
-			OutputDir:    cfg.MCP.OutputDir,
+			Files:        links,
 			User:         func(h http.Header) string { return h.Get(mcpUserHeader) },
 		}); err != nil {
 			return nil, fmt.Errorf("endpoint %q: %w", name, err)
 		}
 		// One transport per endpoint, so a session from one path is not
 		// accepted on another with a different policy.
-		byPath[path] = mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil)
+		byPath[decoded] = mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil)
+		files[links.Path()] = links.Handler()
+	}
+
+	// A path that is both an endpoint and another endpoint's links would
+	// serve one of them by accident.
+	for prefix := range files {
+		for endpoint := range byPath {
+			if endpoint == prefix || strings.HasPrefix(endpoint, prefix+"/") {
+				return nil, fmt.Errorf("endpoint path %q is below another endpoint's file links at %q: choose another path", endpoint, prefix)
+			}
+		}
 	}
 
 	var handler http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		byPath[r.URL.Path].ServeHTTP(w, r)
 	})
+	handler = kafkamcp.Middleware(cfg.MCP.PublicURL)(handler)
 	handler = mcpAuditUser(cfg.Server.UserHeader, proxies, handler)
 	handler = mcpGuard(cfg.MCP, handler)
+
+	// Download and upload links take no bearer token: the agent's curl does
+	// not carry the MCP client's headers, and each link is its own one-time
+	// 256-bit credential. Origins are still checked, so a page cannot drive
+	// one from a browser.
+	var links http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		filesOf(files, r.URL.Path).ServeHTTP(w, r)
+	})
+	links = mcpGuard(config.MCP{AllowOrigins: cfg.MCP.AllowOrigins}, links)
 	if len(cfg.MCP.AllowOrigins) > 0 {
 		handler = mcors.Middleware(mcors.WithConfig(mcors.Cors{
 			AllowOrigins:  cfg.MCP.AllowOrigins,
@@ -138,21 +172,52 @@ func mcpHandler(cfg *config.Config, registry *kafka.Registry) (*mcpRoutes, error
 		}))(handler)
 	}
 
-	return &mcpRoutes{byPath: byPath, handler: handler}, nil
+	return &mcpRoutes{byPath: byPath, files: files, paths: paths, handler: handler, links: links}, nil
 }
 
-// mcpRoutes serves exactly the configured endpoint paths.
+// mcpLinkKey is what agent download and upload links are sealed with:
+// link_key, else the bearer token every instance shares already.
+func mcpLinkKey(settings config.MCP) []byte {
+	if settings.LinkKey != "" {
+		return []byte(settings.LinkKey)
+	}
+
+	return []byte(settings.AuthToken)
+}
+
+// filesOf returns the links handler whose prefix path is under, or nil.
+func filesOf(files map[string]http.Handler, path string) http.Handler {
+	for prefix, handler := range files {
+		if strings.HasPrefix(path, prefix+"/") {
+			return handler
+		}
+	}
+
+	return nil
+}
+
+// mcpRoutes serves exactly the configured endpoint paths. byPath is keyed by
+// the decoded path, the form the router matches; paths lists them for
+// registration.
 type mcpRoutes struct {
 	byPath  map[string]http.Handler
+	files   map[string]http.Handler
+	paths   []string
 	handler http.Handler
+	links   http.Handler
 }
 
 func (m *mcpRoutes) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if m == nil || m.byPath[r.URL.Path] == nil {
+	switch {
+	case m == nil:
 		http.NotFound(w, r)
-		return
+	case m.byPath[r.URL.Path] != nil:
+		m.handler.ServeHTTP(w, r)
+	case filesOf(m.files, r.URL.Path) != nil:
+		m.links.ServeHTTP(w, r)
+	default:
+		http.NotFound(w, r)
 	}
-	m.handler.ServeHTTP(w, r)
 }
 
 // mcpPath cleans an endpoint path relative to server.base_path. Any path is
@@ -202,6 +267,52 @@ func mcpGuard(settings config.MCP, next http.Handler) http.Handler {
 	})
 }
 
+// mcpInfo lists each cluster's MCP endpoints with the paths the router
+// serves, including server.base_path. Writes are off for an endpoint
+// unless MCP, the endpoint and the cluster all allow them.
+func mcpInfo(cfg *config.Config) (map[string][]mcpEndpointInfo, error) {
+	out := map[string][]mcpEndpointInfo{}
+	if !cfg.MCP.Enabled {
+		return out, nil
+	}
+
+	for name, endpoint := range mcpEndpoints(cfg) {
+		local, err := mcpPath(endpoint.Path)
+		if err != nil {
+			return nil, fmt.Errorf("configure MCP; endpoint %q: %w", name, err)
+		}
+
+		// The same path written escaped or not is one endpoint; show it
+		// escaped so it can be pasted into a URL.
+		decoded, err := url.PathUnescape(cfg.Server.BasePath + local)
+		if err != nil {
+			return nil, fmt.Errorf("configure MCP; endpoint %q: %w", name, err)
+		}
+
+		cluster := cfg.Clusters[endpoint.Cluster]
+		out[endpoint.Cluster] = append(out[endpoint.Cluster], mcpEndpointInfo{
+			Name:      name,
+			Path:      (&url.URL{Path: decoded}).EscapedPath(),
+			ReadOnly:  !cfg.MCP.AllowWrites || endpoint.ReadOnly || cluster == nil || cluster.ReadOnly,
+			AuthToken: cfg.MCP.AuthToken != "",
+		})
+	}
+
+	for _, endpoints := range out {
+		slices.SortFunc(endpoints, func(a, b mcpEndpointInfo) int { return strings.Compare(a.Name, b.Name) })
+	}
+
+	return out, nil
+}
+
+func nonNilEndpoints(v []mcpEndpointInfo) []mcpEndpointInfo {
+	if v == nil {
+		return []mcpEndpointInfo{}
+	}
+
+	return v
+}
+
 func mountMCP(server *ada.Server, cfg *config.Config, registry *kafka.Registry) error {
 	var routes *mcpRoutes
 	if cfg.MCP.Enabled {
@@ -216,10 +327,11 @@ func mountMCP(server *ada.Server, cfg *config.Config, registry *kafka.Registry) 
 	root.Handle("/mcp", routes)
 	root.HandleWildcard("/mcp/", routes)
 	if routes != nil {
-		for full := range routes.byPath {
+		for _, full := range routes.paths {
 			local := strings.TrimPrefix(full, cfg.Server.BasePath)
 			if local != "/mcp" && !strings.HasPrefix(local, "/mcp/") {
 				root.Handle(local, routes)
+				root.HandleWildcard(local+"/files/", routes)
 			}
 		}
 	}

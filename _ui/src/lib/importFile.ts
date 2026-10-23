@@ -343,6 +343,7 @@ function fromObject(raw: string): ImportRecord {
   const f = rawFields(raw)
   const get = (k: string) => (f.has(k) ? JSON.parse(f.get(k)!) : undefined)
   if (get('truncated') === true) throw new Error('the value was truncated when exported; export it again from the message detail')
+  if (get('decode_error')) throw new Error('the record could not be decoded when exported; export the raw record instead')
   if (!f.has('value') && !f.has('key')) throw new Error('no "key" or "value" field; switch “Each item is” to Value')
 
   const rec: ImportRecord = {
@@ -352,8 +353,12 @@ function fromObject(raw: string): ImportRecord {
     partition: partitionOf(get('partition')),
     timestamp: timestampOf(get('timestamp')),
   }
-  if (get('key_encoding') === 'base64') rec.key_encoding = 'base64'
-  if (get('value_encoding') === 'base64') rec.value_encoding = 'base64'
+  // kafka-mcp files have one "encoding": a transform_messages item (it names a
+  // topic) uses it for key and value; an older search_messages line, for the
+  // value only.
+  const shared = get('encoding') === 'base64'
+  if (rec.key !== null && (get('key_encoding') === 'base64' || (shared && f.has('topic') && !f.has('key_encoding')))) rec.key_encoding = 'base64'
+  if (rec.value !== null && (get('value_encoding') === 'base64' || (shared && !f.has('value_encoding')))) rec.value_encoding = 'base64'
   for (const side of ['key', 'value'] as const) {
     const id = get(`${side}_schema_id`)
     if (typeof id === 'number' && id > 0 && (get(`${side}_format`) === undefined || schemaFormats.has(get(`${side}_format`)))) {
@@ -435,25 +440,43 @@ export class RecordReader {
     for (const row of rows) {
       if (!this.cols) {
         const head = row.map((h) => h.trim().toLowerCase())
-        this.cols = ['key', 'value', 'headers', 'partition', 'timestamp', 'key_encoding', 'value_encoding'].map((name) => head.indexOf(name))
+        this.cols = ['key', 'value', 'headers', 'partition', 'timestamp', 'key_encoding', 'value_encoding',
+          'key_null', 'value_null', 'truncated', 'key_format', 'value_format', 'key_schema_id', 'value_schema_id',
+          'key_schema_message', 'value_schema_message', 'decode_error'].map((name) => head.indexOf(name))
         if (this.cols[1] < 0) {
           throw new FatalError('The CSV has no "value" column. The first row must name the columns: key, value, headers, partition, timestamp.')
         }
         continue
       }
-      const [k, v, h, p, ts, ke, ve] = this.cols
+      const [k, v, h, p, ts, ke, ve, kn, vn, cut, kf, vf, ks, vs, km, vm, de] = this.cols
       out.push(this.make(() => {
-        const rec: ImportRecord = {
-          // An empty key cell means no key; Export writes null keys that way.
-          key: k >= 0 && row[k] ? row[k] : null,
-          value: row[v] ?? '',
+        const flag = (index: number, name: string) => {
+          // Spreadsheets save booleans as TRUE/FALSE.
+          const value = index < 0 ? '' : row[index]?.trim().toLowerCase() ?? ''
+          if (value && value !== 'true' && value !== 'false') throw new Error(`${name} must be true or false`)
+          return value === 'true'
+        }
+        const schemaID = (index: number, name: string) => {
+          const value = index < 0 ? '' : row[index]?.trim() ?? ''
+          if (!value) return undefined
+          const id = Number(value)
+          if (!Number.isSafeInteger(id) || id <= 0) throw new Error(`${name} must be a positive integer`)
+          return id
+        }
+        return fromObject(JSON.stringify({
+          // Legacy exports have no null flags: keep their old interpretation.
+          key: flag(kn, 'key_null') || (kn < 0 && !row[k]) ? null : row[k] ?? '',
+          value: flag(vn, 'value_null') ? null : row[v] ?? '',
           headers: h >= 0 ? headersOf(row[h]) : [],
           partition: p >= 0 ? partitionOf(row[p]) : null,
           timestamp: ts >= 0 ? timestampOf(row[ts]) : null,
-        }
-        if (ke >= 0 && row[ke]?.trim() === 'base64' && rec.key !== null) rec.key_encoding = 'base64'
-        if (ve >= 0 && row[ve]?.trim() === 'base64') rec.value_encoding = 'base64'
-        return rec
+          key_encoding: row[ke]?.trim(), value_encoding: row[ve]?.trim(),
+          truncated: flag(cut, 'truncated'), decode_error: row[de],
+          key_format: row[kf] || undefined, value_format: row[vf] || undefined,
+          key_schema_id: schemaID(ks, 'key_schema_id'),
+          value_schema_id: schemaID(vs, 'value_schema_id'),
+          key_schema_message: row[km], value_schema_message: row[vm],
+        }))
       }))
     }
     return out

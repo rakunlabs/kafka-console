@@ -62,6 +62,7 @@
 <script lang="ts">
   import { api, type Cluster, type ResetPlan } from './api'
   import { fmt } from './format'
+  import { reviewedOffsets } from './offsetReset'
   import Modal from './Modal.svelte'
   import { TriangleAlert, Eye, Check, Upload } from '@lucide/svelte'
 
@@ -123,7 +124,9 @@
     for (const r of rows) {
       if (!r.on || (!dry && (!r.plan || r.error || r.done))) continue
       try {
-        const res = await api.resetOffsets(cluster.name, group, { topic: r.topic, strategy: 'offsets', offsets: offsetsOf(r.topic), dry_run: dry })
+        const request = dry ? { topic: r.topic, strategy: 'offsets', offsets: offsetsOf(r.topic), dry_run: true }
+          : reviewedOffsets(r.topic, r.plan)
+        const res = await api.resetOffsets(cluster.name, group, request)
         r.plan = res.partitions
         r.error = undefined
         if (!dry) r.done = true

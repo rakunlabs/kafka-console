@@ -1,11 +1,12 @@
 <script lang="ts">
   import { resizable } from '../lib/resizable'
   import Pending from '../lib/Pending.svelte'
-  import { api, type ACL, type Cluster, type Quota, type User } from '../lib/api'
+  import { api, isAbort, type ACL, type Cluster, type Quota, type User } from '../lib/api'
   import { fmt } from '../lib/format'
   import { href, router } from '../lib/router.svelte'
   import Modal from '../lib/Modal.svelte'
   import MoreRows from '../lib/MoreRows.svelte'
+  import { quotaKeys, quotaDraft, quotaChanges } from '../lib/quota'
   import { RefreshCw, Plus } from '@lucide/svelte'
 
   let { cluster }: { cluster: Cluster } = $props()
@@ -48,7 +49,7 @@
     try {
       acls = await api.acls(cluster.name)
     } catch (e: any) {
-      aclError = e.message
+      if (!isAbort(e)) aclError = e.message
     } finally {
       aclLoading = false
     }
@@ -131,7 +132,7 @@
     try {
       users = await api.users(cluster.name)
     } catch (e: any) {
-      userError = e.message
+      if (!isAbort(e)) userError = e.message
     } finally {
       userLoading = false
     }
@@ -198,32 +199,18 @@
     try {
       quotas = await api.quotas(cluster.name)
     } catch (e: any) {
-      quotaError = e.message
+      if (!isAbort(e)) quotaError = e.message
     } finally {
       quotaLoading = false
     }
   }
 
-  const quotaKeys = [
-    { key: 'producer_byte_rate', label: 'Producer bytes/s' },
-    { key: 'consumer_byte_rate', label: 'Consumer bytes/s' },
-    { key: 'request_percentage', label: 'Request %' },
-    { key: 'controller_mutation_rate', label: 'Controller mutations/s' },
-  ]
-
   let quotaOpen = $state(false)
-  let quotaForm = $state({ type: 'client-id', name: '', isDefault: false, values: {} as Record<string, string | number | null>, had: [] as string[] })
+  let quotaForm = $state(quotaDraft())
   let quotaFormError = $state('')
 
   function openQuota(q?: Quota) {
-    const e = q?.entity[0]
-    quotaForm = {
-      type: e?.type ?? 'client-id',
-      name: e?.name ?? '',
-      isDefault: !!e && e.name === null,
-      values: Object.fromEntries(quotaKeys.map((k) => [k.key, q?.values[k.key] !== undefined ? String(q.values[k.key]) : ''])),
-      had: Object.keys(q?.values ?? {}),
-    }
+    quotaForm = quotaDraft(q)
     quotaFormError = ''
     quotaOpen = true
   }
@@ -232,20 +219,7 @@
     busy = true
     quotaFormError = ''
     try {
-      const set: Record<string, number> = {}
-      const remove: string[] = []
-      for (const k of quotaKeys) {
-        const v = String(quotaForm.values[k.key] ?? '').trim()
-        if (v) set[k.key] = Number(v)
-        // Only limits that exist are removed; brokers reject removing a key
-        // they do not support (Redpanda has no request_percentage).
-        else if (quotaForm.had.includes(k.key)) remove.push(k.key)
-      }
-      await api.alterQuota(cluster.name, {
-        entity: [{ type: quotaForm.type, name: quotaForm.isDefault ? null : quotaForm.name }],
-        set,
-        remove,
-      })
+      await api.alterQuota(cluster.name, quotaChanges(quotaForm))
       quotaOpen = false
       loadQuotas()
     } catch (e: any) {
@@ -494,6 +468,10 @@
 </Modal>
 
 <Modal title="Quota" bind:open={quotaOpen} width={520}>
+  {#if quotaForm.entity}
+    <p><span class="faint">Entity</span> <span class="mono">{entityLabel({ entity: quotaForm.entity, values: {} })}</span></p>
+    <p class="faint small">Editing limits for this exact entity. To use a different entity, create a new quota.</p>
+  {:else}
   <div class="grid2">
     <label>Entity type
       <select bind:value={quotaForm.type}><option value="client-id">client-id</option><option value="user">user</option><option value="ip">ip</option></select>
@@ -501,6 +479,7 @@
     <label>Name <input class="mono" bind:value={quotaForm.name} disabled={quotaForm.isDefault} /></label>
   </div>
   <label class="check"><input type="checkbox" bind:checked={quotaForm.isDefault} /> Default quota for this type</label>
+  {/if}
   <div class="grid2">
     {#each quotaKeys as k (k.key)}
       <label>{k.label} <input type="number" min="0" bind:value={quotaForm.values[k.key]} placeholder="unlimited" /></label>
@@ -510,7 +489,7 @@
   {#if quotaFormError}<div class="error">{quotaFormError}</div>{/if}
   {#snippet footer()}
     <button onclick={() => (quotaOpen = false)}>Cancel</button>
-    <button class="primary" disabled={busy || (!quotaForm.isDefault && !quotaForm.name.trim())} onclick={saveQuota}>Save</button>
+    <button class="primary" disabled={busy || (!quotaForm.entity && !quotaForm.isDefault && !quotaForm.name.trim())} onclick={saveQuota}>Save</button>
   {/snippet}
 </Modal>
 
