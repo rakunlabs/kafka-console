@@ -1,5 +1,7 @@
 <script lang="ts" module>
   import type { GroupDetail } from './api'
+  import { download, fileStamp } from './download'
+  import { errorMessage } from './http'
 
   // A group's committed offsets as a file. Restoring it commits exactly
   // these offsets again; partitions not in the file are left alone.
@@ -31,12 +33,7 @@
   }
 
   export function downloadBackup(b: OffsetBackup) {
-    const a = document.createElement('a')
-    a.href = URL.createObjectURL(new Blob([JSON.stringify(b, null, 2)], { type: 'application/json' }))
-    a.download = `${b.group}-offsets-${b.taken_at.replaceAll(':', '-')}.json`
-    a.click()
-    // Revoking at once can cancel the download before it starts.
-    setTimeout(() => URL.revokeObjectURL(a.href), 1000)
+    download(`${b.group}-offsets-${fileStamp(b.taken_at)}.json`, JSON.stringify(b, null, 2), 'application/json')
   }
 
   function parseBackup(text: string): OffsetBackup {
@@ -60,8 +57,8 @@
 </script>
 
 <script lang="ts">
-  import { api, type Cluster, type ResetPlan } from './api'
-  import { fmt } from './format'
+  import { api, type Cluster, type ResetOffsetsBody, type ResetPlan } from './api'
+  import { fmt, offsetDelta } from './format'
   import { reviewedOffsets } from './offsetReset'
   import Modal from './Modal.svelte'
   import { TriangleAlert, Eye, Check, Upload } from '@lucide/svelte'
@@ -84,19 +81,6 @@
   let previewed = $state(false)
   let applied = $state(false)
 
-  let wasOpen = false
-  $effect(() => {
-    if (open && !wasOpen) {
-      backup = undefined
-      fileName = ''
-      rows = []
-      error = ''
-      previewed = false
-      applied = false
-    }
-    wasOpen = open
-  })
-
   async function pick(e: Event) {
     const file = (e.currentTarget as HTMLInputElement).files?.[0]
     if (!file) return
@@ -107,10 +91,10 @@
       backup = parseBackup(await file.text())
       fileName = file.name
       rows = backup.topics.map((t) => ({ topic: t.topic, on: true }))
-    } catch (err: any) {
+    } catch (err) {
       backup = undefined
       rows = []
-      error = err.message
+      error = errorMessage(err)
     }
   }
 
@@ -124,14 +108,14 @@
     for (const r of rows) {
       if (!r.on || (!dry && (!r.plan || r.error || r.done))) continue
       try {
-        const request = dry ? { topic: r.topic, strategy: 'offsets', offsets: offsetsOf(r.topic), dry_run: true }
+        const request: ResetOffsetsBody = dry ? { topic: r.topic, strategy: 'offsets', offsets: offsetsOf(r.topic), dry_run: true }
           : reviewedOffsets(r.topic, r.plan)
         const res = await api.resetOffsets(cluster.name, group, request)
         r.plan = res.partitions
         r.error = undefined
         if (!dry) r.done = true
-      } catch (err: any) {
-        r.error = err.message
+      } catch (err) {
+        r.error = errorMessage(err)
         if (dry) r.plan = undefined
       }
     }
@@ -150,7 +134,6 @@
     ready.reduce((s, r) => s + r.plan!.filter((p) => offsetsOf(r.topic).find((o) => o.partition === p.partition)?.offset !== p.to).length, 0),
   )
   const failed = $derived(chosen.filter((r) => r.error).length)
-  const delta = (p: ResetPlan) => (p.from < 0 ? '—' : `${p.to - p.from > 0 ? '+' : ''}${(p.to - p.from).toLocaleString()}`)
 </script>
 
 <Modal title="Restore offsets" bind:open width={640} locked={busy}>
@@ -196,7 +179,7 @@
                   <td class="num mono">{p.partition}</td>
                   <td class="num mono">{p.from < 0 ? 'none' : fmt(p.from)}</td>
                   <td class="num mono"><b>{fmt(p.to)}</b>{#if offs.find((o) => o.partition === p.partition)?.offset !== p.to}<span class="faint" title="Outside the partition's current range; clamped"> *</span>{/if}</td>
-                  <td class="num mono" class:up={p.to > p.from && p.from >= 0} class:down={p.to < p.from}>{delta(p)}</td>
+                  <td class="num mono" class:up={p.to > p.from && p.from >= 0} class:down={p.to < p.from}>{offsetDelta(p)}</td>
                 </tr>
               {/each}
             {:else}
@@ -242,10 +225,6 @@
 </Modal>
 
 <style>
-  .lead { font-size: 13px; color: var(--text-2); }
-  .lead b { color: var(--text); font-weight: 600; }
-  .warnbox { display: flex; gap: 8px; align-items: flex-start; padding: 9px 11px; font-size: 13px; color: var(--warn); background: var(--warn-soft); border-radius: var(--radius); }
-  .warnbox :global(svg) { flex: none; margin-top: 1px; }
   .file { display: flex; align-items: center; gap: 10px; cursor: pointer; }
   .file input { position: absolute; width: 1px; height: 1px; opacity: 0; }
   .file:focus-within .btn { outline: 2px solid var(--focus); outline-offset: 1px; }
@@ -256,7 +235,6 @@
   tr.dim td { opacity: .5; }
   .up { color: var(--warn); }
   .down { color: var(--accent); }
-  .err { color: var(--danger); }
   .effect { font-size: 13px; color: var(--text-2); }
   .effect b { color: var(--text); }
   .okline { display: inline-flex; align-items: center; gap: 6px; color: var(--ok); }

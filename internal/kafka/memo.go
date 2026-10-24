@@ -43,11 +43,12 @@ func newMemo[T any](ttl, floor, timeout time.Duration) *memo[T] {
 // is older than the floor; otherwise it waits for a read, the one already
 // running or a new one.
 func (m *memo[T]) get(ctx context.Context, fresh bool, read func(context.Context) (T, error)) (T, error) {
-	if fresh {
-		if e, ok, _ := m.store.Get(ctx, struct{}{}); ok && time.Since(e.at) < m.floor {
-			return e.val, nil
-		}
+	e, ok, _ := m.store.Get(ctx, struct{}{})
 
+	switch {
+	case ok && (!fresh || time.Since(e.at) < m.floor):
+		return e.val, nil
+	case ok:
 		_ = m.store.Delete(ctx, struct{}{})
 	}
 

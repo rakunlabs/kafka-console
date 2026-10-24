@@ -22,7 +22,7 @@ builds:
       - arm64
     main: ./cmd/kafka-console
     ldflags:
-      - -s -w -X main.version={{.Version}} -X main.commit={{.ShortCommit}} -X main.date={{.Date}}
+      - -s -w -X github.com/rakunlabs/kafka-console/internal/config.Version={{.Version}} -X main.commit={{.ShortCommit}} -X main.date={{.Date}}
     flags:
       - -trimpath
 archives:

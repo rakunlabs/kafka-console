@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Cluster, MCPEndpoint } from './api'
   import { mcpURL, mcpServerName, mcpSnippet, tokenVariable, type MCPClient } from './mcp'
-  import { copyText } from './resource.svelte'
+  import { copier } from './resource.svelte'
   import Modal from './Modal.svelte'
   import { Bot, Check, Copy, Lock } from '@lucide/svelte'
 
@@ -11,12 +11,8 @@
   const endpoints = $derived(cluster.mcp ?? [])
   const origin = location.origin
 
-  let copiedKey = $state('')
-  async function copy(key: string, text: string) {
-    if (!(await copyText(text))) return
-    copiedKey = key
-    setTimeout(() => copiedKey === key && (copiedKey = ''), 1200)
-  }
+  const clip = copier()
+  const copy = (key: string, text: string) => clip.copy(text, key)
 
   let connecting = $state<MCPEndpoint>()
   let open = $state(false)
@@ -41,10 +37,10 @@
     {#each endpoints as e (e.name)}
       {@const url = mcpURL(origin, e)}
       <div class="row">
-        <span class="lead"><Bot size={15} class="text-ink-3" /><b>MCP</b>{#if endpoints.length > 1}<span class="faint">{e.name}</span>{/if}</span>
+        <span class="mcp-name"><Bot size={15} class="text-ink-3" /><b>MCP</b>{#if endpoints.length > 1}<span class="faint">{e.name}</span>{/if}</span>
         <code class="url" title={url}>{url}</code>
         <button class="ghost small" onclick={() => copy(e.name, url)} aria-label="Copy MCP address" title="Copy address">
-          {#if copiedKey === e.name}<Check size={13} />{:else}<Copy size={13} />{/if}
+          {#if clip.copied === e.name}<Check size={13} />{:else}<Copy size={13} />{/if}
         </button>
         <span class="badge {e.read_only ? '' : 'warn'}">{e.read_only ? 'read-only' : 'can write'}</span>
         {#if e.auth_token}<span class="faint tok" title="Clients send the console's MCP token as a bearer token"><Lock size={12} />token</span>{/if}
@@ -68,7 +64,7 @@
       <div class="snip-head">
         <span class="faint small">{current.where}</span>
         <button class="ghost small" onclick={() => copy('snippet', snippet)}>
-          {#if copiedKey === 'snippet'}<Check size={13} />Copied{:else}<Copy size={13} />Copy{/if}
+          {#if clip.copied === 'snippet'}<Check size={13} />Copied{:else}<Copy size={13} />Copy{/if}
         </button>
       </div>
       <pre class="mono">{snippet}</pre>
@@ -84,8 +80,8 @@
   .mcp { display: grid; }
   .row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 8px 14px; font-size: 13px; }
   .row + .row { border-top: 1px dashed var(--line-dash); }
-  .lead { display: inline-flex; align-items: center; gap: 6px; }
-  .lead b { font-weight: 600; }
+  .mcp-name { display: inline-flex; align-items: center; gap: 6px; }
+  .mcp-name b { font-weight: 600; }
   .url { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2); }
   .tok { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; }
   .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); }

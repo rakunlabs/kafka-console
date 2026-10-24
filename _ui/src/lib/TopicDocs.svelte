@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { errorMessage } from './http'
   import Pending from './Pending.svelte'
   import { untrack } from 'svelte'
   import { api, isAbort, type Cluster, type TopicDoc } from './api'
@@ -17,8 +18,8 @@
     .then((d) => (doc = d))
     .catch((e) => {
       if (isAbort(e)) return
-      if (/not found/i.test(e.message)) missing = true
-      else error = e.message
+      if (/not found/i.test(errorMessage(e))) missing = true
+      else error = errorMessage(e)
     })
 </script>
 

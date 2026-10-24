@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 
 	"github.com/twmb/franz-go/pkg/kadm"
@@ -111,7 +112,7 @@ func (c *Client) Reassign(ctx context.Context, topic string, req ReassignRequest
 			dup[b] = true
 		}
 
-		if !equalReplicas(p.Replicas, r.Replicas) {
+		if !slices.Equal(p.Replicas, r.Replicas) {
 			assign.Assign(topic, r.Partition, r.Replicas)
 		}
 
@@ -144,28 +145,11 @@ func (c *Client) Reassign(ctx context.Context, topic string, req ReassignRequest
 
 	for i := range out {
 		if r, ok := resp[topic][out[i].Partition]; ok && r.Err != nil {
-			out[i].Error = r.Err.Error()
-			if r.ErrMessage != "" {
-				out[i].Error += ": " + r.ErrMessage
-			}
+			out[i].Error = withMessage(r.Err, r.ErrMessage).Error()
 		}
 	}
 
 	return out, nil
-}
-
-func equalReplicas(a, b []int32) bool {
-	if len(a) != len(b) {
-		return false
-	}
-
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-
-	return true
 }
 
 // Reassignments lists the topic's moves in progress.
@@ -307,7 +291,7 @@ func balance(brokers []int32, current map[int32][]int32) []Reassignment {
 
 	for _, p := range parts {
 		for _, b := range current[p] {
-			if alive[b] && !contains(next[p], b) {
+			if alive[b] && !slices.Contains(next[p], b) {
 				next[p] = append(next[p], b)
 				load[b]++
 			}
@@ -333,7 +317,7 @@ func balance(brokers []int32, current map[int32][]int32) []Reassignment {
 			}
 
 			for _, p := range parts {
-				if !contains(next[p], b) {
+				if !slices.Contains(next[p], b) {
 					continue
 				}
 
@@ -342,7 +326,7 @@ func balance(brokers []int32, current map[int32][]int32) []Reassignment {
 				}
 			}
 
-			next[pick] = remove(next[pick], b)
+			next[pick] = without(next[pick], b)
 			load[b]--
 		}
 	}
@@ -354,7 +338,7 @@ func balance(brokers []int32, current map[int32][]int32) []Reassignment {
 			var pick int32 = -1
 
 			for _, b := range brokers {
-				if contains(next[p], b) {
+				if slices.Contains(next[p], b) {
 					continue
 				}
 
@@ -369,15 +353,15 @@ func balance(brokers []int32, current map[int32][]int32) []Reassignment {
 				// p already holds u. Find a partition q on pick that lacks
 				// u, move q's replica pick -> u; then p takes pick.
 				for _, u := range brokers {
-					if load[u] >= limit || !contains(next[p], u) {
+					if load[u] >= limit || !slices.Contains(next[p], u) {
 						continue
 					}
 
 					moved := false
 
 					for _, q := range parts {
-						if q != p && contains(next[q], pick) && !contains(next[q], u) {
-							next[q] = append(remove(next[q], pick), u)
+						if q != p && slices.Contains(next[q], pick) && !slices.Contains(next[q], u) {
+							next[q] = append(without(next[q], pick), u)
 							load[pick]--
 							load[u]++
 							moved = true
@@ -409,8 +393,8 @@ func balance(brokers []int32, current map[int32][]int32) []Reassignment {
 	var try func(p int32, seen map[int32]bool) bool
 	try = func(p int32, seen map[int32]bool) bool {
 		cands := append([]int32(nil), next[p]...)
-		if len(current[p]) > 0 && contains(cands, current[p][0]) {
-			cands = append([]int32{current[p][0]}, remove(cands, current[p][0])...)
+		if len(current[p]) > 0 && slices.Contains(cands, current[p][0]) {
+			cands = append([]int32{current[p][0]}, without(cands, current[p][0])...)
 		}
 
 		for _, b := range cands {
@@ -453,7 +437,7 @@ func balance(brokers []int32, current map[int32][]int32) []Reassignment {
 
 	for _, p := range parts {
 		l := leader[p]
-		next[p] = append([]int32{l}, remove(next[p], l)...)
+		next[p] = append([]int32{l}, without(next[p], l)...)
 	}
 
 	out := make([]Reassignment, 0, len(parts))
@@ -464,23 +448,7 @@ func balance(brokers []int32, current map[int32][]int32) []Reassignment {
 	return out
 }
 
-func contains(s []int32, v int32) bool {
-	for _, x := range s {
-		if x == v {
-			return true
-		}
-	}
-
-	return false
-}
-
-func remove(s []int32, v int32) []int32 {
-	out := make([]int32, 0, len(s))
-	for _, x := range s {
-		if x != v {
-			out = append(out, x)
-		}
-	}
-
-	return out
+// without is s without v, in a new slice: callers keep using s.
+func without(s []int32, v int32) []int32 {
+	return slices.DeleteFunc(slices.Clone(s), func(x int32) bool { return x == v })
 }

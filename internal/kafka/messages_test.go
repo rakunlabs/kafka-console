@@ -74,7 +74,7 @@ func TestEditedPayloadValidation(t *testing.T) {
 }
 
 func TestEditedProtobufKeepsMessageType(t *testing.T) {
-	cd, err := compile(17, sr.Schema{Type: sr.TypeProtobuf, Schema: `syntax = "proto3";
+	cd, err := compile(t.Context(), 17, sr.Schema{Type: sr.TypeProtobuf, Schema: `syntax = "proto3";
 		package shop;
 		message First { string unrelated = 1; }
 		message Envelope { message Order { string status = 1; } }
@@ -130,7 +130,7 @@ func TestFullRecordRendering(t *testing.T) {
 }
 
 func TestEditedJSONSchemaKeepsNumericPrecision(t *testing.T) {
-	cd, err := compile(18, sr.Schema{Type: sr.TypeJSON, Schema: `{"type":"object","properties":{"id":{"type":"integer"},"amount":{"type":"number"}}}`}, nil)
+	cd, err := compile(t.Context(), 18, sr.Schema{Type: sr.TypeJSON, Schema: `{"type":"object","properties":{"id":{"type":"integer"},"amount":{"type":"number"}}}`}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

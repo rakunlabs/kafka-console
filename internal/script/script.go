@@ -3,8 +3,10 @@ package script
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand"
+	"sync"
 	"time"
 
 	"github.com/dop251/goja"
@@ -20,6 +22,10 @@ const maxCallStackSize = 2000
 // re-arming the next evaluation would run unbounded. It is short enough that a
 // runaway predicate is stopped promptly and long enough to cost nothing.
 const reinterruptInterval = 50 * time.Millisecond
+
+// errNotSingleFunction is why a script that closes its wrapper is refused,
+// by both Compile and Check.
+const errNotSingleFunction = "script must be a single function body; it closes the function it is wrapped in"
 
 // Script is a compiled user predicate.
 //
@@ -55,7 +61,7 @@ func Compile(source string, parameters ...string) (*Script, error) {
 	}
 
 	if !singleFunction(parsed) {
-		return nil, fmt.Errorf("script must be a single function body; it closes the function it is wrapped in")
+		return nil, errors.New(errNotSingleFunction)
 	}
 
 	program, err := goja.CompileAST(parsed, true)
@@ -148,58 +154,91 @@ func (s *Script) Close() {
 	s.runtime.ClearInterrupt()
 }
 
-// Guard interrupts a script when ctx is done, and keeps it interrupted.
+// Watchdog bounds every call of a script to a budget, and fails them all once
+// ctx is done, with one goroutine for a whole read rather than one per call.
 //
-// This is what makes a deadline real. goja does not yield, so a predicate that
-// never returns is never preempted: the context is not observed until the call
-// comes back, which for `while (true) {}` is never. Watching the context from
-// another goroutine and interrupting the runtime is the only thing that can
-// stop it.
-//
-// Re-arming matters as much as arming. When an interrupted call returns, goja
-// clears the interrupt flag itself, so a guard that fired once and exited would
-// leave the next evaluation unguarded — and a caller that evaluates a predicate
-// per topic would hang on the second one. The watcher therefore keeps
-// interrupting for as long as the context stays done.
-//
-// The returned function must be called when evaluation finishes, and stops the
-// watcher. It does not clear the interrupt flag; use Close for that.
-func Guard(ctx context.Context, s *Script, reason string) func() {
-	if s == nil {
-		return func() {}
+// goja does not yield, so a predicate that never returns is never preempted:
+// the context is not observed until the call comes back, which for
+// `while (true) {}` is never. Watching from another goroutine and
+// interrupting the runtime is the only thing that can stop it.
+type Watchdog struct {
+	script *Script
+	ctx    context.Context
+	budget time.Duration
+	reason string
+
+	mu sync.Mutex
+	// deadline is when the running call is interrupted; zero between calls,
+	// so an interrupt never lands on the next one.
+	deadline time.Time
+
+	stop chan struct{}
+	done chan struct{}
+}
+
+// Watch starts a watchdog for s. Stop must be called when evaluation ends.
+func Watch(ctx context.Context, s *Script, budget time.Duration, reason string) *Watchdog {
+	w := &Watchdog{
+		script: s, ctx: ctx, budget: budget, reason: reason,
+		stop: make(chan struct{}), done: make(chan struct{}),
 	}
 
-	stopped := make(chan struct{})
-	done := make(chan struct{})
+	go w.run()
 
-	go func() {
-		defer close(done)
+	return w
+}
 
+func (w *Watchdog) run() {
+	defer close(w.done)
+
+	// The ticker also re-asserts an interrupt past ctx, which goja needs as
+	// it clears the flag when an interrupted call returns.
+	ticker := time.NewTicker(min(reinterruptInterval, w.budget))
+	defer ticker.Stop()
+
+	for {
 		select {
-		case <-ctx.Done():
-		case <-stopped:
+		case <-w.stop:
 			return
+		case <-ticker.C:
 		}
 
-		// Past the deadline. Re-assert the interrupt until the caller stops
-		// evaluating, so every remaining call fails fast rather than running
-		// without a limit.
-		ticker := time.NewTicker(reinterruptInterval)
-		defer ticker.Stop()
-
-		for {
-			s.Interrupt(reason)
-
-			select {
-			case <-stopped:
-				return
-			case <-ticker.C:
-			}
+		w.mu.Lock()
+		if !w.deadline.IsZero() && (w.ctx.Err() != nil || time.Now().After(w.deadline)) {
+			w.script.Interrupt(w.reason)
 		}
-	}()
-
-	return func() {
-		close(stopped)
-		<-done
+		w.mu.Unlock()
 	}
+}
+
+// Call evaluates the predicate within the budget. Once ctx is done every call
+// fails with its error without running.
+func (w *Watchdog) Call(arguments ...goja.Value) (bool, error) {
+	if err := w.ctx.Err(); err != nil {
+		return false, err
+	}
+
+	w.mu.Lock()
+	w.deadline = time.Now().Add(w.budget)
+	w.mu.Unlock()
+
+	ok, err := w.script.Call(arguments...)
+
+	w.mu.Lock()
+	w.deadline = time.Time{}
+	w.mu.Unlock()
+
+	// An interrupt that arrived as the call returned would stop the next one.
+	w.script.Close()
+
+	return ok, err
+}
+
+// Script is the predicate the watchdog guards.
+func (w *Watchdog) Script() *Script { return w.script }
+
+// Stop ends the watchdog's goroutine.
+func (w *Watchdog) Stop() {
+	close(w.stop)
+	<-w.done
 }

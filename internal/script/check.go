@@ -47,7 +47,7 @@ func Check(source string, parameters ...string) []Problem {
 	}
 
 	if !singleFunction(program) {
-		return []Problem{{Line: 1, Column: 1, Message: "script must be a single function body; it closes the function it is wrapped in"}}
+		return []Problem{{Line: 1, Column: 1, Message: errNotSingleFunction}}
 	}
 
 	if _, err := goja.CompileAST(program, true); err != nil {

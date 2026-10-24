@@ -5,6 +5,8 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/rakunlabs/kafka-console/internal/kafka"
 )
 
 func TestParseRead(t *testing.T) {
@@ -50,5 +52,23 @@ func TestStreamSendsHeadersOnce(t *testing.T) {
 
 	if got := w.Body.String(); got != "{\"a\":1}\n{\"a\":2}\n" {
 		t.Fatalf("body %q", got)
+	}
+}
+
+func TestStreamFinish(t *testing.T) {
+	boom := kafka.ErrNotFound
+
+	// Before the first event the error is still an HTTP error.
+	w := httptest.NewRecorder()
+	s := newStream(w, ndjson)
+	called := false
+	if err := s.finish(boom, func() { called = true }); err == nil || called {
+		t.Fatalf("before start: err %v, last called %v", err, called)
+	}
+
+	// After it, the error is the last event and the handler returns nil.
+	s.line(map[string]int{"a": 1})
+	if err := s.finish(boom, func() { called = true }); err != nil || !called {
+		t.Fatalf("after start: err %v, last called %v", err, called)
 	}
 }

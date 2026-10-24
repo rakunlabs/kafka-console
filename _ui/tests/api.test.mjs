@@ -64,3 +64,24 @@ test('HTTP errors retain their status for safe import retry decisions', async (t
   t.mock.method(globalThis, 'fetch', async () => new Response('{"message":"bad record"}', { status: 400 }))
   await assert.rejects(api.importRecords('c', 't', {}), (e) => e instanceof HTTPError && e.status === 400 && e.message === 'bad record')
 })
+
+test('a garbled live tail event ends the stream as an error', async (t) => {
+  const { tail } = await import('../src/lib/api.ts')
+  const listeners = {}
+  let closed = false
+  class FakeEventSource {
+    constructor(url) { this.url = url }
+    addEventListener(type, fn) { listeners[type] = fn }
+    close() { closed = true }
+  }
+  globalThis.EventSource = FakeEventSource
+  t.after(() => delete globalThis.EventSource)
+  const events = []
+  const errors = []
+  tail('c', 't', {}, { event: (e) => events.push(e), error: (m) => errors.push(m), end: () => {} })
+  listeners.message({ data: '{"scanned":1,"matched":0}' })
+  listeners.message({ data: 'not json' })
+  assert.equal(events.length, 1)
+  assert.deepEqual(errors, ['The live tail sent an unreadable event'])
+  assert.equal(closed, true)
+})

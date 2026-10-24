@@ -1,7 +1,10 @@
 <script lang="ts">
-  import { names, forgetNames } from './names'
-  import { api, type Cluster, type TopicName, type TopicConsumer, type ResetPlan } from './api'
-  import { fmt } from './format'
+  import { untrack } from 'svelte'
+  import { errorMessage } from './http'
+  import { names as loadNames, forgetNames } from './names'
+  import { topicNames } from './topicNames.svelte'
+  import { api, type Cluster, type TopicConsumer, type ResetPlan } from './api'
+  import { fmt, inputMs } from './format'
   import { go } from './router.svelte'
   import Modal from './Modal.svelte'
   import TopicPicker from './TopicPicker.svelte'
@@ -33,7 +36,7 @@
   let step = $state<1 | 2>(1)
   let name = $state('')
   let topic = $state('')
-  let topics = $state.raw<TopicName[]>([])
+  const names = topicNames(untrack(() => cluster.name))
   let groupNames = $state<string[]>([])
   let mode = $state<Mode>('manual')
   let start = $state<Start>('latest')
@@ -50,25 +53,8 @@
   const groupName = $derived(adding ? fixedGroup! : name.trim())
   const nameTaken = $derived(!adding && groupNames.includes(name.trim()))
 
-  let wasOpen = false
-  $effect(() => {
-    if (open && !wasOpen) {
-      step = 1
-      name = ''
-      topic = ''
-      mode = 'manual'
-      start = 'latest'
-      timestamp = ''
-      rows = []
-      sources = []
-      source = ''
-      error = ''
-      result = undefined
-      names(cluster.name).then((n) => (topics = n.topics)).catch((e) => (error = e.message))
-      if (!adding) names(cluster.name, true).then((n) => (groupNames = n.groups)).catch(() => {})
-    }
-    wasOpen = open
-  })
+  // Mounted only while open, so every open starts from a fresh form.
+  if (!untrack(() => adding)) loadNames(untrack(() => cluster.name), true).then((n) => (groupNames = n.groups)).catch(() => {})
 
   async function next() {
     error = ''
@@ -81,14 +67,14 @@
       mode = 'manual'
       applyStart('latest')
       step = 2
-    } catch (e: any) {
-      error = e.message
+    } catch (e) {
+      error = errorMessage(e)
     } finally {
       loadingTopic = false
     }
   }
 
-  async function applyStart(s: Start) {
+  function applyStart(s: Start) {
     start = s
     if (s === 'earliest') rows = rows.map((r) => ({ ...r, offset: r.low }))
     else if (s === 'latest') rows = rows.map((r) => ({ ...r, offset: r.high }))
@@ -104,13 +90,13 @@
       const plan = await api.resetOffsets(cluster.name, `__kafka_console_probe__`, {
         topic,
         strategy: 'timestamp',
-        timestamp: new Date(timestamp).getTime(),
+        timestamp: inputMs(timestamp),
         dry_run: true,
       })
       const at = new Map(plan.partitions.map((p) => [p.partition, p.to]))
       rows = rows.map((r) => ({ ...r, offset: at.get(r.partition) ?? r.high }))
-    } catch (e: any) {
-      error = e.message
+    } catch (e) {
+      error = errorMessage(e)
     } finally {
       busy = false
     }
@@ -157,8 +143,8 @@
         : await api.createGroup(cluster.name, { group: groupName, topic, offsets })
       forgetNames(cluster.name)
       ondone?.()
-    } catch (e: any) {
-      error = e.message
+    } catch (e) {
+      error = errorMessage(e)
     } finally {
       busy = false
     }
@@ -172,7 +158,7 @@
 
 <Modal title={adding ? `Add topic to ${fixedGroup}` : 'New consumer group'} bind:open width={680}>
   {#if result}
-    <div class="ok"><Check size={15} />
+    <div class="donemsg"><Check size={15} />
       {adding ? `${topic} added to` : 'Created'} <b class="mono">{groupName}</b> with {result.length} {result.length === 1 ? 'partition' : 'partitions'}.
     </div>
     <p class="faint small">A consumer that joins <span class="mono">{groupName}</span> will start from these offsets.</p>
@@ -188,7 +174,8 @@
     {/if}
     <div class="field">
       <span class="lbl">Topic</span>
-      <TopicPicker {topics} bind:value={topic} exclude={adding ? existingTopics : []} />
+      <TopicPicker topics={names.topics} bind:value={topic} exclude={adding ? existingTopics : []} />
+      {#if names.error}<div class="error">{names.error}</div>{/if}
     </div>
   {:else}
     <div class="crumb">
@@ -288,10 +275,6 @@
   .hint { font-size: 12px; font-weight: 400; color: var(--text-3); }
   .field-err { font-size: 12px; font-weight: 400; color: var(--danger); }
   .crumb { display: flex; align-items: center; gap: 8px; font-size: 13px; }
-  .ok { display: flex; align-items: center; gap: 6px; font-size: 14px; color: var(--ok); }
-  .ok b { color: var(--text); }
-  .warnbox { display: flex; gap: 8px; align-items: flex-start; padding: 9px 11px; font-size: 13px; color: var(--warn); background: var(--warn-soft); border-radius: var(--radius); }
-  .warnbox :global(svg) { flex: none; margin-top: 1px; }
 
 
   .starts { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }

@@ -1,8 +1,11 @@
 <script lang="ts">
-  import { api, type Cluster, type ResetPlan, type TopicConsumer } from './api'
-  import { fmt } from './format'
+  import { onDestroy, untrack } from 'svelte'
+  import { errorMessage } from './http'
+  import { api, type Cluster, type ResetPlan, type ResetOffsetsBody, type ResetStrategy, type TopicConsumer } from './api'
+  import { fmt, partitionList, inputMs, offsetDelta } from './format'
   import { reviewedOffsets } from './offsetReset'
   import Modal from './Modal.svelte'
+  import PartitionsInput from './PartitionsInput.svelte'
   import { TriangleAlert, Eye, Check } from '@lucide/svelte'
 
   // Moves a group's committed offsets for some partitions of one topic.
@@ -13,6 +16,7 @@
     topic,
     partitions,
     activeMembers = 0,
+    pickPartitions = false,
     open = $bindable(false),
     ondone,
   }: {
@@ -22,12 +26,18 @@
     // Empty means every partition of the topic.
     partitions: number[]
     activeMembers?: number
+    // Let the user type the partitions, starting from `partitions`.
+    pickPartitions?: boolean
     open: boolean
     ondone?: () => void
   } = $props()
 
-  type Strategy = 'offset' | 'shift' | 'earliest' | 'latest' | 'timestamp' | 'copy'
-  let strategy = $state<Strategy>('offset')
+  type Strategy = Exclude<ResetStrategy, 'offsets'> | 'copy'
+  let strategy = $state<Strategy>(untrack(() => partitions.length === 1) ? 'offset' : 'latest')
+  let partitionsText = $state(untrack(() => partitions.join(', ')))
+  // The partitions this dialog moves; undefined while the typed list is invalid.
+  const chosen = $derived(pickPartitions ? partitionList(partitionsText) : partitions)
+  const parts = $derived(chosen ?? [])
   let offset = $state(0)
   let shift = $state(-10)
   let timestamp = $state('')
@@ -36,73 +46,52 @@
   let sourcesLoading = $state(false)
   let sourceError = $state('')
   let source = $state('')
-  let plan = $state<ResetPlan[]>()
-  let planKey = $state('')
+  // A preview describes the inputs it ran with; any edit voids it.
+  let reviewed = $state.raw<{ key: string; plan: ResetPlan[] }>()
   let error = $state('')
   let busy = $state(false)
   let done = $state(false)
 
-  const single = $derived(partitions.length === 1)
-  const target = $derived(single ? `partition ${partitions[0]}` : partitions.length ? `${partitions.length} partitions` : 'all partitions')
+  const single = $derived(parts.length === 1)
+  const target = $derived(single ? `partition ${parts[0]}` : parts.length ? `${parts.length} partitions` : 'all partitions')
 
-  // Fresh form on every open; a single partition starts from its current commit.
-  let wasOpen = false
-  // Each open is a generation: a seed answering after the dialog closed,
-  // reopened for another partition, or after the user typed is dropped.
-  let generation = 0
+  // Mounted only while open, so every open is a fresh form; a single
+  // partition starts from its current commit. Answers arriving after the
+  // dialog closed, or a seed arriving after the user typed, are dropped.
+  let alive = true
   let touched = false
-  $effect(() => {
-    if (open && !wasOpen) {
-      generation++
-      touched = false
-      strategy = single ? 'offset' : 'latest'
-      shift = -10
-      timestamp = ''
-      sources = undefined
-      sourcesLoading = false
-      sourceError = ''
-      source = ''
-      plan = undefined
-      error = ''
-      done = false
-      if (single) void seed(generation)
-    }
-    wasOpen = open
-  })
+  onDestroy(() => (alive = false))
+  if (untrack(() => single)) void seed()
 
-  async function seed(gen: number) {
+  async function seed() {
     try {
-      const p = await api.resetOffsets(cluster.name, group, { topic, partitions, strategy: 'shift', shift: 0, dry_run: true })
-      if (gen !== generation || !open || touched) return
+      const p = await api.resetOffsets(cluster.name, group, { topic, partitions: parts, strategy: 'shift', shift: 0, dry_run: true })
+      if (!alive || touched) return
       const row = p.partitions[0]
       if (row) offset = row.from >= 0 ? row.from : row.low
     } catch {}
   }
 
-  const key = $derived(JSON.stringify([cluster.name, group, topic, partitions, strategy, offset, shift, timestamp, source]))
-  // A preview describes the inputs it ran with; any edit voids it.
-  $effect(() => {
-    if (plan && key !== planKey) plan = undefined
-  })
+  const key = $derived(JSON.stringify([cluster.name, group, topic, chosen ?? partitionsText, strategy, offset, shift, timestamp, source]))
+  const plan = $derived(reviewed?.key === key ? reviewed.plan : undefined)
 
   // The groups to copy from are listed the first time copy is picked: only
   // groups with a commit on this topic, so the copy is always same-topic.
   $effect(() => {
-    if (strategy !== 'copy' || sources || !open) return
-    const gen = generation
+    if (strategy !== 'copy' || sources) return
     sources = []
     sourcesLoading = true
     api.topicConsumers(cluster.name, topic).then(
       (list) => {
-        if (gen !== generation) return
+        if (!alive) return
         sources = list.filter((c) => c.group !== group && c.partitions.some((p) => p.committed >= 0))
         source = sources[0]?.group ?? ''
       },
       (e) => {
-        if (gen === generation) sourceError = e.message
+        if (alive) sourceError = errorMessage(e)
       },
     ).finally(() => {
-      if (gen === generation) sourcesLoading = false
+      if (alive) sourcesLoading = false
     })
   })
 
@@ -110,7 +99,7 @@
   const copied = $derived.by(() => {
     const src = sources?.find((s) => s.group === source)
     if (!src) return []
-    const want = new Set(partitions)
+    const want = new Set(parts)
     return src.partitions
       .filter((p) => p.committed >= 0 && (!want.size || want.has(p.partition)))
       .map((p) => ({ partition: p.partition, offset: p.committed }))
@@ -120,37 +109,35 @@
     const src = sources?.find((s) => s.group === source)
     if (!src) return 0
     const has = new Set(copied.map((c) => c.partition))
-    return partitions.length
-      ? partitions.filter((p) => !has.has(p)).length
+    return parts.length
+      ? parts.filter((p) => !has.has(p)).length
       : src.partitions.filter((p) => !has.has(p.partition)).length
   })
 
-  function body(dry: boolean) {
+  function body(dry: boolean): ResetOffsetsBody {
     if (strategy === 'copy') return { topic, strategy: 'offsets', offsets: copied, dry_run: dry }
     return {
       topic,
-      partitions,
+      partitions: parts,
       strategy,
       offset: strategy === 'offset' ? Number(offset) : undefined,
       shift: strategy === 'shift' ? Number(shift) : undefined,
-      timestamp: strategy === 'timestamp' && timestamp ? new Date(timestamp).getTime() : undefined,
+      timestamp: strategy === 'timestamp' ? inputMs(timestamp) : undefined,
       dry_run: dry,
     }
   }
 
   async function preview() {
-    const gen = generation
     const previewKey = key
     busy = true
     error = ''
-    plan = undefined
+    reviewed = undefined
     try {
       const result = await api.resetOffsets(cluster.name, group, body(true))
-      if (gen !== generation || !open || previewKey !== key) return
-      planKey = previewKey
-      plan = result.partitions
-    } catch (e: any) {
-      error = e.message
+      if (!alive || previewKey !== key) return
+      reviewed = { key: previewKey, plan: result.partitions }
+    } catch (e) {
+      error = errorMessage(e)
     } finally {
       busy = false
     }
@@ -160,11 +147,13 @@
     busy = true
     error = ''
     try {
-      plan = (await api.resetOffsets(cluster.name, group, reviewedOffsets(topic, plan))).partitions
+      const applyKey = key
+      const result = await api.resetOffsets(cluster.name, group, reviewedOffsets(topic, plan))
+      reviewed = { key: applyKey, plan: result.partitions }
       done = true
       ondone?.()
-    } catch (e: any) {
-      error = e.message
+    } catch (e) {
+      error = errorMessage(e)
     } finally {
       busy = false
     }
@@ -177,13 +166,13 @@
     strategy === 'offset' && plan?.some((p) => p.to !== Number(offset)) ? plan.find((p) => p.to !== Number(offset)) : undefined,
   )
   const invalid = $derived(
-    (strategy === 'offset' && (!Number.isFinite(Number(offset)) || Number(offset) < 0)) ||
+    !chosen ||
+      (strategy === 'offset' && (!Number.isFinite(Number(offset)) || Number(offset) < 0)) ||
       (strategy === 'shift' && (!Number.isInteger(Number(shift)) || Number(shift) === 0)) ||
       (strategy === 'timestamp' && !timestamp) ||
       (strategy === 'copy' && !copied.length),
   )
 
-  const delta = (p: ResetPlan) => (p.from < 0 ? '—' : `${p.to - p.from > 0 ? '+' : ''}${(p.to - p.from).toLocaleString()}`)
 </script>
 
 <Modal title="Change offsets" bind:open width={600} locked={busy}>
@@ -212,6 +201,8 @@
       </label>
     {/each}
   </fieldset>
+
+  {#if pickPartitions}<PartitionsInput bind:text={partitionsText} disabled={busy} />{/if}
 
   {#if strategy === 'offset'}
     <label>Offset
@@ -263,7 +254,7 @@
               <td class="num mono faint">{fmt(p.low)}–{fmt(p.high)}</td>
               <td class="num mono">{p.from < 0 ? 'none' : fmt(p.from)}</td>
               <td class="num mono"><b>{fmt(p.to)}</b></td>
-              <td class="num mono" class:up={p.to > p.from && p.from >= 0} class:down={p.to < p.from}>{delta(p)}</td>
+              <td class="num mono" class:up={p.to > p.from && p.from >= 0} class:down={p.to < p.from}>{offsetDelta(p)}</td>
             </tr>
           {/each}
         </tbody>
@@ -297,19 +288,6 @@
 </Modal>
 
 <style>
-  .lead { font-size: 13px; color: var(--text-2); }
-  .lead b { color: var(--text); font-weight: 600; }
-  .warnbox {
-    display: flex;
-    gap: 8px;
-    align-items: flex-start;
-    padding: 9px 11px;
-    font-size: 13px;
-    color: var(--warn);
-    background: var(--warn-soft);
-    border-radius: var(--radius);
-  }
-  .warnbox :global(svg) { flex: none; margin-top: 1px; }
   label input[type='number'], label input[type='datetime-local'] { max-width: 240px; }
   .hint { font-size: 12px; font-weight: 400; color: var(--text-3); }
   .plan { max-height: 260px; overflow: auto; }

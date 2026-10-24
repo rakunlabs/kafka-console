@@ -12,18 +12,16 @@ import (
 	"github.com/rakunlabs/kafka-console/internal/server"
 )
 
+// Set by the linker; the version goes straight into config.Version.
 var (
-	version = "v0.0.0"
-	commit  = "-"
-	date    = "-"
+	commit = "-"
+	date   = "-"
 )
 
 func main() {
-	config.Version = version
-
 	into.Init(run,
 		into.WithLogger(logi.InitializeLog(logi.WithCaller(false))),
-		into.WithMsgf("%s version:[%s] commit:[%s] date:[%s]", config.ServiceName, version, commit, date),
+		into.WithMsgf("%s version:[%s] commit:[%s] date:[%s]", config.ServiceName, config.Version, commit, date),
 	)
 }
 

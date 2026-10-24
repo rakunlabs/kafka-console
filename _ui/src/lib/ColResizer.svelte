@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { drag } from './drag'
+
   // The grab handle on a table header's right edge: drag to resize the
   // column, double-click to fit its longest content, arrows from the keyboard.
   // The parent owns the width; this only reports where it should go.
@@ -24,28 +26,10 @@
   const clamp = (px: number) => Math.round(Math.min(Math.max(px, min), Math.max(min, max)))
 
   function down(e: PointerEvent) {
-    if (e.button !== 0) return
-    e.preventDefault()
-    e.stopPropagation()
-    const handle = e.currentTarget as HTMLElement
-    const th = handle.parentElement
-    if (!th) return
-    handle.setPointerCapture(e.pointerId)
-    const startX = e.clientX
+    const th = (e.currentTarget as HTMLElement).parentElement
+    if (!th || e.button !== 0) return
     const startW = th.getBoundingClientRect().width
-    const root = document.documentElement
-    root.classList.add('col-resizing')
-    const move = (ev: PointerEvent) => onchange(clamp(startW + ev.clientX - startX))
-    const end = () => {
-      handle.removeEventListener('pointermove', move)
-      handle.removeEventListener('pointerup', end)
-      handle.removeEventListener('pointercancel', end)
-      root.classList.remove('col-resizing')
-      ondone()
-    }
-    handle.addEventListener('pointermove', move)
-    handle.addEventListener('pointerup', end)
-    handle.addEventListener('pointercancel', end)
+    drag(e, { move: (dx) => onchange(clamp(startW + dx)), end: ondone, stopPropagation: true, cursor: true })
   }
 
   function key(e: KeyboardEvent) {

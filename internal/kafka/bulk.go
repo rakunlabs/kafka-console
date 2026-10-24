@@ -1,14 +1,15 @@
 package kafka
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/twmb/franz-go/pkg/kadm"
 	"github.com/twmb/franz-go/pkg/kgo"
 )
 
@@ -22,7 +23,13 @@ const (
 	// maxImportBatch bounds one import request. The UI sends a file as a
 	// sequence of batches so progress is visible and order is kept.
 	maxImportBatch = 1000
+	// importTimeout bounds writing one import batch.
+	importTimeout = 60 * time.Second
 )
+
+// resentFromHeader names the exact record a copy was made from:
+// <topic>/<partition>/<offset>.
+const resentFromHeader = "x-resent-from"
 
 // RangeBound is one end of a replay range. From is oldest, offset or
 // timestamp; To is newest, offset or timestamp. A To offset is inclusive and
@@ -113,7 +120,7 @@ func copyRecord(src *kgo.Record, o replayOptions) *kgo.Record {
 
 	if o.markSource {
 		rec.Headers = append(rec.Headers, kgo.RecordHeader{
-			Key:   "x-resent-from",
+			Key:   resentFromHeader,
 			Value: fmt.Appendf(nil, "%s/%d/%d", o.source, src.Partition, src.Offset),
 		})
 	}
@@ -153,14 +160,14 @@ func (c *Client) checkTarget(ctx context.Context, target string, keepPartition b
 
 // ReplayPlan resolves the request's bounds to offsets per partition.
 func (c *Client) ReplayPlan(ctx context.Context, topic string, req ReplayRequest) ([]ReplayRange, error) {
-	if err := validBound(req.From, "oldest", "from"); err != nil {
+	if err := validBound(req.From, StartOldest, "from"); err != nil {
 		return nil, err
 	}
 
-	if err := validBound(req.To, "newest", "to"); err != nil {
+	if err := validBound(req.To, StartNewest, "to"); err != nil {
 		return nil, err
 	}
-	if req.From.Type == "timestamp" && req.To.Type == "timestamp" && req.To.Timestamp < req.From.Timestamp {
+	if req.From.Type == StartTimestamp && req.To.Type == StartTimestamp && req.To.Timestamp < req.From.Timestamp {
 		return nil, ErrInvalid{errors.New("the end of the time range is before its start")}
 	}
 	if req.Plan != nil {
@@ -169,50 +176,44 @@ func (c *Client) ReplayPlan(ctx context.Context, topic string, req ReplayRequest
 
 	// The last stable offset, not the high watermark: records past it belong
 	// to open transactions and a read-committed reader would wait for them.
-	var from *int64
-	if req.From.Type == "timestamp" {
+	var from, to *int64
+	if req.From.Type == StartTimestamp {
 		from = &req.From.Timestamp
 	}
 
-	b, err := c.bounds(ctx, topic, true, from)
+	// Exact keeps the captured stable end; records are still checked by
+	// timestamp individually in both modes.
+	if req.To.Type == StartTimestamp && !req.Exact {
+		to = &req.To.Timestamp
+	}
+
+	b, err := c.bounds(ctx, topic, true, from, to)
 	if err != nil {
 		return nil, err
 	}
 
-	starts, ends, fromTime := b.starts, b.ends, b.atTime
+	// Partitions whose start is unknown are left out of "all", as before;
+	// asked for by number they fail below.
+	all := slices.DeleteFunc(b.partitions(), func(p int32) bool {
+		s, _ := b.starts.Lookup(topic, p)
 
-	var toTime kadm.ListedOffsets
-	if req.To.Type == "timestamp" && !req.Exact {
-		if toTime, err = c.admin.ListOffsetsAfterMilli(ctx, req.To.Timestamp+1, topic); err != nil {
-			return nil, fmt.Errorf("list offsets by time; %w", accessErr(err))
-		}
-	}
-
-	all := map[int32]bool{}
-
-	starts.Each(func(s kadm.ListedOffset) {
-		if s.Topic == topic && s.Partition >= 0 && s.Err == nil {
-			all[s.Partition] = true
-		}
+		return s.Err != nil
 	})
-
 	if len(all) == 0 {
 		return nil, fmt.Errorf("topic %q; %w", topic, ErrNotFound)
 	}
 
 	parts := req.Partitions
 	if len(parts) == 0 {
-		for p := range all {
-			parts = append(parts, p)
-		}
+		parts = all
 	}
 
 	seen := map[int32]bool{}
 	out := make([]ReplayRange, 0, len(parts))
 
 	for _, p := range parts {
-		if !all[p] {
-			return nil, ErrInvalid{fmt.Errorf("topic %q has no partition %d", topic, p)}
+		if !slices.Contains(all, p) {
+			return nil, noPartition(topic, p)
 		}
 
 		if seen[p] {
@@ -221,35 +222,26 @@ func (c *Client) ReplayPlan(ctx context.Context, topic string, req ReplayRequest
 
 		seen[p] = true
 
-		s, _ := starts.Lookup(topic, p)
-
-		e, ok := ends.Lookup(topic, p)
-		if !ok || e.Err != nil {
-			return nil, fmt.Errorf("end offset of partition %d unavailable", p)
+		low, high, err := b.partition(p)
+		if err != nil {
+			return nil, err
 		}
 
-		r := ReplayRange{Partition: p, Start: s.Offset, End: e.Offset}
-		low, high := r.Start, r.End
+		r := ReplayRange{Partition: p, Start: low, End: high}
 
 		switch req.From.Type {
-		case "offset":
+		case StartOffset:
 			r.Start = req.From.Offset
-		case "timestamp":
-			r.Start = timeOffset(fromTime, topic, p, high)
+		case StartTimestamp:
+			r.Start = timeOffset(b.atTime, topic, p, high)
 		}
 
-		switch req.To.Type {
-		case "offset":
-			if req.To.Offset < high {
-				r.End = req.To.Offset + 1
-			}
-		case "timestamp":
-			if !req.Exact {
-				r.End = timeOffset(toTime, topic, p, high)
-			}
+		switch {
+		case req.To.Type == StartOffset && req.To.Offset < high:
+			r.End = req.To.Offset + 1
+		case to != nil:
+			r.End = timeOffset(b.until, topic, p, high)
 		}
-		// Exact keeps the captured stable end; records are still checked by
-		// timestamp individually in both modes.
 
 		r.Start = min(max(r.Start, low), high)
 		r.End = min(max(r.End, r.Start), high)
@@ -267,7 +259,7 @@ func (c *Client) reviewedReplayPlan(ctx context.Context, topic string, plan []Re
 	if len(plan) == 0 {
 		return []ReplayRange{}, nil
 	}
-	b, err := c.bounds(ctx, topic, true, nil)
+	b, err := c.bounds(ctx, topic, true, nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -278,9 +270,8 @@ func (c *Client) reviewedReplayPlan(ctx context.Context, topic string, plan []Re
 			return nil, ErrInvalid{fmt.Errorf("invalid reviewed range for partition %d", r.Partition)}
 		}
 		seen[r.Partition] = true
-		s, okS := b.starts.Lookup(topic, r.Partition)
-		e, okE := b.ends.Lookup(topic, r.Partition)
-		if !okS || !okE || s.Err != nil || e.Err != nil || r.Start < s.Offset || r.End > e.Offset {
+		lo, hi, err := b.partition(r.Partition)
+		if err != nil || r.Start < lo || r.End > hi {
 			return nil, ErrConflict{fmt.Errorf("reviewed range for partition %d is no longer available; review the replay again", r.Partition)}
 		}
 	}
@@ -290,9 +281,9 @@ func (c *Client) reviewedReplayPlan(ctx context.Context, topic string, plan []Re
 
 func validBound(b RangeBound, open, name string) error {
 	switch b.Type {
-	case "", open, "timestamp":
+	case "", open, StartTimestamp:
 		return nil
-	case "offset":
+	case StartOffset:
 		if b.Offset < 0 {
 			return ErrInvalid{fmt.Errorf("%s offset must be non-negative", name)}
 		}
@@ -303,22 +294,8 @@ func validBound(b RangeBound, open, name string) error {
 	return ErrInvalid{fmt.Errorf("%s must be %s, offset or timestamp", name, open)}
 }
 
-// timeOffset is the first offset at or after a listed time; a partition with
-// nothing that late resolves to its end.
-func timeOffset(listed kadm.ListedOffsets, topic string, p int32, end int64) int64 {
-	if t, ok := listed.Lookup(topic, p); ok && t.Err == nil && t.Offset >= 0 {
-		return t.Offset
-	}
-
-	return end
-}
-
 func sortRanges(rs []ReplayRange) {
-	for i := 1; i < len(rs); i++ {
-		for j := i; j > 0 && rs[j].Partition < rs[j-1].Partition; j-- {
-			rs[j], rs[j-1] = rs[j-1], rs[j]
-		}
-	}
+	slices.SortFunc(rs, func(a, b ReplayRange) int { return cmp.Compare(a.Partition, b.Partition) })
 }
 
 // replayCounters are written by produce promises on another goroutine.
@@ -346,6 +323,12 @@ func (r *replayCounters) first() string {
 	return r.firstErr
 }
 
+// replayDrainTimeout bounds the wait for writes still in flight once a replay
+// stops. The bulk producers are shared and keep kgo's unbounded delivery
+// timeout, so a replay that cannot confirm its last writes reports them as
+// unconfirmed instead of holding its stream slot forever.
+const replayDrainTimeout = 30 * time.Second
+
 // Replay copies a range of a topic, byte for byte, to a target topic. Records
 // are read in offset order per partition and written in the order read, so
 // per-key order survives. It stops at the first failed write. Errors before
@@ -365,15 +348,15 @@ func (c *Client) Replay(ctx context.Context, topic string, req ReplayRequest, em
 	}
 	defer release()
 
-	limit := int64(req.Limit)
-	if limit <= 0 || limit > maxReplay {
-		limit = maxReplay
-	}
+	rctx, cancel := context.WithTimeout(ctx, maxReplayTime)
+	defer cancel()
 
-	filter, err := compileFilter(req.Filter)
+	// Decoding is only for the search and filter; copies use raw bytes.
+	match, err := c.newMatcher(rctx, req.Search, req.Filter, false, DecodeAs{})
 	if err != nil {
 		return err
 	}
+	defer match.Stop()
 
 	plan, err := c.ReplayPlan(ctx, topic, req)
 	if err != nil {
@@ -402,203 +385,235 @@ func (c *Client) Replay(ctx context.Context, topic string, req ReplayRequest, em
 		}
 	}
 
-	ev := ReplayEvent{Type: "plan", Plan: plan, Total: total}
-	if !emit(ev) {
+	run := &replayRun{
+		ctx: ctx, rctx: rctx, cancel: cancel, begin: begin, emit: emit,
+		topic: topic, req: req, match: match,
+		limit: int64(clamp(req.Limit, maxReplay, maxReplay)),
+		ev:    ReplayEvent{Type: "plan", Plan: plan, Total: total},
+		copyOpts: replayOptions{
+			source: topic, target: target, keepPartition: req.KeepPartition, keepTimestamp: req.KeepTimestamp,
+			markSource: req.MarkSource, extraHeaders: req.ExtraHeaders,
+		},
+	}
+
+	if !emit(run.ev) {
 		return nil
 	}
 
-	ev.Plan = nil
-
-	done := func(stoppedBy string) {
-		ev.Type = "done"
-		ev.StoppedBy = stoppedBy
-		ev.ElapsedMs = time.Since(begin).Milliseconds()
-		emit(ev)
-	}
+	run.ev.Plan = nil
 
 	if total == 0 {
-		done("end")
+		run.done(StopEnd)
 
 		return nil
 	}
 
 	// Without a predicate, a quick preview reports the offset count as an
 	// upper bound immediately. Exact scans to count committed records.
-	if req.DryRun && filter == nil && req.Search == "" && !req.Exact {
-		ev.Matched = min(total, limit)
-		ev.Estimated = true
-		done("end")
+	if req.DryRun && !match.selective() && !req.Exact {
+		run.ev.Matched = min(total, run.limit)
+		run.ev.Estimated = true
+		run.done(StopEnd)
 
 		return nil
 	}
 
-	rctx, cancel := context.WithTimeout(ctx, maxReplayTime)
-	defer cancel()
+	if err := run.open(c, plan); err != nil {
+		run.ev.FirstError = err.Error()
+		run.done(StopError)
 
-	offsets := make(map[int32]kgo.Offset, len(used))
-	active := make(windowEnds, len(used))
+		return nil
+	}
+	defer run.reader.Close()
 
-	for _, r := range plan {
-		if r.End > r.Start {
-			offsets[r.Partition] = kgo.NewOffset().At(r.Start)
-			active[r.Partition] = r.End
+	run.poll()
+	run.drain()
+	run.finish()
+
+	return nil
+}
+
+// replayRun is the state of one replay past its plan: the reader, the
+// producer, what was counted and why it stopped.
+type replayRun struct {
+	ctx, rctx context.Context
+	cancel    context.CancelFunc
+	begin     time.Time
+	emit      func(ReplayEvent) bool
+
+	topic    string
+	req      ReplayRequest
+	match    *matcher
+	limit    int64
+	copyOpts replayOptions
+
+	reader   *kgo.Client
+	producer *kgo.Client
+	active   windowEnds
+
+	ev        ReplayEvent
+	counters  replayCounters
+	inflight  sync.WaitGroup
+	pending   atomic.Int64
+	stoppedBy string
+	last      time.Time
+}
+
+// open starts the reader on the plan's windows and, unless a dry run, takes
+// the producer.
+func (r *replayRun) open(c *Client, plan []ReplayRange) error {
+	offsets := make(map[int32]kgo.Offset, len(plan))
+	r.active = make(windowEnds, len(plan))
+
+	for _, p := range plan {
+		if p.End > p.Start {
+			offsets[p.Partition] = kgo.NewOffset().At(p.Start)
+			r.active[p.Partition] = p.End
 		}
 	}
 
-	opts := append(append([]kgo.Opt(nil), c.options...),
-		kgo.ConsumePartitions(map[string]map[int32]kgo.Offset{topic: offsets}),
-		kgo.FetchMaxWait(500*time.Millisecond),
+	reader, err := c.newKafkaClient(
+		kgo.ConsumePartitions(map[string]map[int32]kgo.Offset{r.topic: offsets}),
+		kgo.FetchMaxWait(streamFetchWait),
 		kgo.FetchIsolationLevel(kgo.ReadCommitted()),
 		// Markers reach the planned ends; see newScanReader.
 		kgo.KeepControlRecords(),
 	)
-
-	reader, err := kgo.NewClient(opts...)
 	if err != nil {
-		ev.FirstError = fmt.Sprintf("create reader; %v", err)
-		done("error")
-
-		return nil
+		return fmt.Errorf("create reader; %w", err)
 	}
-	defer reader.Close()
 
-	var producer *kgo.Client
-	if !req.DryRun {
-		if producer, err = c.bulkProducer(req.KeepPartition, ""); err != nil {
-			ev.FirstError = fmt.Sprintf("producer; %v", err)
-			done("error")
+	if !r.req.DryRun {
+		if r.producer, err = c.bulkProducer(r.req.KeepPartition, ""); err != nil {
+			reader.Close()
 
-			return nil
+			return fmt.Errorf("producer; %w", err)
 		}
 	}
 
-	copyOpts := replayOptions{
-		source: topic, target: target, keepPartition: req.KeepPartition, keepTimestamp: req.KeepTimestamp,
-		markSource: req.MarkSource, extraHeaders: req.ExtraHeaders,
+	r.reader = reader
+	r.last = time.Now()
+
+	return nil
+}
+
+func (r *replayRun) snapshot() {
+	r.ev.Written = r.counters.written.Load()
+	r.ev.Failed = r.counters.failed.Load()
+
+	if e := r.counters.first(); e != "" && r.ev.FirstError == "" {
+		r.ev.FirstError = e
+	}
+}
+
+// progress reports at most every replayEvery; false when the client left.
+func (r *replayRun) progress() bool {
+	if time.Since(r.last) < replayEvery {
+		return true
 	}
 
-	var (
-		counters  replayCounters
-		inflight  sync.WaitGroup
-		stoppedBy string
-		empty     int
-		last      = time.Now()
-	)
+	r.last = time.Now()
+	r.snapshot()
+	r.ev.Type = "progress"
+	r.ev.ElapsedMs = time.Since(r.begin).Milliseconds()
 
-	snapshot := func() {
-		ev.Written = counters.written.Load()
-		ev.Failed = counters.failed.Load()
+	return r.emit(r.ev)
+}
 
-		if e := counters.first(); e != "" && ev.FirstError == "" {
-			ev.FirstError = e
+func (r *replayRun) done(stoppedBy string) {
+	r.ev.Type = "done"
+	r.ev.StoppedBy = stoppedBy
+	r.ev.ElapsedMs = time.Since(r.begin).Milliseconds()
+	r.emit(r.ev)
+}
+
+func (r *replayRun) visit(rec *kgo.Record) {
+	if r.stoppedBy != "" {
+		return
+	}
+
+	// Reported per record too: one poll can take long with a slow filter.
+	if !r.progress() {
+		r.cancel()
+		r.stoppedBy = StopCancelled
+
+		return
+	}
+
+	keep, finished := r.active.accept(rec)
+	if finished {
+		r.reader.PauseFetchPartitions(map[string][]int32{r.topic: {rec.Partition}})
+	}
+
+	if !keep {
+		return
+	}
+
+	r.ev.Scanned++
+	ms := rec.Timestamp.UnixMilli()
+	if r.req.From.Type == StartTimestamp && ms < r.req.From.Timestamp || r.req.To.Type == StartTimestamp && ms > r.req.To.Timestamp {
+		return
+	}
+
+	if r.match.selective() {
+		_, ok, err := r.match.match(r.rctx, rec)
+		r.ev.ScriptErrors = r.match.scriptErrors
+		if r.ev.FirstError == "" {
+			r.ev.FirstError = r.match.firstError
+		}
+
+		if err != nil || !ok {
+			return
 		}
 	}
 
-	progress := func() bool {
-		if time.Since(last) < replayEvery {
-			return true
-		}
+	r.ev.Matched++
 
-		last = time.Now()
-		snapshot()
-		ev.Type = "progress"
-		ev.ElapsedMs = time.Since(begin).Milliseconds()
+	if r.producer != nil {
+		if r.counters.failed.Load() > 0 {
+			r.stoppedBy = StopError
 
-		return emit(ev)
-	}
-
-	visit := func(rec *kgo.Record) {
-		if stoppedBy != "" {
 			return
 		}
 
-		// Reported per record too: one poll can take long with a slow filter.
-		if !progress() {
-			cancel()
-			stoppedBy = "cancelled"
+		r.inflight.Add(1)
+		r.pending.Add(1)
+		r.producer.Produce(r.rctx, copyRecord(rec, r.copyOpts), func(_ *kgo.Record, err error) {
+			defer r.inflight.Done()
+			defer r.pending.Add(-1)
 
-			return
-		}
-
-		keep, finished := active.accept(rec)
-		if finished {
-			reader.PauseFetchPartitions(map[string][]int32{topic: {rec.Partition}})
-		}
-
-		if !keep {
-			return
-		}
-
-		ev.Scanned++
-		ms := rec.Timestamp.UnixMilli()
-		if req.From.Type == "timestamp" && ms < req.From.Timestamp || req.To.Type == "timestamp" && ms > req.To.Timestamp {
-			return
-		}
-
-		// Decoding is only for the search and filter; copies use raw bytes.
-		if req.Search != "" || filter != nil {
-			d := c.decodeRecord(rctx, rec, false, DecodeAs{})
-			if !textMatch(req.Search, rec, d) {
-				return
-			}
-
-			if filter != nil {
-				ok, err := evalFilter(rctx, filter, rec, d)
-				if err != nil {
-					ev.ScriptErrors++
-					if ev.FirstError == "" {
-						ev.FirstError = err.Error()
-					}
-
-					return
-				}
-
-				if !ok {
-					return
-				}
-			}
-		}
-
-		ev.Matched++
-
-		if producer != nil {
-			if counters.failed.Load() > 0 {
-				stoppedBy = "error"
+			if err != nil {
+				r.counters.fail(err)
 
 				return
 			}
 
-			inflight.Add(1)
-			producer.Produce(rctx, copyRecord(rec, copyOpts), func(_ *kgo.Record, err error) {
-				defer inflight.Done()
-
-				if err != nil {
-					counters.fail(err)
-
-					return
-				}
-
-				counters.written.Add(1)
-			})
-		}
-
-		if ev.Matched >= limit {
-			stoppedBy = "limit"
-		}
+			r.counters.written.Add(1)
+		})
 	}
 
-	for len(active) > 0 && stoppedBy == "" {
-		if rctx.Err() != nil {
+	if r.ev.Matched >= r.limit {
+		r.stoppedBy = StopLimit
+	}
+}
+
+// poll reads until every window is done, the replay stops or its context
+// ends, then settles why it stopped.
+func (r *replayRun) poll() {
+	empty := 0
+
+	for len(r.active) > 0 && r.stoppedBy == "" {
+		if r.rctx.Err() != nil {
 			break
 		}
 
-		pctx, pcancel := context.WithTimeout(rctx, pollTimeout)
-		fetches := reader.PollRecords(pctx, replayPoll)
+		pctx, pcancel := context.WithTimeout(r.rctx, pollTimeout)
+		fetches := r.reader.PollRecords(pctx, replayPoll)
 		pcancel()
 
 		if err := fetches.Err0(); err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
-			ev.FirstError = fmt.Sprintf("fetch from %s; %v", topic, err)
-			stoppedBy = "error"
+			r.ev.FirstError = fmt.Sprintf("fetch from %s; %v", r.topic, err)
+			r.stoppedBy = StopError
 
 			break
 		}
@@ -615,59 +630,79 @@ func (c *Client) Replay(ctx context.Context, topic string, req ReplayRequest, em
 
 		empty = 0
 
-		fetches.EachRecord(visit)
+		fetches.EachRecord(r.visit)
 
-		if counters.failed.Load() > 0 {
-			stoppedBy = "error"
+		if r.counters.failed.Load() > 0 {
+			r.stoppedBy = StopError
 		}
 
-		if !progress() {
-			cancel()
+		if !r.progress() {
+			r.cancel()
 		}
 	}
 
 	switch {
-	case stoppedBy != "":
-	case ctx.Err() != nil:
-		stoppedBy = "cancelled"
-	case rctx.Err() != nil:
-		stoppedBy = "timeout"
+	case r.stoppedBy != "":
+	case r.ctx.Err() != nil:
+		r.stoppedBy = StopCancelled
+	case r.rctx.Err() != nil:
+		r.stoppedBy = StopTimeout
 	default:
-		stoppedBy = "end"
+		r.stoppedBy = StopEnd
 	}
+}
 
-	// Wait for writes still buffered, reporting progress meanwhile.
+// drain waits for writes still buffered, reporting progress meanwhile, for
+// at most replayDrainTimeout.
+func (r *replayRun) drain() {
 	flushed := make(chan struct{})
 
 	go func() {
-		inflight.Wait()
+		r.inflight.Wait()
 		close(flushed)
 	}()
 
 	tick := time.NewTicker(replayEvery)
 	defer tick.Stop()
 
-	for waiting := true; waiting; {
+	deadline := time.NewTimer(replayDrainTimeout)
+	defer deadline.Stop()
+
+	for {
 		select {
 		case <-flushed:
-			waiting = false
+			return
+		case <-deadline.C:
+			// Records not sent yet fail on the cancelled context; the rest
+			// may still land, which the done event cannot know.
+			r.cancel()
+			if n := r.pending.Load(); n > 0 && r.ev.FirstError == "" {
+				r.ev.FirstError = fmt.Sprintf("%d writes not confirmed within %s", n, replayDrainTimeout)
+			}
+
+			// A replay stopped for another reason keeps it.
+			if r.stoppedBy == StopEnd || r.stoppedBy == StopLimit {
+				r.stoppedBy = StopError
+			}
+
+			return
 		case <-tick.C:
-			last = time.Time{}
-			if !progress() {
-				cancel()
+			r.last = time.Time{}
+			if !r.progress() {
+				r.cancel()
 			}
 		}
 	}
+}
 
-	snapshot()
+func (r *replayRun) finish() {
+	r.snapshot()
 
-	if stoppedBy != "error" && ev.Failed > 0 {
-		stoppedBy = "error"
+	if r.ev.Failed > 0 {
+		r.stoppedBy = StopError
 	}
 
-	done(stoppedBy)
-
-	return nil
+	r.done(r.stoppedBy)
 }
 
 // ImportRecord is one record of an imported file, in the same shape the
@@ -776,7 +811,7 @@ func (c *Client) Import(ctx context.Context, topic string, req ImportRequest) ([
 		return nil, fmt.Errorf("producer; %w", err)
 	}
 
-	pctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	pctx, cancel := context.WithTimeout(ctx, importTimeout)
 	defer cancel()
 
 	for i, r := range produceInOrder(pctx, producer, records) {

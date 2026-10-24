@@ -49,7 +49,7 @@
   {#if !cluster.read_only}<button class="primary" onclick={() => (creating = true)}><Plus size={14} />New group</button>{/if}
 </div>
 
-<GroupTopicDialog {cluster} bind:open={creating} ondone={() => list.load()} />
+{#if creating}<GroupTopicDialog {cluster} bind:open={creating} ondone={() => list.load()} />{/if}
 
 <div class="filters">
   <input type="search" placeholder="Search groups or topics…" bind:value={search} />

@@ -16,7 +16,7 @@ import (
 
 func TestMCPDisabledDoesNotServeSPA(t *testing.T) {
 	server := ada.New()
-	if err := mountMCP(server, &config.Config{}, nil); err != nil {
+	if err := mountTestMCP(server, &config.Config{}, nil); err != nil {
 		t.Fatalf("disabled MCP: %v", err)
 	}
 	server.HandleFuncWildcard("/", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("SPA")) })
@@ -46,7 +46,7 @@ func TestMCPPolicyAndProtocol(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer registry.Close()
-	if err := mountMCP(server, cfg, registry); err != nil {
+	if err := mountTestMCP(server, cfg, registry); err != nil {
 		t.Fatal(err)
 	}
 	host := httptest.NewServer(server)
@@ -172,7 +172,7 @@ func TestMCPRefusesRouteAndPolicyMistakes(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = mountMCP(ada.New(), cfg, registry)
+		err = mountTestMCP(ada.New(), cfg, registry)
 		registry.Close()
 		if err == nil {
 			t.Fatalf("%s accepted", name)
@@ -194,7 +194,7 @@ func TestMCPCrossClusterToolsAreServed(t *testing.T) {
 	}
 	defer registry.Close()
 	server := ada.New()
-	if err := mountMCP(server, cfg, registry); err != nil {
+	if err := mountTestMCP(server, cfg, registry); err != nil {
 		t.Fatal(err)
 	}
 	host := httptest.NewServer(server)
@@ -262,7 +262,7 @@ func TestMCPServesAnyConfiguredPath(t *testing.T) {
 			t.Fatal(err)
 		}
 		server := ada.New()
-		if err := mountMCP(server, cfg, registry); err != nil {
+		if err := mountTestMCP(server, cfg, registry); err != nil {
 			t.Fatal(err)
 		}
 		server.HandleFuncWildcard("/", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("SPA")) })
@@ -313,7 +313,7 @@ func TestMCPInfoForTheUI(t *testing.T) {
 			"spaced":  {Cluster: "team space", Path: "/mcp/team%20space"},
 		}},
 	}
-	info, err := mcpInfo(cfg)
+	info, err := testMCPInfo(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -331,16 +331,16 @@ func TestMCPInfoForTheUI(t *testing.T) {
 
 	cfg.MCP.AllowWrites = false
 	cfg.MCP.AuthToken = ""
-	if info, _ = mcpInfo(cfg); info["stage"][1].ReadOnly != true || info["stage"][1].AuthToken {
+	if info, _ = testMCPInfo(cfg); info["stage"][1].ReadOnly != true || info["stage"][1].AuthToken {
 		t.Fatalf("allow_writes false and missing token: %+v", info["stage"])
 	}
 
 	cfg.MCP.Enabled = false
-	if info, _ = mcpInfo(cfg); len(info) != 0 {
+	if info, _ = testMCPInfo(cfg); len(info) != 0 {
 		t.Fatalf("disabled MCP shown: %+v", info)
 	}
 
-	defaults, err := mcpInfo(&config.Config{Clusters: map[string]*config.Cluster{"team space": {}}, MCP: config.MCP{Enabled: true}})
+	defaults, err := testMCPInfo(&config.Config{Clusters: map[string]*config.Cluster{"team space": {}}, MCP: config.MCP{Enabled: true}})
 	if err != nil || defaults["team space"][0].Path != "/mcp/team%20space" {
 		t.Fatalf("default endpoint path must be URL-escaped: %+v %v", defaults, err)
 	}
@@ -359,12 +359,12 @@ func TestMCPInfoPathsAreServed(t *testing.T) {
 	}
 	defer registry.Close()
 	server := ada.New()
-	if err := mountMCP(server, cfg, registry); err != nil {
+	if err := mountTestMCP(server, cfg, registry); err != nil {
 		t.Fatal(err)
 	}
 	host := httptest.NewServer(server)
 	defer host.Close()
-	info, err := mcpInfo(cfg)
+	info, err := testMCPInfo(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -398,12 +398,12 @@ func TestMCPCustomEscapedPathsAreServed(t *testing.T) {
 	}
 	defer registry.Close()
 	server := ada.New()
-	if err := mountMCP(server, cfg, registry); err != nil {
+	if err := mountTestMCP(server, cfg, registry); err != nil {
 		t.Fatal(err)
 	}
 	host := httptest.NewServer(server)
 	defer host.Close()
-	info, err := mcpInfo(cfg)
+	info, err := testMCPInfo(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -442,7 +442,7 @@ func TestMCPFeaturesWithholdTools(t *testing.T) {
 	defer registry.Close()
 	// Registration validates tool names, so this also proves every name the
 	// feature map switches off is a real tool.
-	if err := mountMCP(server, cfg, registry); err != nil {
+	if err := mountTestMCP(server, cfg, registry); err != nil {
 		t.Fatal(err)
 	}
 	host := httptest.NewServer(server)
@@ -524,7 +524,7 @@ func TestMCPFileLinksAreRouted(t *testing.T) {
 	}
 	defer registry.Close()
 	server := ada.New()
-	if err := mountMCP(server, cfg, registry); err != nil {
+	if err := mountTestMCP(server, cfg, registry); err != nil {
 		t.Fatal(err)
 	}
 	server.HandleFuncWildcard("/", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("SPA")) })
@@ -568,7 +568,67 @@ func TestMCPRefusesOverlappingFileLinksAndTheOldOutputDir(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer registry.Close()
-	if err := mountMCP(ada.New(), cfg, registry); err == nil || !strings.Contains(err.Error(), "file links") {
+	if err := mountTestMCP(ada.New(), cfg, registry); err == nil || !strings.Contains(err.Error(), "file links") {
 		t.Fatalf("an endpoint at another endpoint's link path must be refused: %v", err)
+	}
+}
+
+// mountTestMCP resolves the endpoints and mounts them as Start does.
+func mountTestMCP(server *ada.Server, cfg *config.Config, registry *kafka.Registry) error {
+	endpoints, err := resolveMCP(cfg)
+	if err != nil {
+		return err
+	}
+
+	proxies, err := parseProxies(cfg.Server.TrustedProxies)
+	if err != nil {
+		return err
+	}
+
+	return mountMCP(server, cfg, registry, endpoints, proxies)
+}
+
+func testMCPInfo(cfg *config.Config) (map[string][]mcpEndpointInfo, error) {
+	endpoints, err := resolveMCP(cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	return mcpInfo(cfg, endpoints), nil
+}
+
+// The UI's list and the router are built from one resolution, so a path the
+// router refuses is refused for both, and in name order on every start.
+func TestResolveMCP(t *testing.T) {
+	cfg := &config.Config{
+		Server:   config.Server{BasePath: "/console"},
+		Clusters: map[string]*config.Cluster{"local": {}},
+		MCP: config.MCP{Enabled: true, Endpoints: map[string]*config.MCPEndpoint{
+			"b": {Cluster: "local", Path: "/team%20kafka"},
+			"a": {Cluster: "local", Path: "team kafka/"},
+		}},
+	}
+	if _, err := resolveMCP(cfg); err == nil || !strings.Contains(err.Error(), `endpoint "b"`) || !strings.Contains(err.Error(), "used twice") {
+		t.Fatalf("the second of two spellings of one path must be refused by name: %v", err)
+	}
+
+	cfg.MCP.Endpoints["b"].Path = "/other"
+	endpoints, err := resolveMCP(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(endpoints) != 2 || endpoints[0].name != "a" || endpoints[0].decoded != "/console/team kafka" || endpoints[1].path != "/console/other" {
+		t.Fatalf("resolved %+v", endpoints)
+	}
+
+	cfg.Server.BasePath = ""
+	cfg.MCP.Endpoints = map[string]*config.MCPEndpoint{"h": {Cluster: "local", Path: "/healthz"}}
+	if _, err := resolveMCP(cfg); err == nil || !strings.Contains(err.Error(), "health check") {
+		t.Fatalf("the health check path must be refused: %v", err)
+	}
+
+	cfg.MCP.Enabled = false
+	if endpoints, err := resolveMCP(cfg); err != nil || endpoints != nil {
+		t.Fatalf("disabled MCP resolved %v, %v", endpoints, err)
 	}
 }

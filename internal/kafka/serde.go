@@ -77,10 +77,14 @@ func (cc *codecCache) subjectID(ctx context.Context, subject string, version int
 	key := subjectVersion{subject, version}
 
 	cc.mu.Lock()
-	if v, ok := cc.subjects[key]; ok && time.Since(v.at) < subjectFor {
-		cc.mu.Unlock()
+	if v, ok := cc.subjects[key]; ok {
+		if time.Since(v.at) < subjectFor {
+			cc.mu.Unlock()
 
-		return v.id, nil
+			return v.id, nil
+		}
+
+		delete(cc.subjects, key)
 	}
 	cc.mu.Unlock()
 
@@ -106,10 +110,14 @@ func (cc *codecCache) get(ctx context.Context, id int) (*codec, error) {
 
 	// A missing or broken schema would otherwise cost an HTTP round trip
 	// for every record that carries its ID.
-	if at, ok := cc.failed[id]; ok && time.Since(at) < codecRetryAfter {
-		cc.mu.Unlock()
+	if at, ok := cc.failed[id]; ok {
+		if time.Since(at) < codecRetryAfter {
+			cc.mu.Unlock()
 
-		return nil, fmt.Errorf("schema %d unavailable", id)
+			return nil, fmt.Errorf("schema %d unavailable", id)
+		}
+
+		delete(cc.failed, id)
 	}
 	cc.mu.Unlock()
 
@@ -152,7 +160,7 @@ func (cc *codecCache) load(ctx context.Context, id int) (*codec, error) {
 		return nil, err
 	}
 
-	return compile(id, s, refs)
+	return compile(ctx, id, s, refs)
 }
 
 type namedSchema struct {
@@ -192,7 +200,7 @@ func (cc *codecCache) references(ctx context.Context, refs []sr.SchemaReference,
 	return nil
 }
 
-func compile(id int, s sr.Schema, refs []namedSchema) (*codec, error) {
+func compile(ctx context.Context, id int, s sr.Schema, refs []namedSchema) (*codec, error) {
 	c := &codec{kind: s.Type}
 
 	switch s.Type {
@@ -204,39 +212,16 @@ func compile(id int, s sr.Schema, refs []namedSchema) (*codec, error) {
 
 		c.avro = parsed
 	case sr.TypeProtobuf:
-		fd, err := compileProto(s.Schema, refs)
+		fd, err := compileProto(ctx, s.Schema, refs)
 		if err != nil {
 			return nil, err
 		}
 
 		c.proto = fd
 	case sr.TypeJSON:
-		compiler := jsonschema.NewCompiler()
-
-		for _, ref := range refs {
-			doc, err := jsonschema.UnmarshalJSON(strings.NewReader(ref.schema.Schema))
-			if err != nil {
-				return nil, fmt.Errorf("parse json schema reference %s; %w", ref.name, err)
-			}
-
-			if err := compiler.AddResource(ref.name, doc); err != nil {
-				return nil, fmt.Errorf("add json schema reference %s; %w", ref.name, err)
-			}
-		}
-
-		doc, err := jsonschema.UnmarshalJSON(strings.NewReader(s.Schema))
+		compiled, err := compileJSONSchema(s.Schema, refs)
 		if err != nil {
-			return nil, fmt.Errorf("parse json schema; %w", err)
-		}
-
-		const root = "mem://schema.json"
-		if err := compiler.AddResource(root, doc); err != nil {
-			return nil, fmt.Errorf("add json schema; %w", err)
-		}
-
-		compiled, err := compiler.Compile(root)
-		if err != nil {
-			return nil, fmt.Errorf("compile json schema; %w", err)
+			return nil, err
 		}
 
 		c.json = compiled
@@ -247,7 +232,39 @@ func compile(id int, s sr.Schema, refs []namedSchema) (*codec, error) {
 	return c, nil
 }
 
-func compileProto(source string, refs []namedSchema) (protoreflect.FileDescriptor, error) {
+func compileJSONSchema(source string, refs []namedSchema) (*jsonschema.Schema, error) {
+	compiler := jsonschema.NewCompiler()
+
+	for _, ref := range refs {
+		doc, err := jsonschema.UnmarshalJSON(strings.NewReader(ref.schema.Schema))
+		if err != nil {
+			return nil, fmt.Errorf("parse json schema reference %s; %w", ref.name, err)
+		}
+
+		if err := compiler.AddResource(ref.name, doc); err != nil {
+			return nil, fmt.Errorf("add json schema reference %s; %w", ref.name, err)
+		}
+	}
+
+	doc, err := jsonschema.UnmarshalJSON(strings.NewReader(source))
+	if err != nil {
+		return nil, fmt.Errorf("parse json schema; %w", err)
+	}
+
+	const root = "mem://schema.json"
+	if err := compiler.AddResource(root, doc); err != nil {
+		return nil, fmt.Errorf("add json schema; %w", err)
+	}
+
+	compiled, err := compiler.Compile(root)
+	if err != nil {
+		return nil, fmt.Errorf("compile json schema; %w", err)
+	}
+
+	return compiled, nil
+}
+
+func compileProto(ctx context.Context, source string, refs []namedSchema) (protoreflect.FileDescriptor, error) {
 	const root = "__root__.proto"
 
 	files := map[string]string{root: source}
@@ -261,7 +278,7 @@ func compileProto(source string, refs []namedSchema) (protoreflect.FileDescripto
 		}),
 	}
 
-	out, err := compiler.Compile(context.Background(), root)
+	out, err := compiler.Compile(ctx, root)
 	if err != nil {
 		return nil, fmt.Errorf("compile protobuf schema; %w", err)
 	}
@@ -273,15 +290,21 @@ func compileProto(source string, refs []namedSchema) (protoreflect.FileDescripto
 
 const magicByte = 0
 
+// wireHeaderLen is the Confluent framing: the magic byte and a schema ID.
+const wireHeaderLen = 5
+
+// maxProtoIndexDepth bounds the message index path a payload may claim.
+const maxProtoIndexDepth = 64
+
 // schemaID reads the Confluent framing: magic byte 0 and a 4-byte schema ID.
 // Registries hand out IDs from 1, so a payload that merely starts with five
 // zero-ish bytes (a big-endian number, say) is not taken for framing.
 func schemaID(b []byte) (int, bool) {
-	if len(b) < 5 || b[0] != magicByte {
+	if len(b) < wireHeaderLen || b[0] != magicByte {
 		return 0, false
 	}
 
-	id := int(binary.BigEndian.Uint32(b[1:5]))
+	id := int(binary.BigEndian.Uint32(b[1:wireHeaderLen]))
 
 	return id, id > 0
 }
@@ -298,7 +321,7 @@ func protoMessage(fd protoreflect.FileDescriptor, payload []byte) (protoreflect.
 
 	path := []int{0}
 	if count > 0 {
-		if count > 64 {
+		if count > maxProtoIndexDepth {
 			return nil, nil, errors.New("protobuf message index too deep")
 		}
 
@@ -374,7 +397,7 @@ func (c *Client) decodeRegistry(ctx context.Context, b []byte) (*decoded, bool, 
 		return nil, true, err
 	}
 
-	payload := b[5:]
+	payload := b[wireHeaderLen:]
 
 	var doc any
 	var message string
@@ -392,21 +415,15 @@ func (c *Client) decodeRegistry(ctx context.Context, b []byte) (*decoded, bool, 
 		if err != nil {
 			return nil, true, err
 		}
-		message = string(md.FullName())
 
-		msg := dynamicpb.NewMessage(md)
-		if err := proto.Unmarshal(rest, msg); err != nil {
-			return nil, true, fmt.Errorf("protobuf decode (schema %d); %w", id, err)
-		}
-
-		raw, err := protojson.MarshalOptions{UseProtoNames: true, EmitUnpopulated: true}.Marshal(msg)
+		// The text is rendered below like the other formats: protojson
+		// spaces its output unpredictably on purpose.
+		d, err := decodeProto(md, rest)
 		if err != nil {
-			return nil, true, err
+			return nil, true, fmt.Errorf("schema %d; %w", id, err)
 		}
 
-		if err := json.Unmarshal(raw, &doc); err != nil {
-			return nil, true, err
-		}
+		doc, message = d.Doc, d.Message
 	case sr.TypeJSON:
 		if err := json.Unmarshal(payload, &doc); err != nil {
 			return nil, true, fmt.Errorf("json decode (schema %d); %w", id, err)
@@ -494,9 +511,9 @@ func (c *Client) encodeRegistry(ctx context.Context, req *EncodeRequest, value [
 		return nil, fmt.Errorf("value must be JSON to encode with a schema; %w", err)
 	}
 
-	out := make([]byte, 5, 5+len(value))
+	out := make([]byte, wireHeaderLen, wireHeaderLen+len(value))
 	out[0] = magicByte
-	binary.BigEndian.PutUint32(out[1:5], uint32(id))
+	binary.BigEndian.PutUint32(out[1:wireHeaderLen], uint32(id))
 
 	switch cd.kind {
 	case sr.TypeAvro:
@@ -565,19 +582,13 @@ func pickMessage(fd protoreflect.FileDescriptor, name string) (protoreflect.Mess
 
 	var found protoreflect.MessageDescriptor
 
-	var walk func(protoreflect.MessageDescriptors)
-	walk = func(ms protoreflect.MessageDescriptors) {
-		for i := 0; i < ms.Len() && found == nil; i++ {
-			if ms.Get(i).FullName() == full {
-				found = ms.Get(i)
-
-				return
-			}
-
-			walk(ms.Get(i).Messages())
+	walkMessages(fd.Messages(), func(m protoreflect.MessageDescriptor) bool {
+		if m.FullName() == full {
+			found = m
 		}
-	}
-	walk(fd.Messages())
+
+		return found == nil
+	})
 
 	if found == nil {
 		return nil, fmt.Errorf("protobuf message %q not found", name)
@@ -590,19 +601,31 @@ func pickMessage(fd protoreflect.FileDescriptor, name string) (protoreflect.Mess
 func protoMessageNames(fd protoreflect.FileDescriptor) []string {
 	var out []string
 
-	var walk func(protoreflect.MessageDescriptors)
-	walk = func(ms protoreflect.MessageDescriptors) {
-		for i := range ms.Len() {
-			m := ms.Get(i)
-			if m.IsMapEntry() {
-				continue
-			}
-
+	walkMessages(fd.Messages(), func(m protoreflect.MessageDescriptor) bool {
+		if !m.IsMapEntry() {
 			out = append(out, string(m.FullName()))
-			walk(m.Messages())
 		}
-	}
-	walk(fd.Messages())
+
+		return true
+	})
 
 	return out
+}
+
+// walkMessages visits messages and their nested ones depth first, parents
+// before children, until visit returns false. Map entries are visited but
+// not descended into: they nest nothing.
+func walkMessages(ms protoreflect.MessageDescriptors, visit func(protoreflect.MessageDescriptor) bool) bool {
+	for i := range ms.Len() {
+		m := ms.Get(i)
+		if !visit(m) {
+			return false
+		}
+
+		if !m.IsMapEntry() && !walkMessages(m.Messages(), visit) {
+			return false
+		}
+	}
+
+	return true
 }

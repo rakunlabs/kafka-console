@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/big"
 	"reflect"
+	"strings"
 	"time"
 
 	"github.com/twmb/avro"
@@ -306,21 +307,11 @@ func fullName(n *avro.SchemaNode, ns string) string {
 		return n.Namespace + "." + n.Name
 	}
 
-	if ns != "" && !containsDot(n.Name) {
+	if ns != "" && !strings.Contains(n.Name, ".") {
 		return ns + "." + n.Name
 	}
 
 	return n.Name
-}
-
-func containsDot(s string) bool {
-	for i := range len(s) {
-		if s[i] == '.' {
-			return true
-		}
-	}
-
-	return false
 }
 
 func collectNamed(n *avro.SchemaNode, ns string, out map[string]*avro.SchemaNode) {
@@ -339,7 +330,7 @@ func collectNamed(n *avro.SchemaNode, ns string, out map[string]*avro.SchemaNode
 
 		if n.Namespace != "" {
 			ns = n.Namespace
-		} else if i := lastDot(n.Name); i >= 0 {
+		} else if i := strings.LastIndexByte(n.Name, '.'); i >= 0 {
 			ns = n.Name[:i]
 		}
 	}
@@ -354,16 +345,6 @@ func collectNamed(n *avro.SchemaNode, ns string, out map[string]*avro.SchemaNode
 
 	collectNamed(n.Items, ns, out)
 	collectNamed(n.Values, ns, out)
-}
-
-func lastDot(s string) int {
-	for i := len(s) - 1; i >= 0; i-- {
-		if s[i] == '.' {
-			return i
-		}
-	}
-
-	return -1
 }
 
 func durationFromJSON(m map[string]any) (avro.Duration, error) {

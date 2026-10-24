@@ -35,7 +35,7 @@ far behind they are.
 - **Messages:**
   - One Start selector: newest, oldest, from an offset, the last N of each partition, a recent time range (15 minutes to 7 days), or custom from/to. Time ranges show the newest matching messages first. They use Kafka's time index by default; turn on Exact time to also find out-of-order producer timestamps, at the cost of scanning later offsets. "Load older" or "Load more" continues the same read where it stopped, even after the form is edited.
   - Live tail always shows messages that arrive from now on. Search, partition, JavaScript filter and key/value decoding still apply; Start, time range and limit do not.
-  - Text search, JavaScript filters, live tail, JSON tree view. A search reads until it fills the limit, reaches the end of the range or is stopped, showing matches as they arrive.
+  - Text search, JavaScript filters, live tail, JSON tree view. A search reads until it fills the limit, reaches the end of the range or is stopped, showing matches as they arrive. A filter gets 2 seconds per message; one that runs longer counts as a script error and the read goes on.
   - Read keys and values as JSON, text, MessagePack, CBOR, hex, base64 or an unsigned integer when the automatic choice is wrong. Protobuf without a registry, from local `.proto` files; see [Protobuf without a registry](#protobuf-without-a-registry).
   - Show fields of JSON values as columns, and times as local, UTC, relative or Unix. Both are kept in the browser.
   - Download a key or value exactly as stored, including values too large to show.
@@ -332,6 +332,7 @@ mcp:
   # allow_writes: false             # default; separate from the UI's permissions
   # public_url: https://kafka.example.com # rarely needed: links use the address the agent connected to
   # link_key: "..."        # or KAFKA_CONSOLE_MCP_LINK_KEY; same on every instance (default: auth_token)
+  # session_timeout: 30m   # close an agent's session after this long idle
 ```
 
 Each configured cluster gets a Streamable HTTP endpoint at `/mcp/<cluster>`

@@ -8,7 +8,7 @@ import (
 	"io/fs"
 	"path/filepath"
 	"regexp"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/bufbuild/protocompile"
@@ -66,8 +66,8 @@ func newLocalProto(cfg *config.Protobuf) (*localProto, error) {
 		return nil, fmt.Errorf("protobuf: no .proto files under %v", cfg.Paths)
 	}
 
-	sort.Strings(files)
-	files = dedupe(files)
+	slices.Sort(files)
+	files = slices.Compact(files)
 
 	compiler := protocompile.Compiler{
 		Resolver: protocompile.WithStandardImports(&protocompile.SourceResolver{ImportPaths: cfg.Paths}),
@@ -81,15 +81,11 @@ func newLocalProto(cfg *config.Protobuf) (*localProto, error) {
 	messages := map[protoreflect.FullName]protoreflect.MessageDescriptor{}
 
 	for _, fd := range compiled {
-		var walk func(protoreflect.MessageDescriptors)
-		walk = func(ms protoreflect.MessageDescriptors) {
-			for i := range ms.Len() {
-				m := ms.Get(i)
-				messages[m.FullName()] = m
-				walk(m.Messages())
-			}
-		}
-		walk(fd.Messages())
+		walkMessages(fd.Messages(), func(m protoreflect.MessageDescriptor) bool {
+			messages[m.FullName()] = m
+
+			return true
+		})
 	}
 
 	find := func(name string) (protoreflect.MessageDescriptor, error) {
@@ -125,17 +121,6 @@ func newLocalProto(cfg *config.Protobuf) (*localProto, error) {
 	}
 
 	return out, nil
-}
-
-func dedupe(sorted []string) []string {
-	out := sorted[:0]
-	for i, s := range sorted {
-		if i == 0 || s != sorted[i-1] {
-			out = append(out, s)
-		}
-	}
-
-	return out
 }
 
 // message is the type configured for a topic's key or value, if any.

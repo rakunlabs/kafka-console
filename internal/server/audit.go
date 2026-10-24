@@ -17,6 +17,10 @@ import (
 // logged by size only.
 const maxAuditBody = 64 << 10
 
+// maxAuditListItems is how many items of a list the audit line keeps before
+// it logs only the count.
+const maxAuditListItems = 20
+
 // Request fields that never reach the log: credentials outright, and message
 // payloads, which are data rather than intent and may hold personal data.
 var (
@@ -67,7 +71,7 @@ func auditWrites(userHeader string, trusted ...*net.IPNet) func(http.Handler) ht
 				"path", r.URL.Path,
 				"status", rec.status,
 				"duration_ms", time.Since(start).Milliseconds(),
-				"remote", clientAddr(r, viaProxy),
+				"remote", clientAddr(r, viaProxy, trusted),
 			}
 
 			if id := r.Header.Get("X-Request-Id"); id != "" {
@@ -112,7 +116,7 @@ func readAuditBody(r *http.Request) ([]byte, any) {
 	}
 
 	if len(raw) > maxAuditBody {
-		return raw, map[string]any{"body_bytes": "> 64KiB"}
+		return raw, map[string]any{"body_bytes": fmt.Sprintf("> %d", maxAuditBody)}
 	}
 
 	var v any
@@ -156,7 +160,7 @@ func scrub(v any) any {
 		return out
 	case []any:
 		// Long lists (headers, partitions) are summarised past a few items.
-		if len(t) > 20 {
+		if len(t) > maxAuditListItems {
 			return map[string]any{"items": len(t)}
 		}
 
@@ -190,14 +194,45 @@ func headerNames(v any) any {
 	return names
 }
 
+// Write routes that never change anything, and those that change nothing
+// when the body asks for a dry run, keyed by route (see routeKey).
+var (
+	checkRoutes = map[string]bool{
+		"POST /filter/check":                     true,
+		"POST /clusters/{cluster}/schemas/check": true,
+	}
+	dryRunRoutes = map[string]bool{
+		"POST /clusters/{cluster}/groups/{group}/reset":    true,
+		"POST /clusters/{cluster}/topics/{topic}/replay":   true,
+		"POST /clusters/{cluster}/topics/{topic}/import":   true,
+		"POST /clusters/{cluster}/topics/{topic}/reassign": true,
+	}
+)
+
+// routeKey is the matched route below the API prefix with its method, e.g.
+// "POST /clusters/{cluster}/topics/{topic}/import". It comes from the route
+// table, not the URL, so a topic named "import" cannot pose as one.
+func routeKey(r *http.Request) string {
+	pattern := r.Pattern
+	if i := strings.Index(pattern, " "); i >= 0 {
+		pattern = pattern[i+1:]
+	}
+
+	if i := strings.LastIndex(pattern, apiPrefix); i >= 0 {
+		pattern = pattern[i+len(apiPrefix):]
+	}
+
+	return r.Method + " " + pattern
+}
+
 // isPreview reports requests that use a write method but change nothing.
 func isPreview(r *http.Request, body []byte) bool {
-	if strings.HasSuffix(r.URL.Path, "/schemas/check") || strings.HasSuffix(r.URL.Path, "/filter/check") {
+	key := routeKey(r)
+	if checkRoutes[key] {
 		return true
 	}
 
-	dryRunnable := strings.HasSuffix(r.URL.Path, "/reset") || strings.HasSuffix(r.URL.Path, "/replay") || strings.HasSuffix(r.URL.Path, "/import")
-	if dryRunnable && len(body) > 0 {
+	if dryRunRoutes[key] && len(body) > 0 {
 		var req struct {
 			DryRun bool `json:"dry_run"`
 		}
@@ -276,9 +311,21 @@ func mcpAuditUser(userHeader string, trusted []*net.IPNet, next http.Handler) ht
 	})
 }
 
-func clientAddr(r *http.Request, viaProxy bool) string {
-	if f := r.Header.Get("X-Forwarded-For"); f != "" && viaProxy {
-		return strings.TrimSpace(strings.Split(f, ",")[0])
+// clientAddr is the first address in X-Forwarded-For, read from the right,
+// that no trusted proxy added: entries left of it were written by the client
+// and prove nothing.
+func clientAddr(r *http.Request, viaProxy bool, trusted []*net.IPNet) string {
+	f := r.Header.Get("X-Forwarded-For")
+	if f == "" || !viaProxy {
+		return r.RemoteAddr
+	}
+
+	hops := strings.Split(f, ",")
+	for i := len(hops) - 1; i >= 0; i-- {
+		hop := strings.TrimSpace(hops[i])
+		if i == 0 || !trustedIP(net.ParseIP(hop), trusted) {
+			return hop
+		}
 	}
 
 	return r.RemoteAddr
@@ -296,7 +343,16 @@ func fromTrusted(r *http.Request, trusted []*net.IPNet) bool {
 		host = r.RemoteAddr
 	}
 
-	ip := net.ParseIP(host)
+	return trustedIP(net.ParseIP(host), trusted)
+}
+
+// trustedIP reports ip inside one of trusted; with none configured every
+// address is trusted.
+func trustedIP(ip net.IP, trusted []*net.IPNet) bool {
+	if len(trusted) == 0 {
+		return true
+	}
+
 	if ip == nil {
 		return false
 	}

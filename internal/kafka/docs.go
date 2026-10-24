@@ -28,9 +28,6 @@ type TopicDoc struct {
 	Modified time.Time `json:"modified"`
 }
 
-// ErrNoDocs means the cluster has no docs path configured.
-var ErrNoDocs = errors.New("topic documentation is not configured for this cluster")
-
 // HasDocs reports whether topic documentation is configured.
 func (c *Client) HasDocs() bool { return c.cfg.Docs != nil }
 

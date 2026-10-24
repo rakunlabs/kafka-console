@@ -135,7 +135,7 @@ func (c *Client) topicStats(ctx context.Context, details kadm.TopicDetails, ts [
 	var (
 		wg           sync.WaitGroup
 		starts, ends kadm.ListedOffsets
-		sizes        map[string][2]int64
+		sizes        map[string]topicSize
 		configs      kadm.ResourceConfigs
 		configsErr   error
 	)
@@ -161,7 +161,7 @@ func (c *Client) topicStats(ctx context.Context, details kadm.TopicDetails, ts [
 		s.CleanupPolicy = policies[s.Name]
 
 		if sz, ok := sizes[s.Name]; ok {
-			s.Size, s.ReplicatedSize = sz[0], sz[1]
+			s.Size, s.ReplicatedSize = sz.leader, sz.replicated
 		} else if sizes != nil {
 			s.Size, s.ReplicatedSize = 0, 0
 		}
@@ -207,42 +207,19 @@ type TopicDetail struct {
 	ReplicatedSize int64 `json:"replicated_size"`
 }
 
-var ErrNotFound = errors.New("not found")
-
-// ErrConflict is a request the cluster's current state refuses, like
-// resetting a group whose consumers are still running.
-type ErrConflict struct{ Err error }
-
-func (e ErrConflict) Error() string { return e.Err.Error() }
-func (e ErrConflict) Unwrap() error { return e.Err }
-
 func (c *Client) Topic(ctx context.Context, name string) (*TopicDetail, error) {
-	details, _, err := c.listTopics(ctx, name)
+	_, d, err := c.topicDetail(ctx, name)
 	if err != nil {
-		return nil, fmt.Errorf("describe topic; %w", err)
-	}
-
-	d, ok := details[name]
-	switch {
-	case !ok || errors.Is(d.Err, kerr.UnknownTopicOrPartition):
-		return nil, fmt.Errorf("topic %q; %w", name, ErrNotFound)
-	case d.Err != nil:
-		return nil, fmt.Errorf("topic %q; %w", name, d.Err)
+		return nil, err
 	}
 
 	out := &TopicDetail{Name: name, ID: d.ID.String(), Internal: d.IsInternal, Size: -1, ReplicatedSize: -1}
-
-	set := kadm.TopicsSet{}
-	for p := range d.Partitions {
-		set.Add(name, p)
-	}
 
 	// Independent reads, each a round trip or more; partial failures leave
 	// their part empty instead of failing the page.
 	var (
 		starts, ends kadm.ListedOffsets
-		dirs         kadm.DescribedAllLogDirs
-		dirsErr      error
+		sizes        map[string]topicSize
 		configs      kadm.ResourceConfigs
 		configsErr   error
 		wg           sync.WaitGroup
@@ -250,30 +227,14 @@ func (c *Client) Topic(ctx context.Context, name string) (*TopicDetail, error) {
 
 	wg.Go(func() { starts, _ = c.admin.ListStartOffsets(ctx, name) })
 	wg.Go(func() { ends, _ = c.admin.ListEndOffsets(ctx, name) })
-	wg.Go(func() { dirs, dirsErr = c.admin.DescribeAllLogDirs(ctx, set) })
+	wg.Go(func() { sizes = c.topicSizes(ctx, kadm.TopicDetails{name: d}) })
 	wg.Go(func() { configs, configsErr = c.admin.DescribeTopicConfigs(ctx, name) })
 	wg.Go(func() { out.Groups, _ = c.topicGroups(ctx, name) })
 	wg.Wait()
 
-	partSizes := map[int32]int64{}
-
-	if dirsErr == nil {
-		out.Size, out.ReplicatedSize = 0, 0
-
-		dirs.Each(func(ld kadm.DescribedLogDir) {
-			for _, p := range ld.Topics[name] {
-				if p.IsFuture {
-					continue
-				}
-
-				out.ReplicatedSize += p.Size
-
-				if lp, ok := d.Partitions[p.Partition]; ok && lp.Leader == ld.Broker {
-					partSizes[p.Partition] = p.Size
-					out.Size += p.Size
-				}
-			}
-		})
+	size := sizes[name]
+	if sizes != nil {
+		out.Size, out.ReplicatedSize = size.leader, size.replicated
 	}
 
 	for _, p := range d.Partitions.Sorted() {
@@ -286,7 +247,7 @@ func (c *Client) Topic(ctx context.Context, name string) (*TopicDetail, error) {
 			Size:            -1,
 		}
 
-		if sz, ok := partSizes[p.Partition]; ok {
+		if sz, ok := size.partitions[p.Partition]; ok {
 			part.Size = sz
 		}
 
@@ -338,11 +299,7 @@ func (c *Client) CreateTopic(ctx context.Context, req CreateTopicRequest) error 
 	// why, e.g. "replication factor larger than available brokers".
 	resp, err := c.admin.CreateTopic(ctx, req.Partitions, req.ReplicationFactor, req.Configs, req.Name)
 	if err != nil {
-		if resp.ErrMessage != "" {
-			return fmt.Errorf("create topic; %w: %s", err, resp.ErrMessage)
-		}
-
-		return fmt.Errorf("create topic; %w", err)
+		return respErr("create topic", err, resp.ErrMessage)
 	}
 
 	return nil
@@ -359,7 +316,7 @@ func (c *Client) DeleteTopic(ctx context.Context, name string) error {
 			return fmt.Errorf("topic %q; %w", name, ErrNotFound)
 		}
 
-		return fmt.Errorf("delete topic; %w %s", err, resp.ErrMessage)
+		return respErr("delete topic", err, resp.ErrMessage)
 	}
 
 	return nil
@@ -436,4 +393,72 @@ func nonNil(v []int32) []int32 {
 	}
 
 	return v
+}
+
+func configEntries(cfgs []kadm.Config) []ConfigEntry {
+	out := make([]ConfigEntry, 0, len(cfgs))
+	for _, cfg := range cfgs {
+		out = append(out, ConfigEntry{
+			Key:       cfg.Key,
+			Value:     cfg.Value,
+			Sensitive: cfg.Sensitive,
+			Source:    cfg.Source.String(),
+		})
+	}
+
+	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
+
+	return out
+}
+
+// topicSize is a topic's on-disk size: its leader replicas, which
+// approximate the logical size, and every replica.
+type topicSize struct {
+	leader, replicated int64
+	// partitions holds each partition's leader replica size.
+	partitions map[int32]int64
+}
+
+// topicSizes returns the on-disk size of the given topics. Errors are
+// swallowed: sizes are best effort. Leaders come from topics, the metadata
+// the caller already holds.
+func (c *Client) topicSizes(ctx context.Context, topics kadm.TopicDetails) map[string]topicSize {
+	dirs, err := c.admin.DescribeAllLogDirs(ctx, topics.TopicsSet())
+	if err != nil {
+		return nil
+	}
+
+	return logSizes(dirs, topics)
+}
+
+// logSizes sums the log dirs' replicas per topic, leaving out future ones
+// (a move in progress) that would count a partition twice.
+func logSizes(dirs kadm.DescribedAllLogDirs, topics kadm.TopicDetails) map[string]topicSize {
+	out := map[string]topicSize{}
+
+	dirs.Each(func(d kadm.DescribedLogDir) {
+		for t, ps := range d.Topics {
+			for p, part := range ps {
+				if part.IsFuture {
+					continue
+				}
+
+				s := out[t]
+				s.replicated += part.Size
+
+				if mp, ok := topics[t].Partitions[p]; ok && mp.Leader == d.Broker {
+					if s.partitions == nil {
+						s.partitions = map[int32]int64{}
+					}
+
+					s.leader += part.Size
+					s.partitions[p] = part.Size
+				}
+
+				out[t] = s
+			}
+		}
+	})
+
+	return out
 }

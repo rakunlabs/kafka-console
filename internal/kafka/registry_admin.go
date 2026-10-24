@@ -5,12 +5,23 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
 
 	"github.com/twmb/franz-go/pkg/sr"
 )
+
+// requireRegistryWrite is a registry change: it needs a registry and a
+// writable cluster.
+func (c *Client) requireRegistryWrite() error {
+	if err := c.requireRegistry(); err != nil {
+		return err
+	}
+
+	return c.requireWritable()
+}
 
 func srErr(op string, err error) error {
 	var re *sr.ResponseError
@@ -100,7 +111,7 @@ func (c *Client) Registry(ctx context.Context, q RegistryQuery) (*RegistryOvervi
 				out.Types = append(out.Types, t.String())
 			}
 		} else {
-			out.Types = []string{"AVRO", "PROTOBUF", "JSON"}
+			out.Types = slices.Clone(defaultSchemaTypes)
 		}
 	})
 	// Subjects plus per-subject latest versions works on every registry;
@@ -203,13 +214,21 @@ func (c *Client) Registry(ctx context.Context, q RegistryQuery) (*RegistryOvervi
 // subjectContext is the registry context of a subject: ".name" for a
 // qualified ":.name:subject", "." otherwise.
 func subjectContext(subject string) string {
+	ctx, _ := splitSubjectContext(subject)
+
+	return ctx
+}
+
+// splitSubjectContext splits a qualified ":.name:subject" into ".name" and
+// subject; an unqualified subject is in the default context ".".
+func splitSubjectContext(subject string) (string, string) {
 	if rest, ok := strings.CutPrefix(subject, ":."); ok {
-		if i := strings.Index(rest, ":"); i >= 0 {
-			return "." + rest[:i]
+		if ctx, name, ok := strings.Cut(rest, ":"); ok {
+			return "." + ctx, name
 		}
 	}
 
-	return "."
+	return ".", subject
 }
 
 func subjectContexts(subjects, listed []string) []string {
@@ -266,13 +285,13 @@ type SubjectTopic struct {
 	Role string `json:"role"`
 }
 
+// defaultSchemaTypes are what a registry that cannot list its types is
+// assumed to support.
+var defaultSchemaTypes = []string{"AVRO", "PROTOBUF", "JSON"}
+
 // registryParallel bounds concurrent registry requests so a large registry
 // is not hit with thousands at once.
 const registryParallel = 8
-
-// offsetsParallel bounds the per-topic offset requests of the group lag
-// fallback, a Kafka load unrelated to the registry's.
-const offsetsParallel = 8
 
 // allSchemasFrom is how many subjects make one GET /schemas cheaper than
 // two requests per subject. Below it a page (50 subjects by default) does
@@ -472,12 +491,7 @@ func (c *Client) subjectTopics(ctx context.Context, subject string) []SubjectTop
 	out := []SubjectTopic{}
 
 	// Strip a registry context prefix (":.ctx:subject") first.
-	name := subject
-	if strings.HasPrefix(name, ":.") {
-		if i := strings.Index(name[2:], ":"); i >= 0 {
-			name = name[i+3:]
-		}
-	}
+	_, name := splitSubjectContext(subject)
 
 	candidates := map[string]string{}
 	for _, role := range []string{"key", "value"} {
@@ -543,11 +557,7 @@ func (r CreateSchemaRequest) schema() (sr.Schema, error) {
 }
 
 func (c *Client) CreateSchema(ctx context.Context, req CreateSchemaRequest) (*SchemaVersion, error) {
-	if err := c.requireRegistry(); err != nil {
-		return nil, err
-	}
-
-	if err := c.requireWritable(); err != nil {
+	if err := c.requireRegistryWrite(); err != nil {
 		return nil, err
 	}
 
@@ -607,11 +617,7 @@ func (c *Client) CheckCompatibility(ctx context.Context, req CreateSchemaRequest
 }
 
 func (c *Client) SetCompatibility(ctx context.Context, subject, level string) error {
-	if err := c.requireRegistry(); err != nil {
-		return err
-	}
-
-	if err := c.requireWritable(); err != nil {
+	if err := c.requireRegistryWrite(); err != nil {
 		return err
 	}
 
@@ -649,21 +655,28 @@ func (c *Client) SetCompatibility(ctx context.Context, subject, level string) er
 // DeleteSubject soft deletes, or hard deletes when permanent. A hard delete
 // requires a prior soft delete, so both steps run.
 func (c *Client) DeleteSubject(ctx context.Context, subject string, permanent bool) error {
-	if err := c.requireRegistry(); err != nil {
+	if err := c.requireRegistryWrite(); err != nil {
 		return err
 	}
 
-	if err := c.requireWritable(); err != nil {
-		return err
-	}
+	return softThenHard("delete subject", permanent, func(how sr.DeleteHow) error {
+		_, err := c.registry.DeleteSubject(ctx, subject, how)
 
-	if _, err := c.registry.DeleteSubject(ctx, subject, sr.SoftDelete); err != nil && !permanent {
-		return srErr("delete subject", err)
+		return err
+	})
+}
+
+// softThenHard runs a registry delete soft, then hard when permanent: a hard
+// delete requires a prior soft one. A failed soft delete of something already
+// soft-deleted does not stop the hard one.
+func softThenHard(op string, permanent bool, del func(sr.DeleteHow) error) error {
+	if err := del(sr.SoftDelete); err != nil && !permanent {
+		return srErr(op, err)
 	}
 
 	if permanent {
-		if _, err := c.registry.DeleteSubject(ctx, subject, sr.HardDelete); err != nil {
-			return srErr("delete subject", err)
+		if err := del(sr.HardDelete); err != nil {
+			return srErr(op, err)
 		}
 	}
 
@@ -671,23 +684,11 @@ func (c *Client) DeleteSubject(ctx context.Context, subject string, permanent bo
 }
 
 func (c *Client) DeleteSchemaVersion(ctx context.Context, subject string, version int, permanent bool) error {
-	if err := c.requireRegistry(); err != nil {
+	if err := c.requireRegistryWrite(); err != nil {
 		return err
 	}
 
-	if err := c.requireWritable(); err != nil {
-		return err
-	}
-
-	if err := c.registry.DeleteSchema(ctx, subject, version, sr.SoftDelete); err != nil && !permanent {
-		return srErr("delete schema", err)
-	}
-
-	if permanent {
-		if err := c.registry.DeleteSchema(ctx, subject, version, sr.HardDelete); err != nil {
-			return srErr("delete schema", err)
-		}
-	}
-
-	return nil
+	return softThenHard("delete schema", permanent, func(how sr.DeleteHow) error {
+		return c.registry.DeleteSchema(ctx, subject, version, how)
+	})
 }

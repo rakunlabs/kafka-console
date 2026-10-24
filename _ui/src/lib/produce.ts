@@ -1,5 +1,8 @@
 import type { Message, ProduceBody } from './api'
 
+// Producer compression codecs, as [value, label]; '' sends uncompressed.
+export const compressions: [string, string][] = [['', 'None'], ['gzip', 'gzip'], ['snappy', 'snappy'], ['lz4', 'lz4'], ['zstd', 'zstd']]
+
 // Only full, decoded records may seed an editable form. In particular a
 // protobuf schema ID alone is not enough to identify its message type.
 export function messageDraft(message: Message): ProduceBody {

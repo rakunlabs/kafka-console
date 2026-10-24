@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { untrack } from 'svelte'
+  import { errorMessage } from './http'
   import { X, Plus, Sparkles, ShieldCheck } from '@lucide/svelte'
   import { api, type Cluster, type SchemaReference } from './api'
   import Modal from './Modal.svelte'
@@ -20,28 +22,16 @@
     onsaved: (subject: string) => void
   } = $props()
 
-  let subject = $state('')
-  let type = $state('AVRO')
-  let schema = $state('')
-  let refs = $state<SchemaReference[]>([])
+  // Mounted only while open, so every open starts from `initial`.
+  const start = untrack(() => ({ subject: fixedSubject, initial }))
+  let subject = $state(start.subject)
+  let type = $state(start.initial?.type ?? 'AVRO')
+  let schema = $state(start.initial ? pretty(start.initial.schema, start.initial.type) : '')
+  let refs = $state<SchemaReference[]>(start.initial?.references.map((r) => ({ ...r })) ?? [])
   let normalize = $state(false)
   let error = $state('')
   let busy = $state(false)
   let check = $state<{ compatible: boolean; messages: string[] }>()
-
-  // Reset the form each time the dialog opens.
-  let wasOpen = false
-  $effect(() => {
-    if (open && !wasOpen) {
-      subject = fixedSubject
-      type = initial?.type ?? 'AVRO'
-      schema = initial ? pretty(initial.schema, initial.type) : ''
-      refs = initial?.references.map((r) => ({ ...r })) ?? []
-      error = ''
-      check = undefined
-    }
-    wasOpen = open
-  })
 
   function pretty(s: string, t: string) {
     if (t === 'PROTOBUF') return s
@@ -70,8 +60,8 @@
     try {
       checkedFor = schema
       check = await api.checkSchema(cluster.name, body())
-    } catch (e: any) {
-      error = e.message
+    } catch (e) {
+      error = errorMessage(e)
     } finally {
       busy = false
     }
@@ -84,8 +74,8 @@
       await api.createSchema(cluster.name, body())
       open = false
       onsaved(subject.trim())
-    } catch (e: any) {
-      error = e.message
+    } catch (e) {
+      error = errorMessage(e)
     } finally {
       busy = false
     }

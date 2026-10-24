@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { Snippet } from 'svelte'
+  import { onDestroy, type Snippet } from 'svelte'
   import { X } from '@lucide/svelte'
 
   let {
@@ -35,13 +35,26 @@
     if (close) open = false
   }
 
+  // Dialogs whose form lives only while open are unmounted with the
+  // dialog still open, so close() never runs; give focus back as it would.
+  let opener: Element | null = null
   $effect(() => {
-    if (open && !dialog.open) dialog.showModal()
+    if (open && !dialog.open) {
+      opener = document.activeElement
+      dialog.showModal()
+    }
     if (!open && dialog.open) dialog.close()
+  })
+  const closed = () => {
+    opener = null
+    open = false
+  }
+  onDestroy(() => {
+    if (opener instanceof HTMLElement && opener.isConnected) opener.focus()
   })
 </script>
 
-<dialog bind:this={dialog} class="ticks" oncancel={(e) => locked && e.preventDefault()} onclose={() => (open = false)} onpointerdown={down} onclick={click} style:width="{width}px">
+<dialog bind:this={dialog} class="ticks" oncancel={(e) => locked && e.preventDefault()} onclose={closed} onpointerdown={down} onclick={click} style:width="{width}px">
   {#if open}
     <header>
       <h2>{title}</h2>

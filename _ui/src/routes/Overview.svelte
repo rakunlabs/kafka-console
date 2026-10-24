@@ -6,7 +6,7 @@
   import { fmt, bytes } from '../lib/format'
   import { href } from '../lib/router.svelte'
   import { cached, remember } from '../lib/cache'
-  import { copyText, resource } from '../lib/resource.svelte'
+  import { copier, resource } from '../lib/resource.svelte'
   import MCPPanel from '../lib/MCPPanel.svelte'
   import { ArrowRight, RefreshCw, Check, Copy } from '@lucide/svelte'
 
@@ -38,12 +38,8 @@
   }
   load()
 
-  let copied = $state(false)
-  async function copyBootstrap() {
-    if (!(await copyText(cluster.brokers.join(',')))) return
-    copied = true
-    setTimeout(() => (copied = false), 1200)
-  }
+  const clip = copier()
+  const copyBootstrap = () => clip.copy(cluster.brokers.join(','), 'bootstrap')
 
   const health = $derived.by(() => {
     if (!data) return undefined
@@ -112,7 +108,7 @@
     <span class="faint" title="The addresses this console connects to, from its configuration">Bootstrap servers</span>
     {#each cluster.brokers as b (b)}<code class="break-all text-ink-2">{b}</code>{/each}
     <button class="ghost small" onclick={copyBootstrap} title="Copy as a comma-separated list" aria-label="Copy bootstrap servers">
-      {#if copied}<Check size={13} />{:else}<Copy size={13} />{/if}
+      {#if clip.copied}<Check size={13} />{:else}<Copy size={13} />{/if}
     </button>
   </div>
 </header>

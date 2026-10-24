@@ -117,3 +117,27 @@ export function jsonProblem(text: string): { line?: number; column?: number; mes
     return { line, column, message }
   }
 }
+
+// datetime-local text for unix milliseconds, in local time.
+export function localInput(ms?: number): string {
+  if (ms === undefined) return ''
+  const d = new Date(ms - new Date(ms).getTimezoneOffset() * 60_000)
+  return d.toISOString().slice(0, 19)
+}
+
+// Unix milliseconds for datetime-local text, or undefined when empty.
+export function inputMs(local: string): number | undefined {
+  return local ? new Date(local).getTime() : undefined
+}
+
+// How far a reset moves a committed offset, signed; a dash with no commit yet.
+export function offsetDelta(p: { from: number; to: number }): string {
+  if (p.from < 0) return '—'
+  const d = p.to - p.from
+  return `${d > 0 ? '+' : ''}${d.toLocaleString()}`
+}
+
+// Base64 as the server reads it: padded RFC 4648, line breaks allowed.
+export function isBase64(text: string): boolean {
+  return /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(text.trim().replace(/[\r\n]/g, ''))
+}

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { resizable } from '../lib/resizable'
+  import { errorMessage } from '../lib/http'
   import Pending from '../lib/Pending.svelte'
   import { untrack } from 'svelte'
   import { api, type Cluster, type RegistryOverview, type RegistryQuery, type SubjectSummary } from '../lib/api'
@@ -53,8 +54,8 @@
       await api.setGlobalCompatibility(cluster.name, compatLevel)
       compatOpen = false
       list.load(true)
-    } catch (e: any) {
-      compatError = e.message
+    } catch (e) {
+      compatError = errorMessage(e)
     } finally {
       busy = false
     }
@@ -138,7 +139,9 @@
   {/snippet}
 </Modal>
 
-<SchemaEditor {cluster} bind:open={creating} types={info?.types ?? []} onsaved={(subject) => go(cluster.name, 'schemas', subject)} />
+{#if creating}
+  <SchemaEditor {cluster} bind:open={creating} types={info?.types ?? []} onsaved={(subject) => go(cluster.name, 'schemas', subject)} />
+{/if}
 
 <style>
   button.small { padding: 1px 6px; }

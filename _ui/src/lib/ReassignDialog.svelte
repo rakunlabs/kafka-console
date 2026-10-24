@@ -1,6 +1,7 @@
 <script lang="ts">
   import Pending from './Pending.svelte'
-  import { untrack } from 'svelte'
+  import { errorMessage } from './http'
+  import { onMount } from 'svelte'
   import { api, isAbort, type Cluster, type Partition, type PartitionMove, type ReassignResult } from './api'
   import Modal from './Modal.svelte'
   import { Scale, RotateCcw } from '@lucide/svelte'
@@ -25,14 +26,8 @@
   let error = $state('')
   let busy = $state(false)
   let done = $state<ReassignResult[]>()
-  let opened = false
-
-  $effect(() => {
-    if (open && !opened) {
-      untrack(reset)
-    }
-    opened = open
-  })
+  // Mounted only while open, so every open loads fresh.
+  onMount(reset)
 
   async function reset() {
     error = ''
@@ -44,8 +39,8 @@
       rows = t.partitions.map((p: Partition) => ({ partition: p.id, from: p.replicas, text: p.replicas.join(', ') }))
       brokers = o.brokers.map((b) => b.id)
       moving = m
-    } catch (e: any) {
-      if (!isAbort(e)) error = e.message
+    } catch (e) {
+      if (!isAbort(e)) error = errorMessage(e)
     } finally {
       busy = false
     }
@@ -88,8 +83,8 @@
       const p = await api.balancePlan(cluster.name, topic)
       const by = new Map(p.map((x) => [x.partition, x.replicas]))
       rows = rows.map((r) => ({ ...r, text: (by.get(r.partition) ?? r.from).join(', ') }))
-    } catch (e: any) {
-      if (!isAbort(e)) error = e.message
+    } catch (e) {
+      if (!isAbort(e)) error = errorMessage(e)
     } finally {
       busy = false
     }
@@ -101,8 +96,8 @@
     try {
       done = await api.reassign(cluster.name, topic, { partitions: changed.map((r) => ({ partition: r.partition, replicas: parse(r.text) })) })
       ondone?.()
-    } catch (e: any) {
-      error = e.message
+    } catch (e) {
+      error = errorMessage(e)
     } finally {
       busy = false
     }
@@ -115,8 +110,8 @@
       await api.reassign(cluster.name, topic, { cancel: true, partitions: moving.map((m) => ({ partition: m.partition, replicas: [] })) })
       moving = await api.reassignments(cluster.name, topic)
       ondone?.()
-    } catch (e: any) {
-      error = e.message
+    } catch (e) {
+      error = errorMessage(e)
     } finally {
       busy = false
     }
@@ -129,7 +124,7 @@
     {#each done.filter((d) => d.error) as d (d.partition)}<div class="error small-err">Partition {d.partition}: {d.error}</div>{/each}
   {:else}
     {#if moving.length}
-      <div class="warnbox">
+      <div class="movebox">
         {moving.length} {moving.length === 1 ? 'partition is' : 'partitions are'} still moving
         ({moving.map((m) => m.partition).join(', ')}). A new move can start once they finish.
         <button class="small danger" disabled={busy || cluster.read_only} onclick={cancelMoves}>Cancel moves</button>
@@ -190,5 +185,5 @@
   .tbl input { width: 100%; }
   tr.diff td { background: var(--accent-soft, rgb(80 120 255 / 0.08)); }
   .field-err { display: block; color: var(--danger); font-size: 12px; }
-  .warnbox { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--warn); border-radius: var(--radius); margin-bottom: 8px; font-size: 13px; }
+  .movebox { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--warn); border-radius: var(--radius); margin-bottom: 8px; font-size: 13px; }
 </style>

@@ -72,7 +72,7 @@ func (c *Client) AlterTopicConfigs(ctx context.Context, topic string, changes []
 	}
 
 	if r.Err != nil {
-		return fmt.Errorf("alter topic configs; %w %s", r.Err, r.ErrMessage)
+		return respErr("alter topic configs", r.Err, r.ErrMessage)
 	}
 
 	return nil
@@ -96,7 +96,7 @@ func (c *Client) AddPartitions(ctx context.Context, topic string, total int) err
 	}
 
 	if r.Err != nil {
-		return fmt.Errorf("update partitions; %w %s", r.Err, r.ErrMessage)
+		return respErr("update partitions", r.Err, r.ErrMessage)
 	}
 
 	return nil
@@ -144,73 +144,64 @@ func (c *Client) DeleteRecords(ctx context.Context, topic string, req DeleteReco
 		}
 	}
 
-	ends, err := c.admin.ListEndOffsets(ctx, topic)
-	if err != nil {
-		return nil, fmt.Errorf("list end offsets; %w", accessErr(err))
-	}
-
-	var atTime kadm.ListedOffsets
+	var at *int64
 	if req.Strategy == "timestamp" {
-		if atTime, err = c.admin.ListOffsetsAfterMilli(ctx, req.Timestamp, topic); err != nil {
-			return nil, fmt.Errorf("list offsets by time; %w", accessErr(err))
-		}
+		at = &req.Timestamp
 	}
 
-	wanted := map[int32]bool{}
-	for _, p := range req.Partitions {
-		wanted[p] = true
+	b, err := c.bounds(ctx, topic, false, at, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	wanted := partitionSet(req.Partitions)
+	for p := range wanted {
+		if !b.has(p) {
+			return nil, noPartition(topic, p)
+		}
 	}
 
 	offsets := kadm.Offsets{}
-	found := map[int32]bool{}
 
 	var lookupErr error
 
-	ends.Each(func(e kadm.ListedOffset) {
-		if e.Topic != topic || (len(wanted) > 0 && !wanted[e.Partition]) {
-			return
+	for _, p := range b.partitions() {
+		if len(wanted) > 0 && !wanted[p] {
+			continue
 		}
 
-		found[e.Partition] = true
+		// A partition whose bounds are unknown is not touched: guessing
+		// could delete more than asked.
+		_, hi, err := b.partition(p)
+		if err != nil {
+			lookupErr = errors.Join(lookupErr, err)
 
-		// A partition whose end is unknown is not touched: guessing could
-		// delete more than asked.
-		if e.Err != nil || e.Offset < 0 {
-			lookupErr = errors.Join(lookupErr, fmt.Errorf("partition %d: end offset unknown; %w", e.Partition, accessErr(e.Err)))
-
-			return
+			continue
 		}
 
-		target := e.Offset
+		target := hi
 
 		switch req.Strategy {
 		case "offset":
-			target = min(req.Offset, e.Offset)
+			target = min(req.Offset, hi)
 		case "timestamp":
 			// Without the offset at that time the partition is skipped
 			// rather than truncated to its end.
-			t, ok := atTime.Lookup(topic, e.Partition)
-			if !ok || t.Err != nil || t.Offset < 0 {
-				var cause error
-				if ok {
-					cause = t.Err
-				}
-
-				lookupErr = errors.Join(lookupErr, fmt.Errorf("partition %d: offset at that time unknown; %v", e.Partition, cause))
-
-				return
+			t, err := b.at(p)
+			if err == nil && t < 0 {
+				err = offsetUnknown(p, "offset at that time", nil)
 			}
 
-			target = min(t.Offset, e.Offset)
+			if err != nil {
+				lookupErr = errors.Join(lookupErr, err)
+
+				continue
+			}
+
+			target = min(t, hi)
 		}
 
-		offsets.AddOffset(topic, e.Partition, target, -1)
-	})
-
-	for p := range wanted {
-		if !found[p] {
-			return nil, ErrInvalid{fmt.Errorf("topic %q has no partition %d", topic, p)}
-		}
+		offsets.AddOffset(topic, p, target, -1)
 	}
 
 	// All or nothing: a partial delete of a requested set is harder to
@@ -375,79 +366,11 @@ func (c *Client) AlterBrokerConfigs(ctx context.Context, id int32, changes []Con
 
 	for _, r := range resp {
 		if r.Err != nil {
-			return fmt.Errorf("alter broker configs; %w %s", r.Err, r.ErrMessage)
+			return respErr("alter broker configs", r.Err, r.ErrMessage)
 		}
 	}
 
 	return nil
-}
-
-func configEntries(cfgs []kadm.Config) []ConfigEntry {
-	out := make([]ConfigEntry, 0, len(cfgs))
-	for _, cfg := range cfgs {
-		out = append(out, ConfigEntry{
-			Key:       cfg.Key,
-			Value:     cfg.Value,
-			Sensitive: cfg.Sensitive,
-			Source:    cfg.Source.String(),
-		})
-	}
-
-	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
-
-	return out
-}
-
-// topicSizes returns the on-disk size of the given topics across leader
-// replicas and across all replicas. Errors are swallowed: sizes are best
-// effort. Leaders come from topics, the metadata the caller already holds.
-func (c *Client) topicSizes(ctx context.Context, topics kadm.TopicDetails) map[string][2]int64 {
-	dirs, err := c.admin.DescribeAllLogDirs(ctx, topics.TopicsSet())
-	if err != nil {
-		return nil
-	}
-
-	out := map[string][2]int64{}
-
-	dirs.Each(func(d kadm.DescribedLogDir) {
-		for t, ps := range d.Topics {
-			for _, p := range ps {
-				if p.IsFuture {
-					continue
-				}
-
-				s := out[t]
-				s[1] += p.Size
-				out[t] = s
-			}
-		}
-	})
-
-	// Leader-only sizes approximate the logical topic size.
-	leaderSize := map[string]int64{}
-
-	dirs.Each(func(d kadm.DescribedLogDir) {
-		for t, ps := range d.Topics {
-			mt, ok := topics[t]
-			if !ok {
-				continue
-			}
-
-			for p, part := range ps {
-				if mp, ok := mt.Partitions[p]; ok && mp.Leader == d.Broker && !part.IsFuture {
-					leaderSize[t] += part.Size
-				}
-			}
-		}
-	})
-
-	for t, v := range leaderSize {
-		s := out[t]
-		s[0] = v
-		out[t] = s
-	}
-
-	return out
 }
 
 // ─── Consumer group offsets ───────────────────────────────

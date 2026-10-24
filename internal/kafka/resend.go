@@ -15,6 +15,14 @@ import (
 // purpose-built tool, not a console button.
 const maxResend = 1000
 
+const (
+	// resendTimeout bounds writing one resend's copies.
+	resendTimeout = 30 * time.Second
+	// fetchExactTimeout bounds reading the records a resend or a single
+	// message view asks for.
+	fetchExactTimeout = 20 * time.Second
+)
+
 type RecordRef struct {
 	Partition int32 `json:"partition"`
 	Offset    int64 `json:"offset"`
@@ -134,7 +142,7 @@ func (c *Client) Resend(ctx context.Context, topic string, req ResendRequest) ([
 		return nil, fmt.Errorf("producer; %w", err)
 	}
 
-	pctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	pctx, cancel := context.WithTimeout(ctx, resendTimeout)
 	defer cancel()
 
 	out := make([]ResendResult, len(req.Records))
@@ -203,12 +211,10 @@ func (c *Client) fetchExact(ctx context.Context, topic string, refs []RecordRef)
 
 	// Offsets outside what the partition still holds are reported missing
 	// up front instead of waiting for records that will never arrive.
-	b, err := c.bounds(ctx, topic, false, nil)
+	b, err := c.bounds(ctx, topic, false, nil, nil)
 	if err != nil {
 		return nil, err
 	}
-
-	starts, ends := b.starts, b.ends
 
 	// Windows per partition, in offset order.
 	windows := map[int32][]window{}
@@ -217,14 +223,10 @@ func (c *Client) fetchExact(ctx context.Context, topic string, refs []RecordRef)
 	for p, offs := range byPartition {
 		// A partition the topic lacks, or whose bounds are unknown, has
 		// none of its offsets: reading it would only wait out empty polls.
-		s, okS := starts.Lookup(topic, p)
-		e, okE := ends.Lookup(topic, p)
-
-		if !okS || !okE || s.Err != nil || e.Err != nil {
+		lo, hi, err := b.partition(p)
+		if err != nil {
 			continue
 		}
-
-		lo, hi := s.Offset, e.Offset
 
 		slices.Sort(offs)
 
@@ -255,7 +257,7 @@ func (c *Client) fetchExact(ctx context.Context, topic string, refs []RecordRef)
 		return found, nil
 	}
 
-	rctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	rctx, cancel := context.WithTimeout(ctx, fetchExactTimeout)
 	defer cancel()
 
 	reader, release, err := c.scanReader(rctx, topic)

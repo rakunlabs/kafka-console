@@ -1,9 +1,13 @@
 package kafka
 
 import (
+	"errors"
 	"slices"
 	"testing"
 	"time"
+
+	"github.com/twmb/franz-go/pkg/kadm"
+	"github.com/twmb/franz-go/pkg/kerr"
 )
 
 // Groups pages in the order the list asks for: by name either way, or by
@@ -46,5 +50,32 @@ func TestGroupsSortAndPage(t *testing.T) {
 		if !slices.Equal(got, tt.want) || page.Total != 4 {
 			t.Errorf("%+v = %v (total %d), want %v (total 4)", tt.query, got, page.Total, tt.want)
 		}
+	}
+}
+
+func TestGroupErr(t *testing.T) {
+	if err := groupErr("g", kerr.GroupAuthorizationFailed); !errors.Is(err, ErrNoGroupAccess) {
+		t.Fatalf("auth = %v", err)
+	}
+
+	if err := groupErr("g", kerr.CoordinatorNotAvailable); !errors.Is(err, kerr.CoordinatorNotAvailable) || errors.Is(err, ErrNoGroupAccess) {
+		t.Fatalf("other = %v", err)
+	}
+}
+
+func TestPartitionLag(t *testing.T) {
+	pl := partitionLag(kadm.GroupMemberLag{
+		Topic: "t", Partition: 2, Lag: 4,
+		Start:  kadm.ListedOffset{Offset: 1},
+		End:    kadm.ListedOffset{Offset: 9},
+		Commit: kadm.Offset{At: 5},
+		Member: &kadm.DescribedGroupMember{MemberID: "m", ClientID: "c", ClientHost: "h"},
+		Err:    ErrNoTopicAccess,
+	})
+
+	want := PartitionLag{Topic: "t", Partition: 2, Low: 1, High: 9, Committed: 5, Lag: 4, MemberID: "m", ClientID: "c", Host: "h",
+		Error: ErrNoTopicAccess.Error(), NoAccess: true}
+	if pl != want {
+		t.Fatalf("got %+v", pl)
 	}
 }

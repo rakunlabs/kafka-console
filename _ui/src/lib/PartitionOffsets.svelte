@@ -5,6 +5,7 @@
   import { href } from './router.svelte'
   import LagBar from './LagBar.svelte'
   import OffsetDialog from './OffsetDialog.svelte'
+  import { toggled } from './sets'
   import MoreRows from './MoreRows.svelte'
   import { PencilLine, X } from '@lucide/svelte'
 
@@ -39,12 +40,7 @@
   const allOn = $derived(rows.length > 0 && rows.every((r) => selected.has(r.partition)))
   const someOn = $derived(selected.size > 0 && !allOn)
 
-  function toggle(p: number) {
-    const next = new Set(selected)
-    if (next.has(p)) next.delete(p)
-    else next.add(p)
-    selected = next
-  }
+  const toggle = (p: number) => (selected = toggled(selected, p))
   const toggleAll = () => (selected = allOn ? new Set() : new Set(rows.map((r) => r.partition)))
 
   function edit(parts: number[]) {
@@ -136,8 +132,10 @@
   <MoreRows total={rows.length} bind:shown step={100} />
 </div>
 
-<OffsetDialog {cluster} {group} {topic} partitions={target} {activeMembers} bind:open={editing}
-  ondone={() => { selected = new Set(); onchanged?.() }} />
+{#if editing}
+  <OffsetDialog {cluster} {group} {topic} partitions={target} {activeMembers} bind:open={editing}
+    ondone={() => { selected = new Set(); onchanged?.() }} />
+{/if}
 
 <style>
   .pt { table-layout: fixed; min-width: 760px; }

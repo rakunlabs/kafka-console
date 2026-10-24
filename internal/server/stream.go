@@ -127,12 +127,13 @@ func resumeAt(q url.Values) (map[int32]int64, error) {
 type stream struct {
 	w           http.ResponseWriter
 	rc          *http.ResponseController
+	enc         *json.Encoder
 	contentType string
 	started     bool
 }
 
 func newStream(w http.ResponseWriter, contentType string) *stream {
-	return &stream{w: w, rc: http.NewResponseController(w), contentType: contentType}
+	return &stream{w: w, rc: http.NewResponseController(w), enc: json.NewEncoder(w), contentType: contentType}
 }
 
 func (s *stream) start() {
@@ -153,7 +154,7 @@ func (s *stream) start() {
 func (s *stream) line(v any) bool {
 	s.start()
 
-	if json.NewEncoder(s.w).Encode(v) != nil {
+	if s.enc.Encode(v) != nil {
 		return false
 	}
 
@@ -176,9 +177,9 @@ func (s *stream) event(name string, v any) bool {
 	return s.rc.Flush() == nil
 }
 
-// fail answers err as an HTTP error before the stream started, and as a
+// finish answers err as an HTTP error before the stream started, and as a
 // last event after.
-func (s *stream) fail(err error, last func()) error {
+func (s *stream) finish(err error, last func()) error {
 	if !s.started {
 		return fail(err)
 	}

@@ -1,10 +1,11 @@
 package kafka
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/twmb/franz-go/pkg/kadm"
@@ -66,27 +67,14 @@ func (c *Client) ResetOffsets(ctx context.Context, group string, req ResetReques
 		}
 	}
 
-	described, err := c.admin.DescribeGroups(ctx, group)
-	if err != nil {
-		return nil, fmt.Errorf("describe group; %w", err)
+	if err := c.idleGroup(ctx, group, !req.DryRun); err != nil {
+		return nil, err
 	}
 
-	// Committing to a group that does not exist would create it; a typo in
-	// its name must not. New groups go through CreateGroup.
-	g, ok := described[group]
-	if !ok || errors.Is(g.Err, kerr.GroupIDNotFound) || g.Err == nil && g.State == "Dead" {
-		return nil, fmt.Errorf("group %q; %w", group, ErrNotFound)
-	}
-
-	if !req.DryRun {
-		// A failed describe has no members listed; that is not "idle".
-		if g.Err != nil {
-			return nil, fmt.Errorf("describe group; %w", g.Err)
-		}
-
-		if len(g.Members) > 0 {
-			return nil, ErrConflict{fmt.Errorf("group %q has %d active members; stop the consumers first", group, len(g.Members))}
-		}
+	switch req.Strategy {
+	case "earliest", "latest", "offset", "offsets", "timestamp", "shift":
+	default:
+		return nil, ErrInvalid{fmt.Errorf("unknown strategy %q", req.Strategy)}
 	}
 
 	var at *int64
@@ -94,12 +82,10 @@ func (c *Client) ResetOffsets(ctx context.Context, group string, req ResetReques
 		at = &req.Timestamp
 	}
 
-	b, err := c.bounds(ctx, req.Topic, false, at)
+	b, err := c.bounds(ctx, req.Topic, false, at, nil)
 	if err != nil {
 		return nil, err
 	}
-
-	starts, ends, atTime := b.starts, b.ends, b.atTime
 
 	// Without the committed offsets "from" is unknown and a shift would
 	// move from the start of the log instead; never guess on a reset.
@@ -108,14 +94,13 @@ func (c *Client) ResetOffsets(ctx context.Context, group string, req ResetReques
 		return nil, fmt.Errorf("fetch committed offsets; %w", err)
 	}
 
-	wanted := map[int32]bool{}
 	for _, p := range req.Partitions {
 		if p < 0 {
 			return nil, ErrInvalid{fmt.Errorf("partition %d is not valid", p)}
 		}
-
-		wanted[p] = true
 	}
+
+	wanted := partitionSet(req.Partitions)
 
 	// For the offsets strategy the list itself names the partitions.
 	targets := map[int32]int64{}
@@ -148,112 +133,56 @@ func (c *Client) ResetOffsets(ctx context.Context, group string, req ResetReques
 	// A partition whose bounds could not be read (a leader moving, say)
 	// fails the reset: committing -1 or skipping it silently would both
 	// leave the group somewhere the user did not ask for.
-	var (
-		startList []kadm.ListedOffset
-		boundErr  error
-	)
-
-	starts.Each(func(o kadm.ListedOffset) {
-		if o.Topic != req.Topic || o.Partition < 0 || (len(wanted) > 0 && !wanted[o.Partition]) {
-			return
-		}
-
-		if o.Err != nil || o.Offset < 0 {
-			boundErr = errors.Join(boundErr, fmt.Errorf("partition %d: start offset unknown; %v", o.Partition, o.Err))
-
-			return
-		}
-
-		startList = append(startList, o)
-	})
-	sort.Slice(startList, func(i, j int) bool { return startList[i].Partition < startList[j].Partition })
-
-	found := map[int32]bool{}
-	for _, s := range startList {
-		found[s.Partition] = true
-	}
+	var boundErr error
 
 	for p := range wanted {
-		if !found[p] && boundErr == nil {
-			return nil, ErrInvalid{fmt.Errorf("topic %q has no partition %d", req.Topic, p)}
+		if !b.has(p) {
+			return nil, noPartition(req.Topic, p)
 		}
 	}
+
+	parts := slices.DeleteFunc(b.partitions(), func(p int32) bool { return len(wanted) > 0 && !wanted[p] })
 
 	var plan []ResetPlan
 
 	offsets := make(kadm.Offsets)
 
-	for _, s := range startList {
-		e, ok := ends.Lookup(req.Topic, s.Partition)
-		if !ok || e.Err != nil || e.Offset < 0 {
-			boundErr = errors.Join(boundErr, fmt.Errorf("partition %d: end offset unknown; %v", s.Partition, e.Err))
+	for _, p := range parts {
+		lo, hi, err := b.partition(p)
+		if err != nil {
+			boundErr = errors.Join(boundErr, err)
 
 			continue
 		}
 
-		var target int64
-
-		switch req.Strategy {
-		case "earliest":
-			target = s.Offset
-		case "latest":
-			target = e.Offset
-		case "offset":
-			target = min(max(req.Offset, s.Offset), e.Offset)
-		case "offsets":
-			target = min(max(targets[s.Partition], s.Offset), e.Offset)
-		case "timestamp":
-			// kadm gives the end offset when nothing is that new; an
-			// error means the offset at that time is unknown.
-			t, ok := atTime.Lookup(req.Topic, s.Partition)
-			if !ok || t.Err != nil {
-				var cause error
-				if ok {
-					cause = t.Err
-				}
-
-				boundErr = errors.Join(boundErr, fmt.Errorf("partition %d: offset at that time unknown; %v", s.Partition, cause))
-
-				continue
-			}
-
-			target = e.Offset
-			if t.Offset >= 0 {
-				target = min(t.Offset, e.Offset)
-			}
-		case "shift":
-			// Needs the committed offset, resolved below.
-		default:
-			return nil, ErrInvalid{fmt.Errorf("unknown strategy %q", req.Strategy)}
-		}
-
 		from := int64(-1)
-		if cur, ok := current.Lookup(req.Topic, s.Partition); ok {
+		if cur, ok := current.Lookup(req.Topic, p); ok {
 			if cur.Err != nil {
-				boundErr = errors.Join(boundErr, fmt.Errorf("partition %d: committed offset unknown; %w", s.Partition, cur.Err))
+				boundErr = errors.Join(boundErr, offsetUnknown(p, "committed offset", cur.Err))
+
 				continue
 			}
+
 			from = cur.At
 		}
 
-		if p, ok := reviewed[s.Partition]; ok {
-			if from != p.From || p.To < s.Offset || p.To > e.Offset {
-				return nil, ErrConflict{fmt.Errorf("partition %d changed since preview; preview the offsets again", s.Partition)}
-			}
-			target = p.To
+		target, err := resetTarget(req, b, p, lo, hi, from, targets[p])
+		if err != nil {
+			boundErr = errors.Join(boundErr, err)
+
+			continue
 		}
 
-		if req.Strategy == "shift" {
-			base := from
-			if base < 0 {
-				base = s.Offset
+		if r, ok := reviewed[p]; ok {
+			if from != r.From || r.To < lo || r.To > hi {
+				return nil, ErrConflict{fmt.Errorf("partition %d changed since preview; preview the offsets again", p)}
 			}
 
-			target = min(max(base+req.Shift, s.Offset), e.Offset)
+			target = r.To
 		}
 
-		plan = append(plan, ResetPlan{Partition: s.Partition, From: from, To: target, Low: s.Offset, High: e.Offset})
-		offsets.AddOffset(req.Topic, s.Partition, target, -1)
+		plan = append(plan, ResetPlan{Partition: p, From: from, To: target, Low: lo, High: hi})
+		offsets.AddOffset(req.Topic, p, target, -1)
 	}
 
 	if boundErr != nil {
@@ -268,16 +197,61 @@ func (c *Client) ResetOffsets(ctx context.Context, group string, req ResetReques
 		return plan, nil
 	}
 
-	resp, err := c.admin.CommitOffsets(ctx, group, offsets)
-	if err != nil {
-		return nil, fmt.Errorf("commit offsets; %w", err)
-	}
-
-	if err := resp.Error(); err != nil {
-		return nil, fmt.Errorf("commit offsets; %w", err)
+	if err := c.commit(ctx, group, offsets); err != nil {
+		return nil, err
 	}
 
 	return plan, nil
+}
+
+// resetTarget is where strategy moves partition p, whose retained range is
+// [lo, hi] and committed offset from (-1 for none); target is its own offset
+// for the offsets strategy.
+func resetTarget(req ResetRequest, b offsetBounds, p int32, lo, hi, from, target int64) (int64, error) {
+	switch req.Strategy {
+	case "earliest":
+		return lo, nil
+	case "latest":
+		return hi, nil
+	case "offset":
+		return min(max(req.Offset, lo), hi), nil
+	case "offsets":
+		return min(max(target, lo), hi), nil
+	case "timestamp":
+		t, err := b.at(p)
+		if err != nil {
+			return 0, err
+		}
+
+		if t < 0 {
+			return hi, nil
+		}
+
+		return min(t, hi), nil
+	case "shift":
+		base := from
+		if base < 0 {
+			base = lo
+		}
+
+		return min(max(base+req.Shift, lo), hi), nil
+	}
+
+	return 0, ErrInvalid{fmt.Errorf("unknown strategy %q", req.Strategy)}
+}
+
+// commit commits offsets for group, failing on any partition's error.
+func (c *Client) commit(ctx context.Context, group string, offsets kadm.Offsets) error {
+	resp, err := c.admin.CommitOffsets(ctx, group, offsets)
+	if err != nil {
+		return fmt.Errorf("commit offsets; %w", err)
+	}
+
+	if err := resp.Error(); err != nil {
+		return fmt.Errorf("commit offsets; %w", err)
+	}
+
+	return nil
 }
 
 type PartitionOffset struct {
@@ -328,23 +302,8 @@ func (c *Client) AddGroupTopic(ctx context.Context, req CreateGroupRequest) ([]R
 		return nil, err
 	}
 
-	described, err := c.admin.DescribeGroups(ctx, req.Group)
-	if err != nil {
-		return nil, fmt.Errorf("describe group; %w", err)
-	}
-
-	g, ok := described[req.Group]
-	if !ok || g.State == "Dead" {
-		return nil, fmt.Errorf("group %q; %w", req.Group, ErrNotFound)
-	}
-
-	// A failed describe lists no members; that is not "idle".
-	if g.Err != nil {
-		return nil, fmt.Errorf("describe group; %w", g.Err)
-	}
-
-	if len(g.Members) > 0 {
-		return nil, ErrConflict{fmt.Errorf("group %q has %d active members; stop the consumers first", req.Group, len(g.Members))}
+	if err := c.idleGroup(ctx, req.Group, true); err != nil {
+		return nil, err
 	}
 
 	current, err := c.admin.FetchOffsets(ctx, req.Group)
@@ -357,6 +316,36 @@ func (c *Client) AddGroupTopic(ctx context.Context, req CreateGroupRequest) ([]R
 	}
 
 	return c.commitFirstOffsets(ctx, req)
+}
+
+// idleGroup checks that group exists and, with requireIdle, has no members.
+// Committing to a group that does not exist would create it; a typo in its
+// name must not. New groups go through CreateGroup.
+func (c *Client) idleGroup(ctx context.Context, group string, requireIdle bool) error {
+	described, err := c.admin.DescribeGroups(ctx, group)
+	if err != nil {
+		return fmt.Errorf("describe group; %w", err)
+	}
+
+	g, ok := described[group]
+	if !ok || errors.Is(g.Err, kerr.GroupIDNotFound) || g.Err == nil && g.State == "Dead" {
+		return fmt.Errorf("group %q; %w", group, ErrNotFound)
+	}
+
+	if !requireIdle {
+		return nil
+	}
+
+	// A failed describe has no members listed; that is not "idle".
+	if g.Err != nil {
+		return fmt.Errorf("describe group; %w", g.Err)
+	}
+
+	if len(g.Members) > 0 {
+		return ErrConflict{fmt.Errorf("group %q has %d active members; stop the consumers first", group, len(g.Members))}
+	}
+
+	return nil
 }
 
 func (r *CreateGroupRequest) validate() error {
@@ -377,12 +366,10 @@ func (r *CreateGroupRequest) validate() error {
 // commitFirstOffsets checks every offset against the partition's retained
 // range and commits them in one request.
 func (c *Client) commitFirstOffsets(ctx context.Context, req CreateGroupRequest) ([]ResetPlan, error) {
-	b, err := c.bounds(ctx, req.Topic, false, nil)
+	b, err := c.bounds(ctx, req.Topic, false, nil, nil)
 	if err != nil {
 		return nil, err
 	}
-
-	starts, ends := b.starts, b.ends
 
 	offsets := make(kadm.Offsets)
 	plan := make([]ResetPlan, 0, len(req.Offsets))
@@ -395,33 +382,27 @@ func (c *Client) commitFirstOffsets(ctx context.Context, req CreateGroupRequest)
 
 		seen[po.Partition] = true
 
-		s, ok := starts.Lookup(req.Topic, po.Partition)
-		if !ok || s.Err != nil {
-			return nil, ErrInvalid{fmt.Errorf("topic %q has no partition %d", req.Topic, po.Partition)}
+		if !b.has(po.Partition) {
+			return nil, noPartition(req.Topic, po.Partition)
 		}
 
-		e, ok := ends.Lookup(req.Topic, po.Partition)
-		if !ok || e.Err != nil {
-			return nil, fmt.Errorf("end offset of partition %d unavailable", po.Partition)
+		lo, hi, err := b.partition(po.Partition)
+		if err != nil {
+			return nil, err
 		}
 
-		if po.Offset < s.Offset || po.Offset > e.Offset {
-			return nil, ErrInvalid{fmt.Errorf("partition %d: offset %d is outside %d–%d", po.Partition, po.Offset, s.Offset, e.Offset)}
+		if po.Offset < lo || po.Offset > hi {
+			return nil, ErrInvalid{fmt.Errorf("partition %d: offset %d is outside %d–%d", po.Partition, po.Offset, lo, hi)}
 		}
 
 		offsets.AddOffset(req.Topic, po.Partition, po.Offset, -1)
-		plan = append(plan, ResetPlan{Partition: po.Partition, From: -1, To: po.Offset, Low: s.Offset, High: e.Offset})
+		plan = append(plan, ResetPlan{Partition: po.Partition, From: -1, To: po.Offset, Low: lo, High: hi})
 	}
 
-	sort.Slice(plan, func(i, j int) bool { return plan[i].Partition < plan[j].Partition })
+	slices.SortFunc(plan, func(a, b ResetPlan) int { return cmp.Compare(a.Partition, b.Partition) })
 
-	resp, err := c.admin.CommitOffsets(ctx, req.Group, offsets)
-	if err != nil {
-		return nil, fmt.Errorf("commit offsets; %w", err)
-	}
-
-	if err := resp.Error(); err != nil {
-		return nil, fmt.Errorf("commit offsets; %w", err)
+	if err := c.commit(ctx, req.Group, offsets); err != nil {
+		return nil, err
 	}
 
 	return plan, nil

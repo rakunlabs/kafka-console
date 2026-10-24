@@ -4,7 +4,7 @@ MAIN_PKG := ./cmd/$(PROJECT)
 BUILD_DATE   := $(shell date -u '+%Y-%m-%d_%H:%M:%S')
 BUILD_COMMIT := $(shell git rev-parse --short HEAD 2> /dev/null || echo unknown)
 VERSION      := $(or $(IMAGE_TAG),$(shell git describe --tags --first-parent --match "v*" 2> /dev/null || echo v0.0.0))
-LDFLAGS      := -X main.version=$(VERSION) -X main.commit=$(BUILD_COMMIT) -X main.date=$(BUILD_DATE)
+LDFLAGS      := -X github.com/rakunlabs/kafka-console/internal/config.Version=$(VERSION) -X main.commit=$(BUILD_COMMIT) -X main.date=$(BUILD_DATE)
 
 # Platform for `make build`, e.g. `make build GOOS=darwin GOARCH=arm64`.
 GOOS   ?= linux

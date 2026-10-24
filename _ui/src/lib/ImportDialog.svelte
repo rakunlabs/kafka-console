@@ -1,10 +1,14 @@
 <script lang="ts">
+  import { onDestroy } from 'svelte'
+  import { errorMessage } from './http'
   import { api, type Cluster, type ImportRecord } from './api'
   import { fmt, bytes } from './format'
   import { href } from './router.svelte'
-  import { detectFormat, RecordReader, FatalError, type FileFormat, type ItemShape, type Item } from './importFile'
+  import { detectFormat, RecordReader, FatalError, Summary, type FileFormat, type ItemShape, type Item } from './importFile'
   import { checkFile, sendFile, type SendResult } from './importer'
+  import { compressions } from './produce'
   import Modal from './Modal.svelte'
+  import { toggled } from './sets'
   import ValueView from './ValueView.svelte'
   import { FileUp, Check, Square, ListChecks, Send, StepForward, Plus, Minus } from '@lucide/svelte'
 
@@ -68,37 +72,17 @@
       items = reader.feed(head)
       // A file read whole may be closed here; a cut one is not.
       if (file && file.size <= headBytes) items.push(...reader.end())
-    } catch (e: any) {
+    } catch (e) {
       if (!(e instanceof FatalError)) throw e
-      fatal = e.message
+      fatal = errorMessage(e)
     }
-    const recs = items.flatMap((i) => (i.record ? [i.record] : []))
-    return {
-      items: items.slice(0, 5),
-      fatal,
-      partitions: recs.some((r) => r.partition !== null && r.partition !== undefined),
-      timestamps: recs.some((r) => r.timestamp !== null && r.timestamp !== undefined),
-      schemaIds: recs.some((r) => r.key_schema || r.value_schema),
-    }
+    const sum = new Summary()
+    for (const it of items) sum.add(it)
+    return { items: items.slice(0, 5), fatal, partitions: sum.partitions, timestamps: sum.timestamps, schemaIds: sum.schemaIds }
   })
 
-  let wasOpen = false
-  $effect(() => {
-    if (open && !wasOpen) reset()
-    if (!open && wasOpen) stop = true
-    wasOpen = open
-  })
-
-  function reset() {
-    file = undefined
-    head = error = confirm = compression = fatal = ''
-    format = 'json'
-    shape = 'record'
-    keepPartition = keepTimestamp = false
-    keepSchema = true
-    phase = 'pick'
-    clearResults()
-  }
+  // Mounted only while open; closing stops a running check or send.
+  onDestroy(() => (stop = true))
 
   // A changed option invalidates the last check.
   function recheck() {
@@ -205,11 +189,7 @@
 
   // Preview rows opened to show the whole value, by item number.
   let expanded = $state(new Set<number>())
-  function toggle(item: number) {
-    const next = new Set(expanded)
-    if (!next.delete(item)) next.add(item)
-    expanded = next
-  }
+  const toggle = (item: number) => (expanded = toggled(expanded, item))
   const short = (v: string | null) => (v === null ? 'null' : v.length > 80 ? v.slice(0, 80) + '…' : v)
   const valid = $derived(total - problemCount)
   const finished = $derived(phase === 'done' && !error && !resumeAt)
@@ -304,17 +284,17 @@
           </table>
         </div>
 
-        <label class="check"><input type="checkbox" bind:checked={keepPartition} disabled={busy} onchange={recheck} /> Write each record to its partition
+        <label class="check opt"><input type="checkbox" bind:checked={keepPartition} disabled={busy} onchange={recheck} /> Write each record to its partition
           <span class="hint">{preview.partitions ? 'Off: the key decides the partition.' : 'The first records have no partition numbers; the key decides.'}</span></label>
-        <label class="check"><input type="checkbox" bind:checked={keepTimestamp} disabled={busy} onchange={recheck} /> Keep timestamps from the file
+        <label class="check opt"><input type="checkbox" bind:checked={keepTimestamp} disabled={busy} onchange={recheck} /> Keep timestamps from the file
           <span class="hint">Off: records get the time they are written.</span></label>
         {#if preview.schemaIds}
-          <label class="check"><input type="checkbox" bind:checked={keepSchema} disabled={busy} onchange={recheck} /> Encode with the schema IDs in the file
+          <label class="check opt"><input type="checkbox" bind:checked={keepSchema} disabled={busy} onchange={recheck} /> Encode with the schema IDs in the file
             <span class="hint">Values exported decoded from Avro, Protobuf or JSON Schema are encoded again with the same schema. Off: they are written as plain JSON text.</span></label>
         {/if}
         <label>Compression
           <select bind:value={compression} disabled={busy}>
-            <option value="">None</option><option value="gzip">gzip</option><option value="snappy">snappy</option><option value="lz4">lz4</option><option value="zstd">zstd</option>
+            {#each compressions as [id, label] (id)}<option value={id}>{label}</option>{/each}
           </select>
         </label>
       {/if}
@@ -359,7 +339,7 @@
       {#if uncertain}
         <div class="error" role="alert">The result of items {fmt(uncertain.first)}–{fmt(uncertain.last)} is unknown.
           Some or all may already be written. Resuming resends this batch and can create duplicates.</div>
-        <label class="check"><input type="checkbox" bind:checked={acceptDuplicates} /> I understand that resuming may duplicate these records.</label>
+        <label class="check opt"><input type="checkbox" bind:checked={acceptDuplicates} /> I understand that resuming may duplicate these records.</label>
       {/if}
     {/if}
     {#if Object.keys(byPartition).length}
@@ -397,9 +377,6 @@
   .drop:hover, .drop.on { color: var(--text); border-color: var(--cta-text); background: var(--row-hover); }
   .drop:has(input:focus-visible) { outline: 2px solid var(--focus); outline-offset: 1px; }
   .drop input { position: absolute; opacity: 0; width: 1px; height: 1px; pointer-events: none; }
-  .hint { display: block; margin-left: 22px; font-size: 12px; color: var(--text-3); }
-  .check { align-items: flex-start; flex-wrap: wrap; }
-  .err { color: var(--danger); font-size: 13px; }
   .error ul { margin: 6px 0 0 18px; padding: 0; }
   .sum { display: flex; align-items: center; gap: 6px; font-size: 14px; }
   .sum b { font-weight: 600; }
@@ -419,8 +396,6 @@
   .inl-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; font-size: 12px; }
   .inl-meta code { font-size: 12px; overflow-wrap: anywhere; }
   .hdr { display: inline-flex; gap: 4px; font: 12px var(--mono); padding: 0 6px; border: 1px solid var(--border); border-radius: 2px; }
-  .donemsg { display: flex; align-items: center; gap: 6px; font-size: 14px; color: var(--ok); }
-  .donemsg b, .donemsg a { color: var(--text); }
   .progress { display: grid; gap: 6px; font-size: 13px; }
   .bar { height: 6px; background: var(--surface-2); border: 1px solid var(--border); overflow: hidden; }
   .bar span { display: block; height: 100%; background: var(--cta-text); transition: width .3s ease-out; }

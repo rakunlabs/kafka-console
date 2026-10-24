@@ -1,6 +1,8 @@
 <script lang="ts">
-  import { names } from './names'
-  import { api, type Cluster, type Message, type TopicName, type ResendResult } from './api'
+  import { untrack } from 'svelte'
+  import { errorMessage } from './http'
+  import { topicNames } from './topicNames.svelte'
+  import { api, type Cluster, type Message, type ResendResult } from './api'
   import { fmt } from './format'
   import { href } from './router.svelte'
   import Modal from './Modal.svelte'
@@ -8,6 +10,7 @@
   import { Send, Check, TriangleAlert, Repeat } from '@lucide/svelte'
 
   // Copies selected messages, byte for byte, to this topic or another one.
+  // Mounted only while open, so every open starts from a fresh form.
   let {
     cluster,
     topic,
@@ -19,7 +22,7 @@
   let elsewhere = $state(false)
   let keepPartition = $state(false)
   let mark = $state(true)
-  let topics = $state.raw<TopicName[]>([])
+  const names = topicNames(untrack(() => cluster.name))
   let results = $state<ResendResult[]>()
   let error = $state('')
   let busy = $state(false)
@@ -27,7 +30,7 @@
 
   const dest = $derived(elsewhere ? target : topic)
   const same = $derived(dest === topic)
-  const destInfo = $derived(topics.find((t) => t.name === dest))
+  const destInfo = $derived(names.topics.find((t) => t.name === dest))
   const partitionsUsed = $derived([...new Set(messages.map((m) => m.partition))].sort((a, b) => a - b))
   const missing = $derived(keepPartition && destInfo ? partitionsUsed.filter((p) => p >= destInfo.partitions) : [])
   const ok = $derived(results?.filter((r) => !r.error) ?? [])
@@ -36,20 +39,6 @@
   // clusters with confirm_writes ask for the topic name first.
   const needsConfirm = $derived(cluster.confirm_writes)
 
-  let wasOpen = false
-  $effect(() => {
-    if (open && !wasOpen) {
-      target = ''
-      elsewhere = false
-      keepPartition = false
-      mark = true
-      results = undefined
-      error = ''
-      confirm = ''
-      names(cluster.name).then((n) => (topics = n.topics)).catch(() => {})
-    }
-    wasOpen = open
-  })
 
   async function send() {
     busy = true
@@ -61,8 +50,8 @@
         keep_partition: keepPartition,
         mark_source: mark,
       })
-    } catch (e: any) {
-      error = e.message
+    } catch (e) {
+      error = errorMessage(e)
     } finally {
       busy = false
     }
@@ -101,15 +90,16 @@
     </fieldset>
 
     {#if elsewhere}
-      <TopicPicker {topics} bind:value={target} id="resend-target" />
+      <TopicPicker topics={names.topics} bind:value={target} id="resend-target" />
+      {#if names.error}<p class="err small">{names.error}</p>{/if}
     {:else}
       <div class="warnbox"><TriangleAlert size={15} /><span>Consumers of <span class="mono">{topic}</span> will receive these messages again, as new records at the end.</span></div>
     {/if}
 
-    <label class="check"><input type="checkbox" bind:checked={keepPartition} /> Keep partition numbers
+    <label class="check opt"><input type="checkbox" bind:checked={keepPartition} /> Keep partition numbers
       <span class="hint">Off: the key decides the partition, as for any producer.</span></label>
     {#if missing.length}<p class="err small">{dest} has {destInfo?.partitions} partitions; partition {missing.join(', ')} does not exist there.</p>{/if}
-    <label class="check"><input type="checkbox" bind:checked={mark} /> Add an <code>x-resent-from</code> header
+    <label class="check opt"><input type="checkbox" bind:checked={mark} /> Add an <code>x-resent-from</code> header
       <span class="hint">e.g. <code>{topic}/{messages[0]?.partition ?? 0}/{messages[0]?.offset ?? 0}</code>, so a replay can be told apart from the original.</span></label>
 
     {#if needsConfirm}
@@ -135,13 +125,5 @@
 </Modal>
 
 <style>
-  .lead { font-size: 13px; color: var(--text-2); }
-  .hint { display: block; margin-left: 22px; font-size: 12px; color: var(--text-3); }
-  .check { align-items: flex-start; flex-wrap: wrap; }
-  .donemsg { display: flex; align-items: center; gap: 6px; font-size: 14px; color: var(--ok); }
-  .donemsg b, .donemsg a { color: var(--text); }
-  .err { color: var(--danger); font-size: 13px; }
   .tbl { max-height: 300px; overflow: auto; }
-  .warnbox { display: flex; gap: 8px; align-items: flex-start; padding: 9px 11px; font-size: 13px; color: var(--warn); background: var(--warn-soft); border-radius: var(--radius); }
-  .warnbox :global(svg) { flex: none; margin-top: 1px; }
 </style>

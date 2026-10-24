@@ -284,11 +284,7 @@ type GroupDetail struct {
 func (c *Client) Group(ctx context.Context, name string) (*GroupDetail, error) {
 	lags, err := c.groupLag(ctx, name)
 	if err != nil {
-		if errors.Is(err, kerr.GroupAuthorizationFailed) {
-			return nil, fmt.Errorf("group %q; %w", name, ErrNoGroupAccess)
-		}
-
-		return nil, fmt.Errorf("describe group; %w", err)
+		return nil, groupErr(name, err)
 	}
 
 	l, ok := lags[name]
@@ -297,11 +293,7 @@ func (c *Client) Group(ctx context.Context, name string) (*GroupDetail, error) {
 	}
 
 	if l.DescribeErr != nil {
-		if errors.Is(l.DescribeErr, kerr.GroupAuthorizationFailed) {
-			return nil, fmt.Errorf("group %q; %w", name, ErrNoGroupAccess)
-		}
-
-		return nil, fmt.Errorf("describe group; %w", l.DescribeErr)
+		return nil, groupErr(name, l.DescribeErr)
 	}
 
 	out := &GroupDetail{
@@ -322,30 +314,43 @@ func (c *Client) Group(ctx context.Context, name string) (*GroupDetail, error) {
 	}
 
 	for _, p := range l.Lag.Sorted() {
-		pl := PartitionLag{
-			Topic:     p.Topic,
-			Partition: p.Partition,
-			Low:       p.Start.Offset,
-			High:      p.End.Offset,
-			Committed: p.Commit.At,
-			Lag:       p.Lag,
-		}
-
-		if p.Member != nil {
-			pl.MemberID = p.Member.MemberID
-			pl.ClientID = p.Member.ClientID
-			pl.Host = p.Member.ClientHost
-		}
-
-		if p.Err != nil {
-			pl.Error = p.Err.Error()
-			pl.NoAccess = errors.Is(p.Err, ErrNoTopicAccess)
-		}
-
-		out.Partitions = append(out.Partitions, pl)
+		out.Partitions = append(out.Partitions, partitionLag(p))
 	}
 
 	return out, nil
+}
+
+// groupErr names a group the console may not describe as such.
+func groupErr(name string, err error) error {
+	if errors.Is(err, kerr.GroupAuthorizationFailed) {
+		return fmt.Errorf("group %q; %w", name, ErrNoGroupAccess)
+	}
+
+	return fmt.Errorf("describe group; %w", err)
+}
+
+func partitionLag(p kadm.GroupMemberLag) PartitionLag {
+	pl := PartitionLag{
+		Topic:     p.Topic,
+		Partition: p.Partition,
+		Low:       p.Start.Offset,
+		High:      p.End.Offset,
+		Committed: p.Commit.At,
+		Lag:       p.Lag,
+	}
+
+	if p.Member != nil {
+		pl.MemberID = p.Member.MemberID
+		pl.ClientID = p.Member.ClientID
+		pl.Host = p.Member.ClientHost
+	}
+
+	if p.Err != nil {
+		pl.Error = p.Err.Error()
+		pl.NoAccess = errors.Is(p.Err, ErrNoTopicAccess)
+	}
+
+	return pl
 }
 
 // TopicConsumer is one group's view of a single topic: who owns which
@@ -390,31 +395,11 @@ func (c *Client) TopicConsumers(ctx context.Context, topic string) ([]TopicConsu
 		}
 
 		for _, p := range (kadm.GroupLag{topic: parts}).Sorted() {
-			pl := PartitionLag{
-				Topic:     p.Topic,
-				Partition: p.Partition,
-				Low:       p.Start.Offset,
-				High:      p.End.Offset,
-				Committed: p.Commit.At,
-				Lag:       p.Lag,
-			}
-
-			if p.Member != nil {
-				pl.MemberID = p.Member.MemberID
-				pl.ClientID = p.Member.ClientID
-				pl.Host = p.Member.ClientHost
-			}
-
-			if p.Err != nil {
-				pl.Error = p.Err.Error()
-				pl.NoAccess = errors.Is(p.Err, ErrNoTopicAccess)
-			}
-
 			if p.Lag > 0 {
 				tc.Lag += p.Lag
 			}
 
-			tc.Partitions = append(tc.Partitions, pl)
+			tc.Partitions = append(tc.Partitions, partitionLag(p))
 		}
 
 		out = append(out, tc)

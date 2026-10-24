@@ -33,6 +33,7 @@ func TestAuditWrites(t *testing.T) {
 	c.POST("/users", handler)
 	c.POST("/topics/{topic}/replay", handler)
 	c.POST("/topics/{topic}/import", handler)
+	c.DELETE("/topics/{topic}", handler)
 	c.GET("/topics", handler)
 
 	do := func(method, path, body string, header map[string]string) map[string]any {
@@ -88,6 +89,15 @@ func TestAuditWrites(t *testing.T) {
 		}
 	})
 
+	t.Run("a delete of a resource named like a dry-run route is logged", func(t *testing.T) {
+		for _, name := range []string{"reset", "replay", "import"} {
+			line := do("DELETE", "/api/v1/clusters/prod/topics/"+name, `{"dry_run":true}`, nil)
+			if line == nil || line["action"] != "topics.delete" {
+				t.Fatalf("delete of topic %q not logged: %v", name, line)
+			}
+		}
+	})
+
 	t.Run("reads are not logged", func(t *testing.T) {
 		if line := do("GET", "/api/v1/clusters/prod/topics", "", nil); line != nil {
 			t.Fatalf("read logged: %v", line)
@@ -112,6 +122,29 @@ func TestAuditWrites(t *testing.T) {
 	})
 }
 
+func TestRouteKey(t *testing.T) {
+	var got []string
+
+	mux := ada.New()
+	api := mux.Group("/kafka"+apiPrefix, func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			got = append(got, routeKey(r))
+			next.ServeHTTP(w, r)
+		})
+	})
+	noop := func(http.ResponseWriter, *http.Request) {}
+	api.POST("/filter/check", noop)
+	api.POST("/clusters/{cluster}/topics/{topic}/import", noop)
+
+	for _, path := range []string{"/kafka/api/v1/filter/check", "/kafka/api/v1/clusters/c/topics/t/import"} {
+		mux.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("POST", path, nil))
+	}
+
+	if len(got) != 2 || !checkRoutes[got[0]] || got[1] != importRoute {
+		t.Fatalf("route keys = %q", got)
+	}
+}
+
 func TestAuditTrustedProxies(t *testing.T) {
 	var buf bytes.Buffer
 	prev := slog.Default()
@@ -127,12 +160,16 @@ func TestAuditTrustedProxies(t *testing.T) {
 	api := mux.Group("/api/v1", auditWrites("X-User", proxies...))
 	api.POST("/clusters/{cluster}/users", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 
-	log := func(remote string) map[string]any {
+	log := func(remote string, forwarded ...string) map[string]any {
 		buf.Reset()
 		req := httptest.NewRequest("POST", "/api/v1/clusters/prod/users", strings.NewReader(`{}`))
 		req.RemoteAddr = remote
 		req.Header.Set("X-User", "admin")
-		req.Header.Set("X-Forwarded-For", "203.0.113.9")
+		xff := "203.0.113.9"
+		if len(forwarded) > 0 {
+			xff = forwarded[0]
+		}
+		req.Header.Set("X-Forwarded-For", xff)
 		mux.ServeHTTP(httptest.NewRecorder(), req)
 
 		var line map[string]any
@@ -149,6 +186,11 @@ func TestAuditTrustedProxies(t *testing.T) {
 
 	if l := log("192.168.1.5:4000"); l["user"] != "admin" {
 		t.Fatalf("single-host proxy: %v", l["user"])
+	}
+
+	// The client wrote the leftmost entry; the proxies appended the rest.
+	if l := log("10.1.2.3:4000", "1.2.3.4, 203.0.113.9, 10.0.0.7"); l["remote"] != "203.0.113.9" {
+		t.Fatalf("forged X-Forwarded-For: remote = %v", l["remote"])
 	}
 
 	if l := log("198.51.100.7:4000"); l["user"] != "unverified:admin" || l["remote"] != "198.51.100.7:4000" {

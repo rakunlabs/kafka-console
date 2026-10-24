@@ -30,25 +30,34 @@ var (
 	count    = flag.Int("n", 500, "records per JSON topic")
 )
 
+// topic is one sample topic and what fills it: records JSON records from
+// gen, or none when another step (text, Avro) produces them.
 type topic struct {
 	name       string
 	partitions int32
 	configs    map[string]*string
+	records    func() int
+	gen        gen
 }
 
 func ptr(s string) *string { return &s }
 
+func fixed(n int) func() int { return func() int { return n } }
+
+// times scales the -n flag, read once flags are parsed.
+func times(f float64) func() int { return func() int { return int(float64(*count) * f) } }
+
 var topics = []topic{
-	{"orders.v1", 6, map[string]*string{"retention.ms": ptr("604800000")}},
-	{"payments.v1", 3, nil},
-	{"inventory.stock-levels", 4, map[string]*string{"cleanup.policy": ptr("compact")}},
-	{"users.profile-updates", 3, map[string]*string{"cleanup.policy": ptr("compact")}},
-	{"shipments.avro", 3, nil},
-	{"clickstream.raw", 12, map[string]*string{"retention.ms": ptr("86400000"), "compression.type": ptr("zstd")}},
-	{"audit.log", 1, map[string]*string{"retention.ms": ptr("-1")}},
-	{"notifications.email", 2, nil},
-	{"orders.v1.dlq", 1, nil},
-	{"legacy.events", 2, nil},
+	{"orders.v1", 6, map[string]*string{"retention.ms": ptr("604800000")}, times(1), orderRecord},
+	{"payments.v1", 3, nil, times(0.5), paymentRecord},
+	{"inventory.stock-levels", 4, map[string]*string{"cleanup.policy": ptr("compact")}, fixed(200), stockRecord},
+	{"users.profile-updates", 3, map[string]*string{"cleanup.policy": ptr("compact")}, fixed(150), userRecord},
+	{"shipments.avro", 3, nil, nil, nil},
+	{"clickstream.raw", 12, map[string]*string{"retention.ms": ptr("86400000"), "compression.type": ptr("zstd")}, times(4), clickRecord},
+	{"audit.log", 1, map[string]*string{"retention.ms": ptr("-1")}, fixed(120), auditRecord},
+	{"notifications.email", 2, nil, fixed(80), emailRecord},
+	{"orders.v1.dlq", 1, nil, fixed(12), dlqRecord},
+	{"legacy.events", 2, nil, nil, nil},
 }
 
 const shipmentSchema = `{
@@ -97,42 +106,60 @@ func pick[T any](s []T) T { return s[rand.IntN(len(s))] }
 
 func main() {
 	flag.Parse()
+
+	if err := run(); err != nil {
+		log.Fatal(err)
+	}
+
+	log.Println("done: open http://localhost:8080")
+}
+
+func run() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
 	cl, err := kgo.NewClient(kgo.SeedBrokers(*brokers), kgo.ProducerLinger(20*time.Millisecond))
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	defer cl.Close()
-	adm := kadm.NewClient(cl)
 
-	createTopics(ctx, adm)
+	if err := createTopics(ctx, kadm.NewClient(cl)); err != nil {
+		return err
+	}
 
 	var shipID int
 	if *registry != "" {
-		shipID = registerSchemas(ctx)
+		if shipID, err = registerSchemas(ctx); err != nil {
+			return err
+		}
 	}
 
 	now := time.Now()
-	produceJSON(ctx, cl, "orders.v1", *count, now, orderRecord)
-	produceJSON(ctx, cl, "payments.v1", *count/2, now, paymentRecord)
-	produceJSON(ctx, cl, "inventory.stock-levels", 200, now, stockRecord)
-	produceJSON(ctx, cl, "users.profile-updates", 150, now, userRecord)
-	produceJSON(ctx, cl, "clickstream.raw", *count*4, now, clickRecord)
-	produceJSON(ctx, cl, "audit.log", 120, now, auditRecord)
-	produceJSON(ctx, cl, "notifications.email", 80, now, emailRecord)
-	produceJSON(ctx, cl, "orders.v1.dlq", 12, now, dlqRecord)
-	produceText(ctx, cl, "legacy.events", 60, now)
-	if shipID != 0 {
-		produceAvro(ctx, cl, shipID, 150, now)
+	for _, t := range topics {
+		if t.gen == nil {
+			continue
+		}
+
+		if err := produceJSON(ctx, cl, t.name, t.records(), now, t.gen); err != nil {
+			return err
+		}
 	}
 
-	consumeGroups(ctx)
-	log.Println("done: open http://localhost:8080")
+	if err := produceText(ctx, cl, "legacy.events", 60, now); err != nil {
+		return err
+	}
+
+	if shipID != 0 {
+		if err := produceAvro(ctx, cl, shipID, 150, now); err != nil {
+			return err
+		}
+	}
+
+	return consumeGroups(ctx)
 }
 
-func createTopics(ctx context.Context, adm *kadm.Client) {
+func createTopics(ctx context.Context, adm *kadm.Client) error {
 	for _, t := range topics {
 		res, err := adm.CreateTopic(ctx, t.partitions, 1, t.configs, t.name)
 		switch {
@@ -141,39 +168,41 @@ func createTopics(ctx context.Context, adm *kadm.Client) {
 		case errors.Is(err, kerr.TopicAlreadyExists) || errors.Is(res.Err, kerr.TopicAlreadyExists):
 			log.Printf("topic %s exists", t.name)
 		case err != nil:
-			log.Fatalf("create %s: %v", t.name, err)
+			return fmt.Errorf("create %s: %w", t.name, err)
 		default:
-			log.Fatalf("create %s: %v", t.name, res.Err)
+			return fmt.Errorf("create %s: %w", t.name, res.Err)
 		}
 	}
+
+	return nil
 }
 
-func registerSchemas(ctx context.Context) int {
+func registerSchemas(ctx context.Context) (int, error) {
 	rcl, err := sr.NewClient(sr.URLs(*registry))
 	if err != nil {
-		log.Fatal(err)
+		return 0, err
 	}
 	ship, err := rcl.CreateSchema(ctx, "shipments.avro-value", sr.Schema{Schema: shipmentSchema, Type: sr.TypeAvro})
 	if err != nil {
-		log.Fatalf("register shipment schema: %v", err)
+		return 0, fmt.Errorf("register shipment schema: %w", err)
 	}
 	if _, err := rcl.CreateSchema(ctx, "payments.v1-value", sr.Schema{Schema: paymentSchema, Type: sr.TypeJSON}); err != nil {
-		log.Fatalf("register payment schema: %v", err)
+		return 0, fmt.Errorf("register payment schema: %w", err)
 	}
 	log.Printf("schemas registered (shipment id %d)", ship.ID)
-	return ship.ID
+	return ship.ID, nil
 }
 
 type gen func(i int, ts time.Time) (key string, value any, headers []kgo.RecordHeader)
 
-func produceJSON(ctx context.Context, cl *kgo.Client, name string, n int, now time.Time, g gen) {
+func produceJSON(ctx context.Context, cl *kgo.Client, name string, n int, now time.Time, g gen) error {
 	recs := make([]*kgo.Record, 0, n)
 	for i := range n {
 		ts := now.Add(-time.Duration(n-i) * 7 * time.Second)
 		k, v, h := g(i, ts)
 		b, err := json.Marshal(v)
 		if err != nil {
-			log.Fatal(err)
+			return fmt.Errorf("%s: %w", name, err)
 		}
 		r := &kgo.Record{Topic: name, Value: b, Timestamp: ts, Headers: h}
 		if k != "" {
@@ -181,10 +210,10 @@ func produceJSON(ctx context.Context, cl *kgo.Client, name string, n int, now ti
 		}
 		recs = append(recs, r)
 	}
-	produce(ctx, cl, name, recs)
+	return produce(ctx, cl, name, recs)
 }
 
-func produceText(ctx context.Context, cl *kgo.Client, name string, n int, now time.Time) {
+func produceText(ctx context.Context, cl *kgo.Client, name string, n int, now time.Time) error {
 	recs := make([]*kgo.Record, 0, n)
 	for i := range n {
 		ts := now.Add(-time.Duration(n-i) * time.Minute)
@@ -194,13 +223,13 @@ func produceText(ctx context.Context, cl *kgo.Client, name string, n int, now ti
 		}
 		recs = append(recs, &kgo.Record{Topic: name, Value: []byte(line), Timestamp: ts})
 	}
-	produce(ctx, cl, name, recs)
+	return produce(ctx, cl, name, recs)
 }
 
-func produceAvro(ctx context.Context, cl *kgo.Client, id, n int, now time.Time) {
+func produceAvro(ctx context.Context, cl *kgo.Client, id, n int, now time.Time) error {
 	schema, err := avro.Parse(shipmentSchema)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	var hdr sr.ConfluentHeader
 	recs := make([]*kgo.Record, 0, n)
@@ -212,7 +241,7 @@ func produceAvro(ctx context.Context, cl *kgo.Client, id, n int, now time.Time) 
 		}
 		v := map[string]any{
 			"shipment_id": fmt.Sprintf("shp_%06d", i),
-			"order_id":    fmt.Sprintf("ord_%06d", rand.IntN(*count)),
+			"order_id":    orderID(),
 			"carrier":     pick(carriers),
 			"status":      pick([]string{"label_created", "in_transit", "out_for_delivery", "delivered"}),
 			"weight_kg":   float64(rand.IntN(3000)) / 100,
@@ -220,22 +249,27 @@ func produceAvro(ctx context.Context, cl *kgo.Client, id, n int, now time.Time) 
 		}
 		b, err := hdr.AppendEncode(nil, id, nil)
 		if err != nil {
-			log.Fatal(err)
+			return err
 		}
 		if b, err = schema.AppendEncode(b, v); err != nil {
-			log.Fatalf("avro encode: %v", err)
+			return fmt.Errorf("avro encode: %w", err)
 		}
 		recs = append(recs, &kgo.Record{Topic: "shipments.avro", Key: []byte(v["shipment_id"].(string)), Value: b, Timestamp: ts})
 	}
-	produce(ctx, cl, "shipments.avro", recs)
+	return produce(ctx, cl, "shipments.avro", recs)
 }
 
-func produce(ctx context.Context, cl *kgo.Client, name string, recs []*kgo.Record) {
+func produce(ctx context.Context, cl *kgo.Client, name string, recs []*kgo.Record) error {
 	if err := cl.ProduceSync(ctx, recs...).FirstErr(); err != nil {
-		log.Fatalf("produce %s: %v", name, err)
+		return fmt.Errorf("produce %s: %w", name, err)
 	}
 	log.Printf("topic %s: +%d records", name, len(recs))
+	return nil
 }
+
+// orderID is a random order that orders.v1 may hold, for records that
+// refer to one.
+func orderID() string { return fmt.Sprintf("ord_%06d", rand.IntN(*count)) }
 
 func hdr(k, v string) kgo.RecordHeader { return kgo.RecordHeader{Key: k, Value: []byte(v)} }
 
@@ -276,7 +310,7 @@ func paymentRecord(i int, ts time.Time) (string, any, []kgo.RecordHeader) {
 	}
 	return id, map[string]any{
 		"payment_id": id,
-		"order_id":   fmt.Sprintf("ord_%06d", rand.IntN(*count)),
+		"order_id":   orderID(),
 		"amount":     float64(1000+rand.IntN(90000)) / 100,
 		"currency":   pick(currency),
 		"method":     pick(methods),
@@ -337,24 +371,24 @@ func emailRecord(i int, ts time.Time) (string, any, []kgo.RecordHeader) {
 	return fmt.Sprintf("mail_%05d", i), map[string]any{
 		"to":       fmt.Sprintf("user%d@example.com", rand.IntN(400)),
 		"template": pick([]string{"order-confirmation", "shipment-update", "password-reset", "weekly-digest"}),
-		"vars":     map[string]any{"order_id": fmt.Sprintf("ord_%06d", rand.IntN(*count))},
+		"vars":     map[string]any{"order_id": orderID()},
 	}, nil
 }
 
 func dlqRecord(i int, ts time.Time) (string, any, []kgo.RecordHeader) {
-	return fmt.Sprintf("ord_%06d", rand.IntN(*count)), map[string]any{
-			"order_id": fmt.Sprintf("ord_%06d", rand.IntN(*count)),
-			"status":   "UNKNOWN_STATE",
-		}, []kgo.RecordHeader{
-			hdr("dlq.reason", pick([]string{"schema validation failed: total < 0", "unknown status UNKNOWN_STATE", "timeout calling inventory-service"})),
-			hdr("dlq.original-topic", "orders.v1"),
-			hdr("dlq.attempts", strconv.Itoa(1+rand.IntN(5))),
-		}
+	return orderID(), map[string]any{
+		"order_id": orderID(),
+		"status":   "UNKNOWN_STATE",
+	}, []kgo.RecordHeader{
+		hdr("dlq.reason", pick([]string{"schema validation failed: total < 0", "unknown status UNKNOWN_STATE", "timeout calling inventory-service"})),
+		hdr("dlq.original-topic", "orders.v1"),
+		hdr("dlq.attempts", strconv.Itoa(1+rand.IntN(5))),
+	}
 }
 
 // consumeGroups commits offsets for a few groups at different positions, so
 // the consumer-group pages show caught-up, lagging and stale groups.
-func consumeGroups(ctx context.Context) {
+func consumeGroups(ctx context.Context) error {
 	groups := []struct {
 		name   string
 		topics []string
@@ -368,14 +402,14 @@ func consumeGroups(ctx context.Context) {
 	}
 	cl, err := kgo.NewClient(kgo.SeedBrokers(*brokers))
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	defer cl.Close()
 	adm := kadm.NewClient(cl)
 	for _, g := range groups {
 		ends, err := adm.ListEndOffsets(ctx, g.topics...)
 		if err != nil {
-			log.Fatalf("end offsets %v: %v", g.topics, err)
+			return fmt.Errorf("end offsets %v: %w", g.topics, err)
 		}
 		offs := kadm.Offsets{}
 		ends.Each(func(o kadm.ListedOffset) {
@@ -383,8 +417,9 @@ func consumeGroups(ctx context.Context) {
 			offs.Add(kadm.Offset{Topic: o.Topic, Partition: o.Partition, At: at, LeaderEpoch: -1})
 		})
 		if err := adm.CommitAllOffsets(ctx, g.name, offs); err != nil {
-			log.Fatalf("commit %s: %v", g.name, err)
+			return fmt.Errorf("commit %s: %w", g.name, err)
 		}
 		log.Printf("group %s committed at %.0f%%", g.name, g.share*100)
 	}
+	return nil
 }

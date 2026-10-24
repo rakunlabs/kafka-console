@@ -3,6 +3,8 @@ package kafka
 import (
 	"slices"
 	"testing"
+
+	"github.com/twmb/franz-go/pkg/kadm"
 )
 
 func TestSortTopics(t *testing.T) {
@@ -62,5 +64,25 @@ func TestPageOf(t *testing.T) {
 		if got := pageOf(s, tt.offset, tt.limit); !slices.Equal(got, tt.want) {
 			t.Errorf("pageOf(offset=%d, limit=%d) = %v, want %v", tt.offset, tt.limit, got, tt.want)
 		}
+	}
+}
+
+func TestLogSizes(t *testing.T) {
+	part := func(p int32, size int64, future bool) kadm.DescribedLogDirPartition {
+		return kadm.DescribedLogDirPartition{Topic: "t", Partition: p, Size: size, IsFuture: future}
+	}
+
+	dirs := kadm.DescribedAllLogDirs{
+		1: {"/a": {Broker: 1, Dir: "/a", Topics: kadm.DescribedLogDirTopics{"t": {0: part(0, 10, false), 1: part(1, 20, false)}}}},
+		2: {"/b": {Broker: 2, Dir: "/b", Topics: kadm.DescribedLogDirTopics{"t": {0: part(0, 11, false), 1: part(1, 99, true)}}}},
+	}
+	topics := kadm.TopicDetails{"t": {Topic: "t", Partitions: kadm.PartitionDetails{
+		0: {Partition: 0, Leader: 1},
+		1: {Partition: 1, Leader: 2},
+	}}}
+
+	got := logSizes(dirs, topics)["t"]
+	if got.leader != 10 || got.replicated != 41 || got.partitions[0] != 10 || len(got.partitions) != 1 {
+		t.Fatalf("sizes = %+v", got)
 	}
 }

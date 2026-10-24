@@ -82,6 +82,11 @@ func TestResetOffsetsRefusesAnUnknownGroup(t *testing.T) {
 	if _, created := groups["biling"]; created {
 		t.Fatal("a reset created the group it was given")
 	}
+
+	_, err = c.AddGroupTopic(t.Context(), CreateGroupRequest{Group: "biling", Topic: "orders", Offsets: []PartitionOffset{{}}})
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("add topic: %v, want not found", err)
+	}
 }
 
 func TestResetAppliesReviewedTargets(t *testing.T) {
@@ -163,6 +168,36 @@ func TestResetRefusesMalformedReviewedPlan(t *testing.T) {
 		var invalid ErrInvalid
 		if !errors.As(err, &invalid) {
 			t.Fatalf("accepted malformed plan %+v: %v", plan, err)
+		}
+	}
+}
+
+func TestResetTarget(t *testing.T) {
+	b := offsetBounds{topic: "t", atTime: listed("t", map[int32]int64{0: 7, 1: -1}, nil)}
+
+	cases := []struct {
+		req       ResetRequest
+		p         int32
+		from, own int64
+		want      int64
+		wantErr   bool
+	}{
+		{req: ResetRequest{Strategy: "earliest"}, want: 2},
+		{req: ResetRequest{Strategy: "latest"}, want: 10},
+		{req: ResetRequest{Strategy: "offset", Offset: 50}, want: 10},
+		{req: ResetRequest{Strategy: "offsets"}, own: 1, want: 2},
+		{req: ResetRequest{Strategy: "timestamp"}, want: 7},
+		{req: ResetRequest{Strategy: "timestamp"}, p: 1, want: 10},
+		{req: ResetRequest{Strategy: "timestamp"}, p: 2, wantErr: true},
+		{req: ResetRequest{Strategy: "shift", Shift: -3}, from: 6, want: 3},
+		{req: ResetRequest{Strategy: "shift", Shift: 3}, from: -1, want: 5},
+		{req: ResetRequest{Strategy: "sideways"}, wantErr: true},
+	}
+
+	for _, tc := range cases {
+		got, err := resetTarget(tc.req, b, tc.p, 2, 10, tc.from, tc.own)
+		if (err != nil) != tc.wantErr || err == nil && got != tc.want {
+			t.Errorf("%+v p%d: got %d, %v; want %d", tc.req, tc.p, got, err, tc.want)
 		}
 	}
 }

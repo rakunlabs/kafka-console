@@ -1,12 +1,15 @@
 <script lang="ts">
   import { lagReading } from '../lib/lag'
+  import { errorMessage } from '../lib/http'
   import { resizable } from '../lib/resizable'
   import Pending from '../lib/Pending.svelte'
-  import { api, isAbort, type Cluster, type GroupDetail, type ResetPlan } from '../lib/api'
-  import { fmt, stateBadge, partitionList } from '../lib/format'
+  import { api, isAbort, type Cluster } from '../lib/api'
+  import { resource } from '../lib/resource.svelte'
+  import { fmt, stateBadge } from '../lib/format'
   import { href, go } from '../lib/router.svelte'
   import PartitionOffsets from '../lib/PartitionOffsets.svelte'
-  import Modal from '../lib/Modal.svelte'
+  import OffsetDialog from '../lib/OffsetDialog.svelte'
+  import ConfirmDialog from '../lib/ConfirmDialog.svelte'
   import { forgetNames } from '../lib/names'
   import { RefreshCw, Trash2, RotateCcw, Plus, Lock, Download, Upload } from '@lucide/svelte'
   import GroupTopicDialog from '../lib/GroupTopicDialog.svelte'
@@ -14,30 +17,20 @@
   import LagEta from '../lib/LagEta.svelte'
   import MoreRows from '../lib/MoreRows.svelte'
   import ResourceACLs from '../lib/ResourceACLs.svelte'
-  import { reviewedOffsets } from '../lib/offsetReset'
 
   let { cluster, name }: { cluster: Cluster; name: string } = $props()
 
-  let data = $state<GroupDetail>()
-  let error = $state('')
-  let loading = $state(false)
-
-  // Refreshes can overlap (Refresh, after a reset); the last one started wins.
-  let seq = 0
-  async function load() {
-    const id = ++seq
-    loading = true
-    error = ''
-    try {
-      const g = await api.group(cluster.name, name)
-      if (id === seq) data = g
-    } catch (e: any) {
-      if (id === seq && !isAbort(e)) error = e.message
-    } finally {
-      if (id === seq) loading = false
-    }
+  // A reload (Refresh, after a reset) replaces one still running.
+  const detail = resource(() => api.group(cluster.name, name))
+  // A failed backup is shown like a failed refresh, until the next load.
+  let backupError = $state('')
+  function load() {
+    backupError = ''
+    return detail.load()
   }
   load()
+  const data = $derived(detail.data)
+  const error = $derived(backupError || detail.error)
 
   const topics = $derived([...new Set((data?.partitions ?? []).map((p) => p.topic))])
   // Grouped in one pass; a group can read hundreds of topics.
@@ -60,12 +53,14 @@
   let backingUp = $state(false)
   async function backup() {
     backingUp = true
+    backupError = ''
+    const keep = detail.since()
     try {
       const g = await api.group(cluster.name, name)
-      data = g
+      keep(g)
       downloadBackup(backupOf(cluster.name, g))
-    } catch (e: any) {
-      if (!isAbort(e)) error = e.message
+    } catch (e) {
+      if (!isAbort(e)) backupError = errorMessage(e)
     } finally {
       backingUp = false
     }
@@ -80,101 +75,31 @@
   const messageAt = (topic: string, partition: number, offset: number) =>
     href(cluster.name, 'topics', topic, { p: String(partition), o: String(offset) })
 
-  // Offset reset
+  // Offset reset for every partition of one topic (or the ones typed).
+  let resetTopic = $state('')
   let resetting = $state(false)
-  let reset = $state({ topic: '', strategy: 'latest', offset: 0, timestamp: '', partitions: '' })
-  let plan = $state<ResetPlan[]>()
-  let resetError = $state('')
-  let busy = $state(false)
-  let done = $state(false)
 
   function openReset(topic: string) {
-    reset = { topic, strategy: 'latest', offset: 0, timestamp: '', partitions: '' }
-    plan = undefined
-    resetError = ''
-    done = false
+    resetTopic = topic
     resetting = true
-  }
-
-  const resetParts = $derived(partitionList(reset.partitions))
-  const resetKey = $derived(JSON.stringify([cluster.name, name, reset]))
-
-  function body(dry: boolean) {
-    return {
-      topic: reset.topic,
-      strategy: reset.strategy,
-      offset: reset.strategy === 'offset' ? Number(reset.offset) : undefined,
-      timestamp: reset.strategy === 'timestamp' && reset.timestamp ? new Date(reset.timestamp).getTime() : undefined,
-      partitions: resetParts ?? [],
-      dry_run: dry,
-    }
-  }
-
-  async function preview() {
-    const key = resetKey
-    busy = true
-    resetError = ''
-    plan = undefined
-    try {
-      const result = await api.resetOffsets(cluster.name, name, body(true))
-      if (key === resetKey && resetting) plan = result.partitions
-    } catch (e: any) {
-      resetError = e.message
-    } finally {
-      busy = false
-    }
-  }
-
-  async function apply() {
-    busy = true
-    resetError = ''
-    try {
-      plan = (await api.resetOffsets(cluster.name, name, reviewedOffsets(reset.topic, plan))).partitions
-      done = true
-      load()
-    } catch (e: any) {
-      resetError = e.message
-    } finally {
-      busy = false
-    }
   }
 
   // Delete committed offsets for one topic
   let dropTopic = $state('')
   let dropping = $state(false)
-  let dropError = $state('')
 
   async function dropOffsets() {
-    busy = true
-    dropError = ''
-    try {
-      await api.deleteGroupOffsets(cluster.name, name, dropTopic)
-      dropping = false
-      load()
-    } catch (e: any) {
-      dropError = e.message
-    } finally {
-      busy = false
-    }
+    await api.deleteGroupOffsets(cluster.name, name, dropTopic)
+    load()
   }
 
   // Delete group
   let deleting = $state(false)
-  let deleteError = $state('')
 
   async function remove() {
-    busy = true
-    deleteError = ''
-    try {
-      await api.deleteGroup(cluster.name, name)
-      forgetNames(cluster.name)
-      deleting = false
-      go(cluster.name, 'groups')
-    } catch (e: any) {
-      deleteError = e.message
-    } finally {
-      busy = false
-    }
+    await api.deleteGroup(cluster.name, name)
+    forgetNames(cluster.name)
+    go(cluster.name, 'groups')
   }
 </script>
 
@@ -183,14 +108,14 @@
   {#if data}<span class="badge {stateBadge(data.state)}"><span class="sq {stateBadge(data.state) || 'idle'}"></span>{data.state}</span>{/if}
   <span class="spacer"></span>
   <div class="acts">
-  <button onclick={load} disabled={loading}><RefreshCw size={14} class={loading ? 'animate-spin' : ''} />Refresh</button>
+  <button onclick={load} disabled={detail.loading}><RefreshCw size={14} class={detail.loading ? 'animate-spin' : ''} />Refresh</button>
   {#if !cluster.read_only}<button disabled={!data} onclick={() => (addingTopic = true)}><Plus size={14} />Add topic</button>{/if}
   <button disabled={!hasCommits || backingUp} title="Download the committed offsets as a JSON file" onclick={backup}><Download size={14} />Back up offsets</button>
   {#if !cluster.read_only}<button disabled={!data} title="Commit offsets from a backup file" onclick={() => (restoring = true)}><Upload size={14} />Restore…</button>{/if}
   {#if cluster.features.delete_group && !cluster.read_only}
     <button class="danger" disabled={!data || data.members.length > 0}
       title={data && data.members.length > 0 ? 'Cannot delete a group with active members' : ''}
-      onclick={() => { deleteError = ''; deleting = true }}><Trash2 size={14} />Delete group</button>
+      onclick={() => (deleting = true)}><Trash2 size={14} />Delete group</button>
   {/if}
   </div>
 </div>
@@ -225,7 +150,7 @@
       {#if cluster.features.delete_group && !cluster.read_only}
       <button class="danger" disabled={(data?.members.length ?? 0) > 0}
         title={(data?.members.length ?? 0) > 0 ? 'Cannot delete offsets for a group with active members' : 'Deletes committed offsets for this topic'}
-        onclick={() => { dropError = ''; dropTopic = t.topic; dropping = true }}>Delete offsets</button>
+        onclick={() => { dropTopic = t.topic; dropping = true }}>Delete offsets</button>
       {/if}
       </span>
     </div>
@@ -267,86 +192,34 @@
   {/if}
 {/if}
 
-<GroupTopicDialog {cluster} group={name} existingTopics={topics} activeMembers={data?.members.length ?? 0} bind:open={addingTopic} ondone={load} />
-<RestoreOffsetsDialog {cluster} group={name} activeMembers={data?.members.length ?? 0} bind:open={restoring} ondone={load} />
+{#if addingTopic}
+  <GroupTopicDialog {cluster} group={name} existingTopics={topics} activeMembers={data?.members.length ?? 0} bind:open={addingTopic} ondone={load} />
+{/if}
+{#if restoring}
+  <RestoreOffsetsDialog {cluster} group={name} activeMembers={data?.members.length ?? 0} bind:open={restoring} ondone={load} />
+{/if}
 
-<Modal title="Reset offsets: {reset.topic}" bind:open={resetting} width={560} locked={busy}>
-  {#if data && data.members.length > 0}
-    <div class="error">This group has {data.members.length} active members. Stop the consumers before resetting offsets. You can still preview.</div>
-  {/if}
-  <div class="grid2">
-    <label>Target
-      <select bind:value={reset.strategy} disabled={busy} onchange={() => (plan = undefined)}>
-        <option value="earliest">Earliest</option>
-        <option value="latest">Latest</option>
-        <option value="offset">Specific offset</option>
-        <option value="timestamp">Timestamp</option>
-      </select>
-    </label>
-    {#if reset.strategy === 'offset'}
-      <label>Offset <input type="number" min="0" bind:value={reset.offset} disabled={busy} oninput={() => (plan = undefined)} /></label>
-    {:else if reset.strategy === 'timestamp'}
-      <label>Time <input type="datetime-local" step="1" bind:value={reset.timestamp} disabled={busy} oninput={() => (plan = undefined)} /></label>
-    {:else}
-      <div></div>
-    {/if}
-  </div>
-  <label>Partitions (empty = all) <input placeholder="0, 1, 2" bind:value={reset.partitions} disabled={busy} oninput={() => (plan = undefined)} aria-invalid={!resetParts} /></label>
-  {#if !resetParts}<div class="error small">Use partition numbers separated by commas, e.g. 0, 1, 2.</div>{/if}
+{#if resetting}
+  <OffsetDialog {cluster} group={name} topic={resetTopic} partitions={[]} pickPartitions
+    activeMembers={data?.members.length ?? 0} bind:open={resetting} ondone={load} />
+{/if}
 
-  {#if plan}
-    <div class="panel plan">
-      <table>
-        <thead><tr><th class="num" title="Partition"><abbr>P</abbr></th><th class="num">Current</th><th class="num">New</th><th class="num">Diff</th></tr></thead>
-        <tbody>
-          {#each plan as p (p.partition)}
-            <tr>
-              <td class="num mono">{p.partition}</td>
-              <td class="num mono">{fmt(p.from)}</td>
-              <td class="num mono">{fmt(p.to)}</td>
-              <td class="num mono">{p.from < 0 ? '—' : (p.to - p.from > 0 ? '+' : '') + (p.to - p.from).toLocaleString()}</td>
-            </tr>
-          {/each}
-        </tbody>
-      </table>
-    </div>
-  {/if}
-  {#if done}<div class="ok">Offsets committed.</div>{/if}
-  {#if resetError}<div class="error">{resetError}</div>{/if}
+{#if dropping}
+  <ConfirmDialog title="Delete offsets: {dropTopic}" bind:open={dropping} onconfirm={dropOffsets}>
+    <p>All offsets committed by group <b class="mono">{name}</b> for topic <b class="mono">{dropTopic}</b> will be deleted. When the consumer restarts, it will start according to <code>auto.offset.reset</code>.</p>
+  </ConfirmDialog>
+{/if}
 
-  {#snippet footer()}
-    <button onclick={() => (resetting = false)} disabled={busy}>{done ? 'Close' : 'Cancel'}</button>
-    {#if !done}
-      <button onclick={preview} disabled={busy || !resetParts}>Preview</button>
-      <button class="danger solid" disabled={busy || !plan || !resetParts || (data?.members.length ?? 0) > 0} onclick={apply}>Apply</button>
-    {/if}
-  {/snippet}
-</Modal>
-
-<Modal title="Delete offsets: {dropTopic}" bind:open={dropping}>
-  <p>All offsets committed by group <b class="mono">{name}</b> for topic <b class="mono">{dropTopic}</b> will be deleted. When the consumer restarts, it will start according to <code>auto.offset.reset</code>.</p>
-  {#if dropError}<div class="error">{dropError}</div>{/if}
-  {#snippet footer()}
-    <button onclick={() => (dropping = false)}>Cancel</button>
-    <button class="danger solid" disabled={busy} onclick={dropOffsets}>Delete</button>
-  {/snippet}
-</Modal>
-
-<Modal title="Delete group" bind:open={deleting}>
-  <p>Group <b class="mono">{name}</b> and all its committed offsets will be deleted.</p>
-  {#if deleteError}<div class="error">{deleteError}</div>{/if}
-  {#snippet footer()}
-    <button onclick={() => (deleting = false)}>Cancel</button>
-    <button class="danger solid" disabled={busy} onclick={remove}>Delete</button>
-  {/snippet}
-</Modal>
+{#if deleting}
+  <ConfirmDialog title="Delete group" bind:open={deleting} onconfirm={remove}>
+    <p>Group <b class="mono">{name}</b> and all its committed offsets will be deleted.</p>
+  </ConfirmDialog>
+{/if}
 
 <style>
   .thead { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; margin: 18px 0 8px; }
   .thead h2 { min-width: 0; overflow-wrap: anywhere; }
   .acts { display: flex; flex-wrap: wrap; gap: 8px; }
   .noaccess { padding: 12px 14px; font-size: 13px; color: var(--text-2); }
-  .mtop { margin: 24px 0 8px; }
   .lagnum { background: var(--sel); padding: 0 4px; }
-  .plan { max-height: 260px; overflow: auto; }
 </style>

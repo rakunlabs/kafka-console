@@ -1,8 +1,10 @@
 <script lang="ts">
   import { untrack } from 'svelte'
+  import { errorMessage } from '../lib/http'
   import { api, type Cluster, type SchemaVersion, type Message, type ProduceBody, type TopicName } from '../lib/api'
-  import { time, jsonProblem } from '../lib/format'
-  import { messageDraft, produceChanges, formatPayload } from '../lib/produce'
+  import { time, jsonProblem, isBase64 } from '../lib/format'
+  import { schemaSample } from '../lib/schemaSample'
+  import { messageDraft, produceChanges, formatPayload, compressions } from '../lib/produce'
   import { names } from '../lib/names'
   import { href } from '../lib/router.svelte'
   import TopicPicker from '../lib/TopicPicker.svelte'
@@ -22,8 +24,8 @@
     try {
       topics = (await names(cluster.name)).topics
       choosingTarget = true
-    } catch (e: any) {
-      topicsError = `Could not load topics: ${e.message}. Try changing the target again.`
+    } catch (e) {
+      topicsError = `Could not load topics: ${errorMessage(e)}. Try changing the target again.`
     }
   }
 
@@ -70,60 +72,12 @@
     } catch {}
   }
 
-  // A skeleton built from the Avro record so the user starts from a valid shape.
+  // A skeleton built from the schema so the user starts from a valid shape.
   function template() {
     if (!schema) return
     try {
-      if (schema.type === 'AVRO') value = JSON.stringify(avroSample(JSON.parse(schema.schema)), null, 2)
-      else if (schema.type === 'JSON') value = JSON.stringify(jsonSample(JSON.parse(schema.schema)), null, 2)
-      else value = '{}'
+      value = schemaSample(schema.type, schema.schema)
     } catch {}
-  }
-
-  function avroSample(s: any, depth = 0): any {
-    if (depth > 8) return null
-    if (typeof s === 'string') {
-      return ({ null: null, boolean: false, int: 0, long: 0, float: 0, double: 0, string: '', bytes: '' } as Record<string, any>)[s] ?? {}
-    }
-    if (Array.isArray(s)) return avroSample(s.find((t) => t !== 'null') ?? 'null', depth + 1)
-    if (s.logicalType === 'timestamp-millis' || s.logicalType === 'timestamp-micros') return new Date().toISOString()
-    if (s.logicalType === 'date') return new Date().toISOString().slice(0, 10)
-    if (s.logicalType === 'decimal') return '0.00'
-    switch (s.type) {
-      case 'record':
-        return Object.fromEntries((s.fields ?? []).map((f: any) => [f.name, 'default' in f ? f.default : avroSample(f.type, depth + 1)]))
-      case 'enum':
-        return s.symbols?.[0] ?? ''
-      case 'array':
-        return []
-      case 'map':
-        return {}
-      case 'fixed':
-        return ''
-      default:
-        return avroSample(s.type, depth + 1)
-    }
-  }
-
-  function jsonSample(s: any, depth = 0): any {
-    if (!s || depth > 8) return null
-    if (s.default !== undefined) return s.default
-    if (s.enum) return s.enum[0]
-    const t = Array.isArray(s.type) ? s.type.find((x: string) => x !== 'null') : s.type
-    switch (t) {
-      case 'object':
-        return Object.fromEntries(Object.entries(s.properties ?? {}).map(([k, v]) => [k, jsonSample(v, depth + 1)]))
-      case 'array':
-        return []
-      case 'string':
-        return ''
-      case 'integer':
-      case 'number':
-        return 0
-      case 'boolean':
-        return false
-    }
-    return null
   }
 
   let key = $state(initial?.key ?? '')
@@ -156,8 +110,7 @@
       ...(!nullValue && valueEncoding === 'base64' ? [['Value', value]] : []),
       ...headers.filter((h) => h.key && !h.null && h.encoding === 'base64').map((h) => [`Header ${h.key}`, h.value]),
     ]) {
-      // Match the server's padded RFC 4648 encoding, allowing CR/LF.
-      if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(text.trim().replace(/[\r\n]/g, ''))) return `${label} must be valid base64.`
+      if (!isBase64(text)) return `${label} must be valid base64.`
     }
     return ''
   })
@@ -194,7 +147,7 @@
   function submit() {
     if (busy || cluster.read_only || invalid) return
     if (source) {
-      pending = { target, body: JSON.parse(JSON.stringify(body())) }
+      pending = { target, body: $state.snapshot(body()) }
       confirmation = ''
       error = ''
       reviewing = true
@@ -211,8 +164,8 @@
       const res = await api.produce(cluster.name, destination, request)
       sent = [{ ...res, topic: destination }, ...sent].slice(0, 10)
       reviewing = false
-    } catch (e: any) {
-      error = e.message
+    } catch (e) {
+      error = errorMessage(e)
     } finally {
       busy = false
     }
@@ -278,11 +231,7 @@
         </label>
         <label>Compression
           <select bind:value={compression}>
-            <option value="">None</option>
-            <option value="gzip">gzip</option>
-            <option value="snappy">snappy</option>
-            <option value="lz4">lz4</option>
-            <option value="zstd">zstd</option>
+            {#each compressions as [id, label] (id)}<option value={id}>{label}</option>{/each}
           </select>
         </label>
       </div>

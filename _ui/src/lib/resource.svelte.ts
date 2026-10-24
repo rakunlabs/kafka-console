@@ -1,4 +1,5 @@
 import { isAbort, withSignal } from './api'
+import { errorMessage } from './http'
 import { onDestroy } from 'svelte'
 
 // A page's data from one read, reloadable. A load replaces the one still
@@ -13,6 +14,7 @@ export function resource<T>(fetch: () => Promise<T>) {
   onDestroy(() => { ctl?.abort(); ctl = undefined })
 
   async function load() {
+    started++
     ctl?.abort()
     const c = (ctl = new AbortController())
     loading = true
@@ -21,10 +23,26 @@ export function resource<T>(fetch: () => Promise<T>) {
       if (ctl !== c || c.signal.aborted) return
       data = value
       error = ''
-    } catch (e: any) {
-      if (ctl === c && !isAbort(e)) error = e.message
+    } catch (e) {
+      if (ctl === c && !isAbort(e)) error = errorMessage(e)
     } finally {
       if (ctl === c) loading = false
+    }
+  }
+
+  // For data read elsewhere: call before the read starts, then pass the
+  // value to the returned function. It is kept, replacing a load still
+  // running, unless a load started after the read did.
+  let started = 0
+  function since() {
+    const at = started
+    return (value: T) => {
+      if (started !== at) return
+      ctl?.abort()
+      ctl = undefined
+      data = value
+      error = ''
+      loading = false
     }
   }
 
@@ -42,6 +60,7 @@ export function resource<T>(fetch: () => Promise<T>) {
       return loading
     },
     load,
+    since,
   }
 }
 
@@ -52,5 +71,25 @@ export async function copyText(text: string): Promise<boolean> {
     return true
   } catch {
     return false
+  }
+}
+
+// copier shows which of several copy buttons copied last, for a moment:
+// copied is its key until it fades.
+export function copier(ms = 1200) {
+  let copied = $state<string | null>(null)
+  let timer: ReturnType<typeof setTimeout> | undefined
+  onDestroy(() => clearTimeout(timer))
+  return {
+    get copied() {
+      return copied
+    },
+    async copy(text: string, key = 'value') {
+      if (!(await copyText(text))) return false
+      copied = key
+      clearTimeout(timer)
+      timer = setTimeout(() => (copied = null), ms)
+      return true
+    },
   }
 }

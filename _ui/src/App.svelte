@@ -1,5 +1,6 @@
 <script lang="ts">
   import Pending from './lib/Pending.svelte'
+  import { errorMessage } from './lib/http'
   import { api, type Cluster } from './lib/api'
   import { app } from './lib/features.svelte'
   import { router, href, go } from './lib/router.svelte'
@@ -62,7 +63,7 @@
         go(c.some((x) => x.name === last) ? last! : c[0].name)
       }
     })
-    .catch((e) => (error = e.message))
+    .catch((e) => (error = errorMessage(e)))
 
   const route = $derived(router.route)
   const current = $derived(clusters.find((c) => c.name === route.cluster))

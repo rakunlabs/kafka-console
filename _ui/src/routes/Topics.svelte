@@ -1,5 +1,6 @@
 <script lang="ts">
   import { resizable } from '../lib/resizable'
+  import { errorMessage } from '../lib/http'
   import Pending from '../lib/Pending.svelte'
   import { untrack } from 'svelte'
   import { api, type Cluster, type TopicQuery, type TopicSummary } from '../lib/api'
@@ -65,8 +66,8 @@
       creating = false
       forgetNames(cluster.name)
       go(cluster.name, 'topics', form.name.trim())
-    } catch (e: any) {
-      createError = e.message
+    } catch (e) {
+      createError = errorMessage(e)
     } finally {
       busy = false
     }

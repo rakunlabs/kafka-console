@@ -637,3 +637,16 @@ html.col-resizing, html.col-resizing * { cursor: col-resize !important; user-sel
 .markdown blockquote { border-left: 3px solid var(--border-strong); padding-left: 12px; color: var(--text-2); margin: 0 0 10px; }
 .markdown a { text-decoration: underline; }
 }
+
+/* Dialog content shared by the write dialogs (offsets, resend, replay,
+   import, restore). */
+.lead { font-size: 13px; color: var(--text-2); }
+.lead b { color: var(--text); font-weight: 600; }
+.warnbox { display: flex; gap: 8px; align-items: flex-start; padding: 9px 11px; font-size: 13px; color: var(--warn); background: var(--warn-soft); border-radius: var(--radius); }
+.warnbox svg { flex: none; margin-top: 1px; }
+.donemsg { display: flex; align-items: center; gap: 6px; font-size: 14px; color: var(--ok); }
+.donemsg b, .donemsg a { color: var(--text); }
+.err { color: var(--danger); font-size: 13px; }
+/* An option: a checkbox with a line of explanation under its label. */
+.check.opt { align-items: flex-start; flex-wrap: wrap; }
+.check.opt > .hint { display: block; margin-left: 22px; font-size: 12px; color: var(--text-3); }

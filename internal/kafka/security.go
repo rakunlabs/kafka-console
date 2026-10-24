@@ -12,9 +12,9 @@ import (
 	"github.com/twmb/franz-go/pkg/kmsg"
 )
 
-// ErrUnsupported means the broker does not implement the request, for
-// example ACLs on a cluster without an authorizer.
-var ErrUnsupported = errors.New("not supported by this cluster")
+// errTooOldText is kgo's answer for a request the broker's ApiVersions does
+// not list, e.g. ElectLeaders on Redpanda. It has no exported sentinel.
+const errTooOldText = "broker is too old"
 
 func unsupported(err error) error {
 	if errors.Is(err, kerr.SecurityDisabled) || errors.Is(err, kerr.UnsupportedVersion) ||
@@ -22,9 +22,7 @@ func unsupported(err error) error {
 		return fmt.Errorf("%w: %w", ErrUnsupported, err)
 	}
 
-	// kgo's answer for a request the broker's ApiVersions does not list,
-	// e.g. ElectLeaders on Redpanda. It has no exported sentinel.
-	if strings.HasPrefix(err.Error(), "broker is too old") || strings.Contains(err.Error(), ": broker is too old") {
+	if strings.HasPrefix(err.Error(), errTooOldText) || strings.Contains(err.Error(), ": "+errTooOldText) {
 		return fmt.Errorf("%w: the broker does not offer this request", ErrUnsupported)
 	}
 
@@ -85,12 +83,7 @@ func (c *Client) describeACLs(ctx context.Context, r *ACLFor) ([]ACL, error) {
 	}
 
 	if err := kerr.ErrorForCode(resp.ErrorCode); err != nil {
-		msg := ""
-		if resp.ErrorMessage != nil {
-			msg = " " + *resp.ErrorMessage
-		}
-
-		return nil, fmt.Errorf("describe acls; %w%s", unsupported(err), msg)
+		return nil, respErr("describe acls", unsupported(err), message(resp.ErrorMessage))
 	}
 
 	out := []ACL{}
@@ -227,12 +220,7 @@ func (c *Client) CreateACLs(ctx context.Context, acls []ACL) error {
 
 	for _, r := range resp.Results {
 		if err := kerr.ErrorForCode(r.ErrorCode); err != nil {
-			msg := ""
-			if r.ErrorMessage != nil {
-				msg = " " + *r.ErrorMessage
-			}
-
-			return fmt.Errorf("create acl; %w%s", unsupported(err), msg)
+			return respErr("create acl", unsupported(err), message(r.ErrorMessage))
 		}
 	}
 
@@ -271,7 +259,7 @@ func (c *Client) DeleteACL(ctx context.Context, a ACL) (int, error) {
 
 	for _, r := range resp.Results {
 		if err := kerr.ErrorForCode(r.ErrorCode); err != nil {
-			return 0, fmt.Errorf("delete acl; %w", unsupported(err))
+			return 0, respErr("delete acl", unsupported(err), message(r.ErrorMessage))
 		}
 
 		deleted += len(r.MatchingACLs)
@@ -352,7 +340,7 @@ func (c *Client) UpsertUser(ctx context.Context, req UpsertUserRequest) error {
 
 	for _, r := range resp {
 		if r.Err != nil {
-			return fmt.Errorf("upsert user; %w %s", unsupported(r.Err), r.ErrMessage)
+			return respErr("upsert user", unsupported(r.Err), r.ErrMessage)
 		}
 	}
 
@@ -400,7 +388,7 @@ func (c *Client) DeleteUser(ctx context.Context, name, mechanism string) error {
 
 	for _, r := range resp {
 		if r.Err != nil {
-			return fmt.Errorf("delete user; %w %s", unsupported(r.Err), r.ErrMessage)
+			return respErr("delete user", unsupported(r.Err), r.ErrMessage)
 		}
 	}
 
@@ -480,7 +468,7 @@ func (c *Client) AlterQuota(ctx context.Context, req AlterQuotaRequest) error {
 
 	for _, r := range resp {
 		if r.Err != nil {
-			return fmt.Errorf("alter quota; %w %s", unsupported(r.Err), r.ErrMessage)
+			return respErr("alter quota", unsupported(r.Err), r.ErrMessage)
 		}
 	}
 

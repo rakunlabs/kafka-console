@@ -1,3 +1,5 @@
+import { inputMs } from './format.ts'
+
 export const timeStarts = [
   { value: '15m', label: 'Last 15 min', milliseconds: 15 * 60_000 },
   { value: '1h', label: 'Last hour', milliseconds: 3_600_000 },
@@ -27,8 +29,8 @@ export function messageStart(start: MessageStart, fields: StartFields, now = Dat
   if (problem) throw new Error(problem)
   if (start === 'custom') return {
     start: 'newest',
-    since: fields.since ? new Date(fields.since).getTime() : undefined,
-    until: fields.until ? new Date(fields.until).getTime() : undefined,
+    since: inputMs(fields.since),
+    until: inputMs(fields.until),
   }
   const preset = timeStarts.find((s) => s.value === start)
   if (preset) return { start: 'newest', since: now - preset.milliseconds, until: now }

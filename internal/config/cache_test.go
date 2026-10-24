@@ -39,12 +39,12 @@ func TestLimitsForPrefersCluster(t *testing.T) {
 		t.Errorf("local = %+v, want the global limits", got)
 	}
 
-	if err := c.validate(); err != nil {
+	if err := c.prepare(); err != nil {
 		t.Fatalf("valid limits refused: %v", err)
 	}
 
 	c.Clusters["prod"].Limits.Streams = -1
-	if err := c.validate(); err == nil || !strings.Contains(err.Error(), "clusters.prod.limits.streams") {
+	if err := c.prepare(); err == nil || !strings.Contains(err.Error(), "clusters.prod.limits.streams") {
 		t.Errorf("a negative cluster limit must be refused by name, got %v", err)
 	}
 }

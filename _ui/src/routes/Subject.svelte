@@ -1,9 +1,10 @@
 <script lang="ts">
   import { copyText } from '../lib/resource.svelte'
+  import { errorMessage } from '../lib/http'
   import Pending from '../lib/Pending.svelte'
   import { api, isAbort, type Cluster, type SubjectDetail } from '../lib/api'
   import { href, go, router } from '../lib/router.svelte'
-  import Modal from '../lib/Modal.svelte'
+  import ConfirmDialog from '../lib/ConfirmDialog.svelte'
   import SchemaEditor from '../lib/SchemaEditor.svelte'
   import { Plus, Trash2 } from '@lucide/svelte'
 
@@ -16,8 +17,8 @@
     error = ''
     try {
       data = await api.subject(cluster.name, name)
-    } catch (e: any) {
-      if (!isAbort(e)) error = e.message
+    } catch (e) {
+      if (!isAbort(e)) error = errorMessage(e)
     }
   }
   load()
@@ -72,8 +73,8 @@
     try {
       await api.setCompatibility(cluster.name, name, level)
       await load()
-    } catch (e: any) {
-      actionError = e.message
+    } catch (e) {
+      actionError = errorMessage(e)
     } finally {
       busy = false
     }
@@ -85,13 +86,10 @@
   let deleting = $state(false)
   let deleteTarget = $state<{ version?: number }>({})
   let permanent = $state(false)
-  let confirm = $state('')
 
   function askDelete(version?: number) {
     deleteTarget = { version }
     permanent = false
-    confirm = ''
-    actionError = ''
     deleting = true
   }
 
@@ -102,19 +100,11 @@
   )
 
   async function remove() {
-    busy = true
-    actionError = ''
-    try {
-      if (deleteTarget.version) await api.deleteSchemaVersion(cluster.name, name, deleteTarget.version, permanent || alreadySoft)
-      else await api.deleteSubject(cluster.name, name, permanent || alreadySoft)
-      deleting = false
-      if (!deleteTarget.version && (permanent || alreadySoft)) go(cluster.name, 'schemas')
-      else load()
-    } catch (e: any) {
-      actionError = e.message
-    } finally {
-      busy = false
-    }
+    const hard = permanent || alreadySoft
+    if (deleteTarget.version) await api.deleteSchemaVersion(cluster.name, name, deleteTarget.version, hard)
+    else await api.deleteSubject(cluster.name, name, hard)
+    if (!deleteTarget.version && hard) go(cluster.name, 'schemas')
+    else load()
   }
 
   const copy = (text: string) => void copyText(text)
@@ -213,34 +203,28 @@
   </div>
 {/if}
 
-{#if current}
+{#if current && adding}
   <SchemaEditor {cluster} bind:open={adding} types={[current.type]} subject={name}
     initial={{ type: current.type, schema: current.schema, references: current.references }}
     onsaved={() => { load(); go(cluster.name, 'schemas', name) }} />
 {/if}
 
-<Modal title={deleteTarget.version ? `Delete version v${deleteTarget.version}` : 'Delete subject'} bind:open={deleting}>
-  {#if alreadySoft}
-    <p>This {deleteTarget.version ? 'version' : 'subject'} is already soft-deleted. Continuing will delete it <b>permanently</b>, and messages that use its schema ID can no longer be decoded.</p>
-  {:else}
-    <p>
-      {#if deleteTarget.version}Version <b>v{deleteTarget.version}</b> of subject <b class="mono">{name}</b> will be deleted.
-      {:else}All versions of subject <b class="mono">{name}</b> will be deleted.{/if}
-      Soft delete can be undone; schema IDs remain readable.
-    </p>
-    <label class="check"><input type="checkbox" bind:checked={permanent} /> Delete permanently (hard delete)</label>
-  {/if}
-  {#if permanent || alreadySoft}
-    <label>Type the subject name to confirm <input class="mono" bind:value={confirm} /></label>
-  {/if}
-  {#if actionError}<div class="error">{actionError}</div>{/if}
-  {#snippet footer()}
-    <button onclick={() => (deleting = false)}>Cancel</button>
-    <button class="danger solid" disabled={busy || ((permanent || alreadySoft) && confirm !== name)} onclick={remove}>
-      {permanent || alreadySoft ? 'Delete permanently' : 'Delete'}
-    </button>
-  {/snippet}
-</Modal>
+{#if deleting}
+  <ConfirmDialog title={deleteTarget.version ? `Delete version v${deleteTarget.version}` : 'Delete subject'} bind:open={deleting}
+    requireText={permanent || alreadySoft ? name : undefined} requirePrompt="Type the subject name to confirm"
+    confirmLabel={permanent || alreadySoft ? 'Delete permanently' : 'Delete'} onconfirm={remove}>
+    {#if alreadySoft}
+      <p>This {deleteTarget.version ? 'version' : 'subject'} is already soft-deleted. Continuing will delete it <b>permanently</b>, and messages that use its schema ID can no longer be decoded.</p>
+    {:else}
+      <p>
+        {#if deleteTarget.version}Version <b>v{deleteTarget.version}</b> of subject <b class="mono">{name}</b> will be deleted.
+        {:else}All versions of subject <b class="mono">{name}</b> will be deleted.{/if}
+        Soft delete can be undone; schema IDs remain readable.
+      </p>
+      <label class="check"><input type="checkbox" bind:checked={permanent} /> Delete permanently (hard delete)</label>
+    {/if}
+  </ConfirmDialog>
+{/if}
 
 <style>
   .compat { padding: 2px 6px; margin-left: 4px; }

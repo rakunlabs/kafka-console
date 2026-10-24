@@ -1,5 +1,6 @@
 <script lang="ts">
   import { resizable } from './resizable'
+  import { errorMessage } from './http'
   import type { ConfigChange, ConfigEntry } from './api'
 
   let {
@@ -44,8 +45,8 @@
     try {
       await save(changes)
       editing = ''
-    } catch (e: any) {
-      error = e.message
+    } catch (e) {
+      error = errorMessage(e)
     } finally {
       busy = false
     }

@@ -1,19 +1,34 @@
 package server
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 
 	"github.com/rakunlabs/ada"
+	"github.com/twmb/franz-go/pkg/kadm"
+	"github.com/twmb/franz-go/pkg/kerr"
 
 	"github.com/rakunlabs/kafka-console/internal/kafka"
-	"github.com/rakunlabs/kafka-console/internal/script"
 )
 
 // handle runs fn with the request's cluster and replies with its result, or
-// 204 when the result is nil.
+// 204 when the result is nil. Handlers parse and bind their input before
+// calling it, so a bad request is a 400 whichever cluster it names.
 func (s *Server) handle(c *ada.Context, fn func(cl *kafka.Client) (any, error)) error {
+	return s.reply(c, http.StatusOK, fn)
+}
+
+// created is handle answering 201 for what fn made.
+func (s *Server) created(c *ada.Context, fn func(cl *kafka.Client) (any, error)) error {
+	return s.reply(c, http.StatusCreated, fn)
+}
+
+func (s *Server) reply(c *ada.Context, status int, fn func(cl *kafka.Client) (any, error)) error {
 	cl, err := s.client(c)
 	if err != nil {
 		return err
@@ -28,7 +43,18 @@ func (s *Server) handle(c *ada.Context, fn func(cl *kafka.Client) (any, error)) 
 		return c.SendNoContent()
 	}
 
-	return c.SendJSON(out)
+	return c.SetStatus(status).SendJSON(out)
+}
+
+func (s *Server) client(c *ada.Context) (*kafka.Client, error) {
+	name := c.Request.PathValue("cluster")
+
+	cl, ok := s.registry.Get(name)
+	if !ok {
+		return nil, ada.NewHTTPError(http.StatusNotFound, fmt.Sprintf("cluster %q not found", name))
+	}
+
+	return cl, nil
 }
 
 func bind[T any](c *ada.Context) (T, error) {
@@ -51,400 +77,128 @@ func bindErr(err error) error {
 	return ada.WrapHTTPError(http.StatusBadRequest, err)
 }
 
-// ─── Brokers ──────────────────────────────────────────────
+// writeJSONError answers outside a handler (middleware, unknown routes) in
+// the same {"message": …} shape ada gives handler errors.
+func writeJSONError(w http.ResponseWriter, status int, msg string) {
+	b, _ := json.Marshal(map[string]string{"message": msg})
 
-func brokerID(c *ada.Context) (int32, error) {
-	n, err := strconv.ParseInt(c.Request.PathValue("broker"), 10, 32)
-	if err != nil {
-		return 0, ada.NewHTTPError(http.StatusBadRequest, "broker must be a number")
-	}
-
-	return int32(n), nil
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = w.Write(b)
 }
 
-func (s *Server) broker(c *ada.Context) error {
-	id, err := brokerID(c)
-	if err != nil {
-		return err
+// maxPage caps one page so a single request cannot ask for stats, lag or
+// versions of every item in a large cluster.
+const maxPage = 500
+
+// pageParams reads offset and limit; a missing or too large limit is maxPage.
+func pageParams(q url.Values) (offset, limit int, err error) {
+	for _, p := range []struct {
+		key string
+		dst *int
+	}{{"offset", &offset}, {"limit", &limit}} {
+		if v := q.Get(p.key); v != "" {
+			n, err := strconv.Atoi(v)
+			if err != nil || n < 0 {
+				return 0, 0, ada.WrapHTTPError(http.StatusBadRequest, fmt.Errorf("%s must be a non-negative integer", p.key))
+			}
+			*p.dst = n
+		}
 	}
 
-	return s.handle(c, func(cl *kafka.Client) (any, error) { return cl.Broker(c.Request.Context(), id) })
+	if limit == 0 || limit > maxPage {
+		limit = maxPage
+	}
+
+	return offset, limit, nil
 }
 
-func (s *Server) alterBrokerConfigs(c *ada.Context) error {
-	id, err := brokerID(c)
-	if err != nil {
-		return err
-	}
+// fail maps domain errors to HTTP errors whose text is safe to show.
+func fail(err error) error {
+	var (
+		invalid  kafka.ErrInvalid
+		conflict kafka.ErrConflict
+	)
 
-	req, err := bind[[]kafka.ConfigChange](c)
-	if err != nil {
-		return err
-	}
-
-	return s.handle(c, func(cl *kafka.Client) (any, error) {
-		return nil, cl.AlterBrokerConfigs(c.Request.Context(), id, req)
-	})
-}
-
-// ─── Topics ───────────────────────────────────────────────
-
-func (s *Server) alterTopicConfigs(c *ada.Context) error {
-	req, err := bind[[]kafka.ConfigChange](c)
-	if err != nil {
-		return err
-	}
-
-	return s.handle(c, func(cl *kafka.Client) (any, error) {
-		return nil, cl.AlterTopicConfigs(c.Request.Context(), c.Request.PathValue("topic"), req)
-	})
-}
-
-func (s *Server) addPartitions(c *ada.Context) error {
-	req, err := bind[struct {
-		Total int `json:"total"`
-	}](c)
-	if err != nil {
-		return err
-	}
-
-	if req.Total <= 0 {
-		return ada.NewHTTPError(http.StatusBadRequest, "total must be positive")
-	}
-
-	return s.handle(c, func(cl *kafka.Client) (any, error) {
-		return nil, cl.AddPartitions(c.Request.Context(), c.Request.PathValue("topic"), req.Total)
-	})
-}
-
-func (s *Server) deleteRecords(c *ada.Context) error {
-	req, err := bind[kafka.DeleteRecordsRequest](c)
-	if err != nil {
-		return err
-	}
-
-	return s.handle(c, func(cl *kafka.Client) (any, error) {
-		return cl.DeleteRecords(c.Request.Context(), c.Request.PathValue("topic"), req)
-	})
-}
-
-// checkFilter lints a message filter with the engine that will run it. It is
-// cluster independent and touches no data.
-func (s *Server) checkFilter(c *ada.Context) error {
-	req, err := bind[struct {
-		Source string `json:"source"`
-	}](c)
-	if err != nil {
-		return err
-	}
-
-	problems := kafka.CheckFilter(req.Source)
-	if problems == nil {
-		problems = []script.Problem{}
-	}
-
-	return c.SendJSON(map[string]any{"problems": problems})
-}
-
-// tail streams messages as server-sent events until the client disconnects.
-func (s *Server) tail(c *ada.Context) error {
-	cl, err := s.client(c)
-	if err != nil {
-		return err
-	}
-
-	p, err := parseRead(c.Request.URL.Query(), []string{"newest", "oldest", "offset", "timestamp", "last"},
-		"offset", "timestamp", "limit")
-	if err != nil {
-		return err
-	}
-
-	req := kafka.TailRequest{
-		Start:      p.start,
-		Offset:     p.ints["offset"],
-		Timestamp:  p.ints["timestamp"],
-		Filter:     p.filter,
-		Search:     p.search,
-		Raw:        p.raw,
-		As:         p.as,
-		Partitions: p.partitions,
-	}
-
-	limit := p.ints["limit"]
-	out := newStream(c.Response, eventStream)
-	sent := int64(0)
-
-	err = cl.Tail(c.Request.Context(), c.Request.PathValue("topic"), req, func(e kafka.TailEvent) bool {
-		if e.Message != nil {
-			sent++
+	switch {
+	case errors.Is(err, kafka.ErrReadOnly), denied(err):
+		return ada.WrapHTTPError(http.StatusForbidden, err)
+	case errors.Is(err, kafka.ErrNotFound):
+		return ada.WrapHTTPError(http.StatusNotFound, err)
+	case errors.As(err, &invalid):
+		return ada.WrapHTTPError(http.StatusBadRequest, err)
+	case errors.As(err, &conflict):
+		return ada.WrapHTTPError(http.StatusConflict, err)
+	case errors.Is(err, kafka.ErrBusy):
+		return ada.WrapHTTPError(http.StatusTooManyRequests, err)
+	case errors.Is(err, kafka.ErrNoRegistry), errors.Is(err, kafka.ErrUnsupported), errors.Is(err, kafka.ErrNoDocs):
+		return ada.WrapHTTPError(http.StatusNotImplemented, err)
+	case errors.Is(err, context.DeadlineExceeded):
+		return ada.WrapHTTPError(http.StatusGatewayTimeout, err)
+	case errors.Is(err, context.Canceled):
+		// The caller went away; nobody reads this answer.
+		return ada.WrapHTTPError(statusClientClosed, err)
+	case kafkaIs(err, kafkaNotFound):
+		return ada.WrapHTTPError(http.StatusNotFound, err)
+	case kafkaIs(err, kafkaConflict):
+		return ada.WrapHTTPError(http.StatusConflict, err)
+	case kafkaIs(err, kafkaInvalid):
+		return ada.WrapHTTPError(http.StatusBadRequest, err)
+	default:
+		// Kafka errors carry no secrets and the operator needs them.
+		if hint := kafka.ExplainConnErr(err); hint != "" {
+			return ada.WrapHTTPError(http.StatusBadGateway, fmt.Errorf("%w; %s", err, hint))
 		}
 
-		if !out.event("message", e) {
-			return false
+		return ada.WrapHTTPError(http.StatusBadGateway, err)
+	}
+}
+
+// statusClientClosed is nginx's code for a request its client abandoned.
+const statusClientClosed = 499
+
+// Broker refusals the caller can act on, by what they mean; anything else
+// stays a 502, the broker's own failure.
+var (
+	kafkaNotFound = []error{kerr.UnknownTopicOrPartition, kerr.GroupIDNotFound, kerr.UnknownTopicID}
+	kafkaConflict = []error{
+		kerr.TopicAlreadyExists, kerr.NonEmptyGroup, kerr.GroupSubscribedToTopic,
+		kerr.ReassignmentInProgress, kerr.ConcurrentTransactions,
+	}
+	kafkaInvalid = []error{
+		kerr.InvalidPartitions, kerr.InvalidReplicationFactor, kerr.InvalidReplicaAssignment,
+		kerr.InvalidConfig, kerr.InvalidTopicException, kerr.PolicyViolation, kerr.InvalidRequest,
+		kerr.InvalidGroupID, kerr.MessageTooLarge, kerr.RecordListTooLarge, kerr.InvalidRecord,
+		kerr.UnsupportedCompressionType, kerr.InvalidTimestamp,
+	}
+)
+
+func kafkaIs(err error, kinds []error) bool {
+	for _, k := range kinds {
+		if errors.Is(err, k) {
+			return true
 		}
-
-		return limit <= 0 || sent < limit
-	})
-	if err != nil {
-		return out.fail(err, func() { out.event("error", map[string]string{"error": err.Error()}) })
 	}
 
-	out.event("end", map[string]int64{"sent": sent})
-
-	return nil
+	return false
 }
 
-// replay streams newline-delimited JSON events: a plan, progress and a final
-// done. Closing the connection stops the replay; records still buffered in
-// the producer may or may not be written, as with any cancelled produce.
-func (s *Server) replay(c *ada.Context) error {
-	cl, err := s.client(c)
-	if err != nil {
-		return err
+// denied reports Kafka refusing the console's credentials an operation:
+// the request was understood, the principal may not do it.
+func denied(err error) bool {
+	if _, ok := errors.AsType[*kadm.AuthError](err); ok {
+		return true
 	}
 
-	req, err := bind[kafka.ReplayRequest](c)
-	if err != nil {
-		return err
-	}
-
-	out := newStream(c.Response, ndjson)
-
-	err = cl.Replay(c.Request.Context(), c.Request.PathValue("topic"), req, func(e kafka.ReplayEvent) bool {
-		return out.line(e)
-	})
-	if err != nil {
-		return out.fail(err, func() {
-			out.line(kafka.ReplayEvent{Type: "done", StoppedBy: "error", FirstError: err.Error()})
-		})
-	}
-
-	return nil
-}
-
-func (s *Server) importRecords(c *ada.Context) error {
-	req, err := bind[kafka.ImportRequest](c)
-	if err != nil {
-		return err
-	}
-
-	return s.handle(c, func(cl *kafka.Client) (any, error) {
-		return cl.Import(c.Request.Context(), c.Request.PathValue("topic"), req)
-	})
-}
-
-// ─── Groups ───────────────────────────────────────────────
-
-func (s *Server) deleteGroupOffsets(c *ada.Context) error {
-	req, err := bind[struct {
-		Topic      string  `json:"topic"`
-		Partitions []int32 `json:"partitions"`
-	}](c)
-	if err != nil {
-		return err
-	}
-
-	if req.Topic == "" {
-		return ada.NewHTTPError(http.StatusBadRequest, "topic is required")
-	}
-
-	return s.handle(c, func(cl *kafka.Client) (any, error) {
-		return nil, cl.DeleteGroupOffsets(c.Request.Context(), c.Request.PathValue("group"), req.Topic, req.Partitions)
-	})
-}
-
-// ─── Security ─────────────────────────────────────────────
-
-func (s *Server) topicDoc(c *ada.Context) error {
-	return s.handle(c, func(cl *kafka.Client) (any, error) {
-		return cl.TopicDoc(c.Request.PathValue("topic"))
-	})
-}
-
-func (s *Server) reassign(c *ada.Context) error {
-	req, err := bind[kafka.ReassignRequest](c)
-	if err != nil {
-		return err
-	}
-
-	return s.handle(c, func(cl *kafka.Client) (any, error) {
-		return cl.Reassign(c.Request.Context(), c.Request.PathValue("topic"), req)
-	})
-}
-
-func (s *Server) reassignments(c *ada.Context) error {
-	return s.handle(c, func(cl *kafka.Client) (any, error) {
-		return cl.Reassignments(c.Request.Context(), c.Request.PathValue("topic"))
-	})
-}
-
-func (s *Server) balancePlan(c *ada.Context) error {
-	return s.handle(c, func(cl *kafka.Client) (any, error) {
-		return cl.BalancePlan(c.Request.Context(), c.Request.PathValue("topic"))
-	})
-}
-
-func (s *Server) electLeaders(c *ada.Context) error {
-	req, err := bind[struct {
-		Partitions []int32 `json:"partitions"`
-	}](c)
-	if err != nil {
-		return err
-	}
-
-	return s.handle(c, func(cl *kafka.Client) (any, error) {
-		return cl.ElectPreferredLeaders(c.Request.Context(), c.Request.PathValue("topic"), req.Partitions)
-	})
-}
-
-func (s *Server) acls(c *ada.Context) error {
-	q := c.Request.URL.Query()
-	if q.Has("resource_type") {
-		r := kafka.ACLFor{Type: q.Get("resource_type"), Name: q.Get("resource_name")}
-
-		return s.handle(c, func(cl *kafka.Client) (any, error) { return cl.ResourceACLs(c.Request.Context(), r) })
-	}
-
-	return s.handle(c, func(cl *kafka.Client) (any, error) { return cl.ACLs(c.Request.Context()) })
-}
-
-func (s *Server) createACLs(c *ada.Context) error {
-	req, err := bind[[]kafka.ACL](c)
-	if err != nil {
-		return err
-	}
-
-	return s.handle(c, func(cl *kafka.Client) (any, error) { return nil, cl.CreateACLs(c.Request.Context(), req) })
-}
-
-func (s *Server) deleteACL(c *ada.Context) error {
-	req, err := bind[kafka.ACL](c)
-	if err != nil {
-		return err
-	}
-
-	return s.handle(c, func(cl *kafka.Client) (any, error) {
-		n, err := cl.DeleteACL(c.Request.Context(), req)
-		if err != nil {
-			return nil, err
+	for _, e := range []error{
+		kerr.TopicAuthorizationFailed, kerr.GroupAuthorizationFailed, kerr.ClusterAuthorizationFailed,
+		kerr.TransactionalIDAuthorizationFailed, kerr.DelegationTokenAuthorizationFailed,
+		kerr.SaslAuthenticationFailed, kafka.ErrNoTopicAccess, kafka.ErrNoGroupAccess,
+	} {
+		if errors.Is(err, e) {
+			return true
 		}
-
-		return map[string]int{"deleted": n}, nil
-	})
-}
-
-func (s *Server) users(c *ada.Context) error {
-	return s.handle(c, func(cl *kafka.Client) (any, error) { return cl.Users(c.Request.Context()) })
-}
-
-func (s *Server) upsertUser(c *ada.Context) error {
-	req, err := bind[kafka.UpsertUserRequest](c)
-	if err != nil {
-		return err
 	}
 
-	return s.handle(c, func(cl *kafka.Client) (any, error) { return nil, cl.UpsertUser(c.Request.Context(), req) })
-}
-
-func (s *Server) deleteUser(c *ada.Context) error {
-	return s.handle(c, func(cl *kafka.Client) (any, error) {
-		return nil, cl.DeleteUser(c.Request.Context(), c.Request.PathValue("user"), c.Request.URL.Query().Get("mechanism"))
-	})
-}
-
-func (s *Server) quotas(c *ada.Context) error {
-	return s.handle(c, func(cl *kafka.Client) (any, error) { return cl.Quotas(c.Request.Context()) })
-}
-
-func (s *Server) alterQuota(c *ada.Context) error {
-	req, err := bind[kafka.AlterQuotaRequest](c)
-	if err != nil {
-		return err
-	}
-
-	return s.handle(c, func(cl *kafka.Client) (any, error) { return nil, cl.AlterQuota(c.Request.Context(), req) })
-}
-
-// ─── Schema registry ──────────────────────────────────────
-
-func (s *Server) schemaRegistry(c *ada.Context) error {
-	q := c.Request.URL.Query()
-	query := kafka.RegistryQuery{ShowDeleted: q.Get("deleted") == "true", Search: q.Get("q"), Type: q.Get("type"), Context: q.Get("context")}
-
-	var err error
-	if query.Offset, query.Limit, err = pageParams(q); err != nil {
-		return err
-	}
-
-	return s.handle(c, func(cl *kafka.Client) (any, error) {
-		return cl.Registry(c.Request.Context(), query)
-	})
-}
-
-func (s *Server) subject(c *ada.Context) error {
-	return s.handle(c, func(cl *kafka.Client) (any, error) {
-		return cl.Subject(c.Request.Context(), c.Request.PathValue("subject"))
-	})
-}
-
-func (s *Server) createSchema(c *ada.Context) error {
-	req, err := bind[kafka.CreateSchemaRequest](c)
-	if err != nil {
-		return err
-	}
-
-	return s.handle(c, func(cl *kafka.Client) (any, error) { return cl.CreateSchema(c.Request.Context(), req) })
-}
-
-func (s *Server) checkCompatibility(c *ada.Context) error {
-	req, err := bind[kafka.CreateSchemaRequest](c)
-	if err != nil {
-		return err
-	}
-
-	return s.handle(c, func(cl *kafka.Client) (any, error) { return cl.CheckCompatibility(c.Request.Context(), req) })
-}
-
-type compatibilityBody struct {
-	Level string `json:"level"`
-}
-
-func (s *Server) setGlobalCompatibility(c *ada.Context) error {
-	req, err := bind[compatibilityBody](c)
-	if err != nil {
-		return err
-	}
-
-	return s.handle(c, func(cl *kafka.Client) (any, error) {
-		return nil, cl.SetCompatibility(c.Request.Context(), "", req.Level)
-	})
-}
-
-func (s *Server) setCompatibility(c *ada.Context) error {
-	req, err := bind[compatibilityBody](c)
-	if err != nil {
-		return err
-	}
-
-	return s.handle(c, func(cl *kafka.Client) (any, error) {
-		return nil, cl.SetCompatibility(c.Request.Context(), c.Request.PathValue("subject"), req.Level)
-	})
-}
-
-func (s *Server) deleteSubject(c *ada.Context) error {
-	return s.handle(c, func(cl *kafka.Client) (any, error) {
-		return nil, cl.DeleteSubject(c.Request.Context(), c.Request.PathValue("subject"), c.Request.URL.Query().Get("permanent") == "true")
-	})
-}
-
-func (s *Server) deleteSchemaVersion(c *ada.Context) error {
-	version, err := strconv.Atoi(c.Request.PathValue("version"))
-	if err != nil {
-		return ada.NewHTTPError(http.StatusBadRequest, "version must be a number")
-	}
-
-	return s.handle(c, func(cl *kafka.Client) (any, error) {
-		return nil, cl.DeleteSchemaVersion(c.Request.Context(), c.Request.PathValue("subject"), version,
-			c.Request.URL.Query().Get("permanent") == "true")
-	})
+	return false
 }

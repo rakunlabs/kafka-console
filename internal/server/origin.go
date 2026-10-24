@@ -64,9 +64,3 @@ func crossSite(r *http.Request) bool {
 
 	return !strings.EqualFold(u.Host, r.Host)
 }
-
-func writeJSONError(w http.ResponseWriter, status int, msg string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_, _ = w.Write([]byte(`{"message":"` + msg + `"}`))
-}

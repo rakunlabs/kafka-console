@@ -1,4 +1,5 @@
 import { untrack } from 'svelte'
+import { errorMessage } from './http'
 import { isAbort, withSignal } from './api'
 import { cached, remember } from './cache'
 
@@ -49,8 +50,8 @@ export function paged<T, Q>(opts: {
       items = res.items
       total = res.total
       if (untrack(opts.cacheable)) remember(opts.key, res)
-    } catch (e: any) {
-      if (ctl === c && !isAbort(e)) error = e.message
+    } catch (e) {
+      if (ctl === c && !isAbort(e)) error = errorMessage(e)
     } finally {
       if (ctl === c) loading = false
     }
@@ -68,8 +69,8 @@ export function paged<T, Q>(opts: {
       const seen = new Set(items.map(opts.id))
       items = [...items, ...res.items.filter((t) => !seen.has(opts.id(t)))]
       total = res.total
-    } catch (e: any) {
-      if (ctl === c && !isAbort(e)) error = e.message
+    } catch (e) {
+      if (ctl === c && !isAbort(e)) error = errorMessage(e)
     } finally {
       if (ctl === c) more = false
     }

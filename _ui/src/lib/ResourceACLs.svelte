@@ -1,5 +1,6 @@
 <script lang="ts">
   import { resizable } from './resizable'
+  import { errorMessage } from './http'
   import Pending from './Pending.svelte'
   import { untrack } from 'svelte'
   import { api, isAbort, type ACL, type Cluster } from './api'
@@ -15,7 +16,7 @@
   // The page remounts per resource, so the first values are the ones.
   untrack(() => api.resourceACLs(cluster.name, type, name))
     .then((r) => (acls = r))
-    .catch((e) => { if (!isAbort(e)) error = e.message })
+    .catch((e) => { if (!isAbort(e)) error = errorMessage(e) })
 
   // Why an ACL covers this resource, for rows that are not on its exact name.
   function via(a: ACL) {

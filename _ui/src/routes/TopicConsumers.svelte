@@ -7,6 +7,7 @@
   import { href } from '../lib/router.svelte'
   import PartitionOffsets from '../lib/PartitionOffsets.svelte'
   import LagEta from '../lib/LagEta.svelte'
+  import { toggled } from '../lib/sets'
   import { RefreshCw, ArrowRight, Users, ChevronRight, ChevronsUpDown, ChevronsDownUp } from '@lucide/svelte'
 
   let { cluster, topic }: { cluster: Cluster; topic: string } = $props()
@@ -31,12 +32,7 @@
 
   // Every group starts collapsed; the row is the toggle.
   let open = $state(new Set<string>())
-  function toggle(g: string) {
-    const next = new Set(open)
-    if (next.has(g)) next.delete(g)
-    else next.add(g)
-    open = next
-  }
+  const toggle = (g: string) => (open = toggled(open, g))
   const allOpen = $derived(!!groups?.length && groups.every((g) => open.has(g.group)))
   const toggleAll = () => (open = allOpen ? new Set() : new Set(groups?.map((g) => g.group)))
 

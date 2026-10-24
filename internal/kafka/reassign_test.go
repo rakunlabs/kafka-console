@@ -3,6 +3,7 @@ package kafka
 import (
 	"errors"
 	"math/rand/v2"
+	"slices"
 	"testing"
 
 	"github.com/twmb/franz-go/pkg/kfake"
@@ -37,7 +38,7 @@ func TestBalance(t *testing.T) {
 
 		for _, b := range r.Replicas {
 			replicas[b]++
-			if !contains(current[r.Partition], b) {
+			if !slices.Contains(current[r.Partition], b) {
 				moved++
 			}
 		}
@@ -67,14 +68,14 @@ func TestBalance(t *testing.T) {
 	}
 
 	for _, r := range balance([]int32{1, 2, 3}, again) {
-		if !equalReplicas(r.Replicas, again[r.Partition]) {
+		if !slices.Equal(r.Replicas, again[r.Partition]) {
 			t.Errorf("partition %d: balanced %v proposed again as %v", r.Partition, again[r.Partition], r.Replicas)
 		}
 	}
 
 	// Replicas on a broker that is gone are moved to a live one.
 	gone := balance([]int32{1, 2}, map[int32][]int32{0: {3, 1}})
-	if r := gone[0].Replicas; contains(r, 3) || len(r) != 2 {
+	if r := gone[0].Replicas; slices.Contains(r, 3) || len(r) != 2 {
 		t.Errorf("replica left on a missing broker: %v", r)
 	}
 }
@@ -173,14 +174,14 @@ func TestReassign(t *testing.T) {
 	from := meta.Topics["moves"].Partitions[0].Replicas
 	to := []int32{}
 	for _, b := range []int32{0, 1, 2} {
-		if !contains(from, b) {
+		if !slices.Contains(from, b) {
 			to = append(to, b)
 		}
 	}
 	to = append(to, from[0])
 
 	dry, err := c.Reassign(t.Context(), "moves", ReassignRequest{DryRun: true, Partitions: []Reassignment{{Partition: 0, Replicas: to}}})
-	if err != nil || len(dry) != 1 || !equalReplicas(dry[0].To, to) {
+	if err != nil || len(dry) != 1 || !slices.Equal(dry[0].To, to) {
 		t.Fatalf("dry run %v %v", dry, err)
 	}
 

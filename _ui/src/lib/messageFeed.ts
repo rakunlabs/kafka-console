@@ -1,4 +1,5 @@
 import type { ConsumeResult, Message, MessageStreamEvent, TailEvent } from './api'
+import { errorMessage } from './http.ts'
 
 export type MessageQuery = Record<string, string | number | boolean | undefined>
 export const liveCap = 2000
@@ -146,10 +147,10 @@ export function createMessageFeed(
         }
       }, ctl.signal)
       if (!finished) show('cancelled')
-    } catch (e: any) {
+    } catch (e) {
       if (current()) {
-        if (e?.name === 'AbortError') show('cancelled')
-        else update({ error: e.message, ...(!more ? { result: undefined } : {}) })
+        if ((e as Error | undefined)?.name === 'AbortError') show('cancelled')
+        else update({ error: errorMessage(e), ...(!more ? { result: undefined } : {}) })
       }
     } finally {
       clearTimeout(timer)

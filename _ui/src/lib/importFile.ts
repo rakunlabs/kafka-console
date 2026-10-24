@@ -1,4 +1,5 @@
 import type { Header, ImportRecord } from './api'
+import { errorMessage } from './http.ts'
 
 export type FileFormat = 'json' | 'jsonl' | 'csv' | 'lines'
 // record: items carry key, value, headers…; value: each item is the value.
@@ -338,17 +339,33 @@ function partitionOf(v: unknown): number | null {
 
 const schemaFormats = new Set(['avro', 'protobuf', 'json-schema'])
 
+// A record's fields, wherever they come from. payload is the key or value
+// as sent: a string, null for a null payload, undefined when absent.
+type Fields = {
+  has: (k: string) => boolean
+  get: (k: string) => any
+  payload: (k: 'key' | 'value') => string | null | undefined
+}
+
 // A record object as written by Export (JSON) or by hand.
 function fromObject(raw: string): ImportRecord {
   const f = rawFields(raw)
-  const get = (k: string) => (f.has(k) ? JSON.parse(f.get(k)!) : undefined)
+  return fromFields({
+    has: (k) => f.has(k),
+    get: (k) => (f.has(k) ? JSON.parse(f.get(k)!) : undefined),
+    payload: (k) => payload(f.get(k)),
+  })
+}
+
+function fromFields(f: Fields): ImportRecord {
+  const get = f.get
   if (get('truncated') === true) throw new Error('the value was truncated when exported; export it again from the message detail')
   if (get('decode_error')) throw new Error('the record could not be decoded when exported; export the raw record instead')
   if (!f.has('value') && !f.has('key')) throw new Error('no "key" or "value" field; switch “Each item is” to Value')
 
   const rec: ImportRecord = {
-    key: payload(f.get('key')) ?? null,
-    value: payload(f.get('value')) ?? null,
+    key: f.payload('key') ?? null,
+    value: f.payload('value') ?? null,
     headers: headersOf(get('headers')),
     partition: partitionOf(get('partition')),
     timestamp: timestampOf(get('timestamp')),
@@ -379,13 +396,20 @@ function fromJSON(item: string, shape: ItemShape): ImportRecord {
   return fromObject(t)
 }
 
+// The columns a CSV export has; the header row may order them in any way
+// and leave any out but value.
+const csvCols = ['key', 'value', 'headers', 'partition', 'timestamp', 'key_encoding', 'value_encoding',
+  'key_null', 'value_null', 'truncated', 'key_format', 'value_format', 'key_schema_id', 'value_schema_id',
+  'key_schema_message', 'value_schema_message', 'decode_error'] as const
+type CsvCol = (typeof csvCols)[number]
+
 // RecordReader turns a file, fed in chunks, into numbered items.
 export class RecordReader {
   private n = 0
   private lines?: Lines
   private csv?: Csv
   private json?: JsonArray
-  private cols?: number[]
+  private cols?: Record<CsvCol, number>
   private format: FileFormat
   private shape: ItemShape
 
@@ -417,8 +441,8 @@ export class RecordReader {
     const item = ++this.n
     try {
       return { item, record: fn() }
-    } catch (e: any) {
-      return { item, problem: e.message }
+    } catch (e) {
+      return { item, problem: errorMessage(e) }
     }
   }
 
@@ -440,43 +464,49 @@ export class RecordReader {
     for (const row of rows) {
       if (!this.cols) {
         const head = row.map((h) => h.trim().toLowerCase())
-        this.cols = ['key', 'value', 'headers', 'partition', 'timestamp', 'key_encoding', 'value_encoding',
-          'key_null', 'value_null', 'truncated', 'key_format', 'value_format', 'key_schema_id', 'value_schema_id',
-          'key_schema_message', 'value_schema_message', 'decode_error'].map((name) => head.indexOf(name))
-        if (this.cols[1] < 0) {
+        this.cols = Object.fromEntries(csvCols.map((name) => [name, head.indexOf(name)])) as Record<CsvCol, number>
+        if (this.cols.value < 0) {
           throw new FatalError('The CSV has no "value" column. The first row must name the columns: key, value, headers, partition, timestamp.')
         }
         continue
       }
-      const [k, v, h, p, ts, ke, ve, kn, vn, cut, kf, vf, ks, vs, km, vm, de] = this.cols
+      const col = this.cols
+      // A missing column reads as undefined.
+      const cell = (name: CsvCol) => (col[name] < 0 ? undefined : row[col[name]])
       out.push(this.make(() => {
-        const flag = (index: number, name: string) => {
+        const flag = (name: CsvCol) => {
           // Spreadsheets save booleans as TRUE/FALSE.
-          const value = index < 0 ? '' : row[index]?.trim().toLowerCase() ?? ''
+          const value = cell(name)?.trim().toLowerCase() ?? ''
           if (value && value !== 'true' && value !== 'false') throw new Error(`${name} must be true or false`)
           return value === 'true'
         }
-        const schemaID = (index: number, name: string) => {
-          const value = index < 0 ? '' : row[index]?.trim() ?? ''
+        const schemaID = (name: CsvCol) => {
+          const value = cell(name)?.trim() ?? ''
           if (!value) return undefined
           const id = Number(value)
           if (!Number.isSafeInteger(id) || id <= 0) throw new Error(`${name} must be a positive integer`)
           return id
         }
-        return fromObject(JSON.stringify({
+        const fields: Record<string, unknown> = {
           // Legacy exports have no null flags: keep their old interpretation.
-          key: flag(kn, 'key_null') || (kn < 0 && !row[k]) ? null : row[k] ?? '',
-          value: flag(vn, 'value_null') ? null : row[v] ?? '',
-          headers: h >= 0 ? headersOf(row[h]) : [],
-          partition: p >= 0 ? partitionOf(row[p]) : null,
-          timestamp: ts >= 0 ? timestampOf(row[ts]) : null,
-          key_encoding: row[ke]?.trim(), value_encoding: row[ve]?.trim(),
-          truncated: flag(cut, 'truncated'), decode_error: row[de],
-          key_format: row[kf] || undefined, value_format: row[vf] || undefined,
-          key_schema_id: schemaID(ks, 'key_schema_id'),
-          value_schema_id: schemaID(vs, 'value_schema_id'),
-          key_schema_message: row[km], value_schema_message: row[vm],
-        }))
+          key: flag('key_null') || (col.key_null < 0 && !cell('key')) ? null : cell('key') ?? '',
+          value: flag('value_null') ? null : cell('value') ?? '',
+          headers: headersOf(cell('headers')),
+          partition: partitionOf(cell('partition')),
+          timestamp: timestampOf(cell('timestamp')),
+          key_encoding: cell('key_encoding')?.trim(), value_encoding: cell('value_encoding')?.trim(),
+          truncated: flag('truncated'), decode_error: cell('decode_error'),
+          key_format: cell('key_format') || undefined, value_format: cell('value_format') || undefined,
+          key_schema_id: schemaID('key_schema_id'),
+          value_schema_id: schemaID('value_schema_id'),
+          key_schema_message: cell('key_schema_message'), value_schema_message: cell('value_schema_message'),
+        }
+        // As a JSON object would read: an undefined field is absent.
+        return fromFields({
+          has: (k) => fields[k] !== undefined,
+          get: (k) => fields[k],
+          payload: (k) => fields[k] as string | null,
+        })
       }))
     }
     return out
@@ -510,9 +540,9 @@ export function parseFile(text: string, format: FileFormat, shape: ItemShape): P
   try {
     for (const it of reader.feed(text)) out.add(it)
     for (const it of reader.end()) out.add(it)
-  } catch (e: any) {
+  } catch (e) {
     if (!(e instanceof FatalError)) throw e
-    out.problems.push({ item: 0, message: e.message })
+    out.problems.push({ item: 0, message: errorMessage(e) })
   }
   return out
 }

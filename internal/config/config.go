@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -22,10 +24,10 @@ import (
 	_ "github.com/rakunlabs/chu/loader/external/loadervault"
 )
 
-var (
-	ServiceName = "kafka-console"
-	Version     = "v0.0.0"
-)
+const ServiceName = "kafka-console"
+
+// Version is set by the linker: -X github.com/rakunlabs/kafka-console/internal/config.Version=v1.2.3.
+var Version = "v0.0.0"
 
 type Config struct {
 	LogLevel string `cfg:"log_level" default:"info"`
@@ -55,12 +57,29 @@ type Cache struct {
 	Refresh time.Duration `cfg:"refresh" default:"30s"`
 }
 
+func (c Cache) validate(at string) error {
+	for _, v := range []struct {
+		name  string
+		value time.Duration
+	}{{"overview", c.Overview}, {"disk_usage", c.DiskUsage}, {"refresh", c.Refresh}} {
+		if v.value < 0 {
+			return fmt.Errorf("%s.%s must not be negative", at, v.name)
+		}
+	}
+
+	return nil
+}
+
 // ClusterCache overrides Cache for one cluster; unset fields keep the global
 // value.
 type ClusterCache struct {
 	Overview  time.Duration `cfg:"overview"`
 	DiskUsage time.Duration `cfg:"disk_usage"`
 	Refresh   time.Duration `cfg:"refresh"`
+}
+
+func (c ClusterCache) validate(at string) error {
+	return Cache(c).validate(at)
 }
 
 // CacheFor returns the cache settings for a cluster: its own where set, the
@@ -132,11 +151,12 @@ func (c *Config) LimitsFor(name string) Limits {
 }
 
 func (l Limits) validate(at string) error {
-	for name, v := range map[string]int{
-		"reads": l.Reads, "idle_readers": l.IdleReaders, "streams": l.Streams, "mcp_reads": l.MCPReads,
-	} {
-		if v < 0 {
-			return fmt.Errorf("%s.%s must not be negative", at, name)
+	for _, v := range []struct {
+		name  string
+		value int
+	}{{"reads", l.Reads}, {"idle_readers", l.IdleReaders}, {"streams", l.Streams}, {"mcp_reads", l.MCPReads}} {
+		if v.value < 0 {
+			return fmt.Errorf("%s.%s must not be negative", at, v.name)
 		}
 	}
 
@@ -179,36 +199,67 @@ type Features struct {
 	AlterBroker *bool `cfg:"alter_broker"`
 }
 
-func (f Features) SecurityEnabled() bool      { return enabled(f.Security) }
-func (f Features) CreateTopicEnabled() bool   { return enabled(f.CreateTopic) }
-func (f Features) DeleteTopicEnabled() bool   { return enabled(f.DeleteTopic) }
-func (f Features) AlterTopicEnabled() bool    { return enabled(f.AlterTopic) }
-func (f Features) DeleteRecordsEnabled() bool { return enabled(f.DeleteRecords) }
-func (f Features) DeleteGroupEnabled() bool   { return enabled(f.DeleteGroup) }
-func (f Features) AlterBrokerEnabled() bool   { return enabled(f.AlterBroker) }
+// Feature keys: the config keys of Features, also the UI's JSON names.
+const (
+	FeatureSecurity      = "security"
+	FeatureCreateTopic   = "create_topic"
+	FeatureDeleteTopic   = "delete_topic"
+	FeatureAlterTopic    = "alter_topic"
+	FeatureDeleteRecords = "delete_records"
+	FeatureDeleteGroup   = "delete_group"
+	FeatureAlterBroker   = "alter_broker"
+)
 
-func enabled(b *bool) bool { return b == nil || *b }
+// featureFields ties each key to its field, so Over, Enabled and the
+// server's lists need no per-feature code. A new feature is a field, a key
+// and a row here.
+var featureFields = []struct {
+	key   string
+	field func(*Features) **bool
+}{
+	{FeatureSecurity, func(f *Features) **bool { return &f.Security }},
+	{FeatureCreateTopic, func(f *Features) **bool { return &f.CreateTopic }},
+	{FeatureDeleteTopic, func(f *Features) **bool { return &f.DeleteTopic }},
+	{FeatureAlterTopic, func(f *Features) **bool { return &f.AlterTopic }},
+	{FeatureDeleteRecords, func(f *Features) **bool { return &f.DeleteRecords }},
+	{FeatureDeleteGroup, func(f *Features) **bool { return &f.DeleteGroup }},
+	{FeatureAlterBroker, func(f *Features) **bool { return &f.AlterBroker }},
+}
+
+// FeatureKeys lists every feature key.
+func FeatureKeys() []string {
+	keys := make([]string, len(featureFields))
+	for i, ff := range featureFields {
+		keys[i] = ff.key
+	}
+
+	return keys
+}
+
+// Enabled reports whether the feature named key is on; unset means on. An
+// unknown key panics: it is a programming error, not a configuration one.
+func (f Features) Enabled(key string) bool {
+	for _, ff := range featureFields {
+		if ff.key == key {
+			b := *ff.field(&f)
+
+			return b == nil || *b
+		}
+	}
+
+	panic("config: unknown feature " + key)
+}
 
 // Over returns f with every key set in over replaced by over's value, so a
 // cluster's features win over the global ones key by key.
 func (f Features) Over(over Features) Features {
-	pick := func(base, o *bool) *bool {
-		if o != nil {
-			return o
+	for _, ff := range featureFields {
+		if v := *ff.field(&over); v != nil {
+			*ff.field(&f) = v
 		}
-
-		return base
 	}
 
-	return Features{
-		Security:      pick(f.Security, over.Security),
-		CreateTopic:   pick(f.CreateTopic, over.CreateTopic),
-		DeleteTopic:   pick(f.DeleteTopic, over.DeleteTopic),
-		AlterTopic:    pick(f.AlterTopic, over.AlterTopic),
-		DeleteRecords: pick(f.DeleteRecords, over.DeleteRecords),
-		DeleteGroup:   pick(f.DeleteGroup, over.DeleteGroup),
-		AlterBroker:   pick(f.AlterBroker, over.AlterBroker),
-	}
+	return f
 }
 
 // ClusterFeatures is the global features with the cluster's own on top.
@@ -241,6 +292,50 @@ type MCP struct {
 	// between the agent's machine and Kafka and are never stored here.
 	OutputDir string                  `cfg:"output_dir"`
 	Endpoints map[string]*MCPEndpoint `cfg:"endpoints"`
+	// SessionTimeout closes an agent's session after this long without a
+	// request, so agents that leave without saying so are not kept forever.
+	SessionTimeout time.Duration `cfg:"session_timeout" default:"30m"`
+}
+
+// validate refuses endpoints that name no cluster the console knows, and
+// warns about settings that let anyone reaching the port use the tools.
+func (m MCP) validate(clusters map[string]*Cluster) error {
+	if !m.Enabled {
+		return nil
+	}
+
+	if m.SessionTimeout < 0 {
+		return fmt.Errorf("mcp.session_timeout must not be negative")
+	}
+
+	for _, name := range slices.Sorted(maps.Keys(m.Endpoints)) {
+		endpoint := m.Endpoints[name]
+		if endpoint == nil {
+			return fmt.Errorf("mcp.endpoints.%s is empty: set at least its cluster", name)
+		}
+
+		if _, ok := clusters[endpoint.Cluster]; !ok {
+			return fmt.Errorf("mcp.endpoints.%s: cluster %q is not configured", name, endpoint.Cluster)
+		}
+
+		for _, dest := range endpoint.Destinations {
+			if _, ok := clusters[dest]; !ok {
+				return fmt.Errorf("mcp.endpoints.%s: destination cluster %q is not configured", name, dest)
+			}
+		}
+	}
+
+	if m.AuthToken == "" {
+		if m.AllowWrites {
+			slog.Warn("mcp.allow_writes is on without mcp.auth_token: anyone reaching the port can change clusters through MCP")
+		}
+
+		if slices.Contains(m.AllowOrigins, "*") {
+			slog.Warn(`mcp.allow_origins is "*" without mcp.auth_token: any web page can call the MCP tools`)
+		}
+	}
+
+	return nil
 }
 
 // MCPEndpoint is one MCP server over a cluster. Without explicit endpoints,
@@ -486,20 +581,72 @@ func Load(ctx context.Context) (*Config, error) {
 		return nil, fmt.Errorf("set log level %s; %w", cfg.LogLevel, err)
 	}
 
-	if err := cfg.validate(); err != nil {
+	if err := cfg.prepare(); err != nil {
 		return nil, err
 	}
-
-	cfg.Server.BasePath = normalizeBasePath(cfg.Server.BasePath)
 
 	slog.Info("loaded configuration", "config", chu.MarshalMap(cfg))
 
 	return &cfg, nil
 }
 
+// prepare readies a loaded configuration: it is normalized, checked, and
+// only then are secret files read.
+func (c *Config) prepare() error {
+	c.normalize()
+
+	if err := c.validate(); err != nil {
+		return err
+	}
+
+	return c.resolveSecrets()
+}
+
+// normalize puts values into the one form the rest of the console expects
+// and drops blocks left empty, such as a schema_registry without URLs.
+func (c *Config) normalize() {
+	c.Server.BasePath = normalizeBasePath(c.Server.BasePath)
+
+	for _, cluster := range c.Clusters {
+		if cluster == nil {
+			continue
+		}
+
+		// An invalid color is left as is for validate to report.
+		if color, ok := normalizeColor(cluster.Color); ok {
+			cluster.Color = color
+		}
+
+		if sr := cluster.SchemaRegistry; sr != nil && len(sr.URLs) == 0 {
+			cluster.SchemaRegistry = nil
+		}
+
+		if d := cluster.Docs; d != nil && d.Path == "" {
+			cluster.Docs = nil
+		}
+
+		if sasl := cluster.SASL; sasl != nil {
+			sasl.Mechanism = strings.ToLower(sasl.Mechanism)
+			if sasl.Mechanism == "" {
+				cluster.SASL = nil
+			}
+		}
+	}
+}
+
+// validate reports the first problem, in the same order on every start:
+// global settings, then clusters by name.
 func (c *Config) validate() error {
 	if len(c.Clusters) == 0 {
 		return fmt.Errorf("no clusters configured; add at least one under clusters")
+	}
+
+	if c.Server.IdleTimeout < 0 {
+		return fmt.Errorf("server.idle_timeout must not be negative")
+	}
+
+	if err := c.Cache.validate("cache"); err != nil {
+		return err
 	}
 
 	if err := c.Limits.validate("limits"); err != nil {
@@ -510,88 +657,110 @@ func (c *Config) validate() error {
 		return fmt.Errorf("mcp.output_dir is no longer supported: agents download and upload files straight to and from their own machine through one-time links, and nothing is stored on the console's host. Remove it")
 	}
 
-	for name, cluster := range c.Clusters {
-		if cluster == nil || len(cluster.Brokers) == 0 {
-			return fmt.Errorf("cluster %q has no brokers", name)
-		}
+	if err := c.MCP.validate(c.Clusters); err != nil {
+		return err
+	}
 
-		if err := cluster.Limits.validate("clusters." + name + ".limits"); err != nil {
+	for _, name := range slices.Sorted(maps.Keys(c.Clusters)) {
+		if err := c.Clusters[name].validate(name); err != nil {
 			return err
 		}
+	}
 
-		if cluster.Color != "" {
-			color, ok := normalizeColor(cluster.Color)
-			if !ok {
-				return fmt.Errorf("cluster %q: color %q is not an RGB hex code like #e5484d or a CSS color name like blue", name, cluster.Color)
-			}
+	return nil
+}
 
-			cluster.Color = color
+func (cluster *Cluster) validate(name string) error {
+	if cluster == nil || len(cluster.Brokers) == 0 {
+		return fmt.Errorf("cluster %q has no brokers", name)
+	}
+
+	if err := cluster.Limits.validate("clusters." + name + ".limits"); err != nil {
+		return err
+	}
+
+	if err := cluster.Cache.validate("clusters." + name + ".cache"); err != nil {
+		return err
+	}
+
+	if cluster.Color != "" {
+		if _, ok := normalizeColor(cluster.Color); !ok {
+			return fmt.Errorf("cluster %q: color %q is not an RGB hex code like #e5484d or a CSS color name like blue", name, cluster.Color)
+		}
+	}
+
+	if d := cluster.Docs; d != nil {
+		if st, err := os.Stat(d.Path); err != nil || !st.IsDir() {
+			return fmt.Errorf("cluster %q: docs path %q is not a directory", name, d.Path)
+		}
+	}
+
+	if pb := cluster.Protobuf; pb != nil {
+		if len(pb.Paths) == 0 || len(pb.Topics) == 0 {
+			return fmt.Errorf("cluster %q: protobuf needs paths and topics", name)
 		}
 
-		if sr := cluster.SchemaRegistry; sr != nil {
-			if len(sr.URLs) == 0 {
-				cluster.SchemaRegistry = nil
-			} else if sr.PasswordFile != "" {
-				raw, err := os.ReadFile(sr.PasswordFile)
-				if err != nil {
-					return fmt.Errorf("cluster %q: read schema registry password file; %w", name, err)
-				}
-
-				sr.Password = strings.TrimSpace(string(raw))
+		for i, t := range pb.Topics {
+			if t.Topic == "" || t.Key == "" && t.Value == "" {
+				return fmt.Errorf("cluster %q: protobuf topics[%d] needs a topic and a key or value message", name, i)
 			}
 		}
+	}
 
-		if d := cluster.Docs; d != nil {
-			if d.Path == "" {
-				cluster.Docs = nil
-			} else if st, err := os.Stat(d.Path); err != nil || !st.IsDir() {
-				return fmt.Errorf("cluster %q: docs path %q is not a directory", name, d.Path)
-			}
-		}
-
-		if pb := cluster.Protobuf; pb != nil {
-			if len(pb.Paths) == 0 || len(pb.Topics) == 0 {
-				return fmt.Errorf("cluster %q: protobuf needs paths and topics", name)
-			}
-
-			for i, t := range pb.Topics {
-				if t.Topic == "" || t.Key == "" && t.Value == "" {
-					return fmt.Errorf("cluster %q: protobuf topics[%d] needs a topic and a key or value message", name, i)
-				}
-			}
-		}
-
-		if cluster.SASL == nil {
-			continue
-		}
-
-		sasl := cluster.SASL
-		sasl.Mechanism = strings.ToLower(sasl.Mechanism)
-
+	if sasl := cluster.SASL; sasl != nil {
 		switch sasl.Mechanism {
 		case MechanismPlain, MechanismScramSHA256, MechanismScramSHA512:
-			if sasl.PasswordFile != "" {
-				raw, err := os.ReadFile(sasl.PasswordFile)
-				if err != nil {
-					return fmt.Errorf("cluster %q: read password file; %w", name, err)
-				}
-
-				sasl.Password = strings.TrimSpace(string(raw))
-			}
 		case MechanismOAuth:
 			// The full check happens when the mechanism is built.
 			o := sasl.OAuth
 			if o.Token == "" && !o.GCP.Enabled && (o.TokenURL == "" || o.ClientID == "") {
 				return fmt.Errorf("cluster %q: oauthbearer needs a token, token_url and client_id, or gcp", name)
 			}
-		case "":
-			cluster.SASL = nil
 		default:
 			return fmt.Errorf("cluster %q: unsupported sasl mechanism %q", name, sasl.Mechanism)
 		}
 	}
 
 	return nil
+}
+
+// resolveSecrets reads the password files into the passwords they stand for.
+func (c *Config) resolveSecrets() error {
+	for _, name := range slices.Sorted(maps.Keys(c.Clusters)) {
+		cluster := c.Clusters[name]
+
+		if sr := cluster.SchemaRegistry; sr != nil && sr.PasswordFile != "" {
+			password, err := readSecretFile(sr.PasswordFile)
+			if err != nil {
+				return fmt.Errorf("cluster %q: read schema registry password file; %w", name, err)
+			}
+
+			sr.Password = password
+		}
+
+		// OAuth reads its own files on every token refresh.
+		if sasl := cluster.SASL; sasl != nil && sasl.Mechanism != MechanismOAuth && sasl.PasswordFile != "" {
+			password, err := readSecretFile(sasl.PasswordFile)
+			if err != nil {
+				return fmt.Errorf("cluster %q: read password file; %w", name, err)
+			}
+
+			sasl.Password = password
+		}
+	}
+
+	return nil
+}
+
+// readSecretFile reads a secret mounted as a file, without the trailing
+// newline most tools write.
+func readSecretFile(path string) (string, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+
+	return strings.TrimSpace(string(raw)), nil
 }
 
 // normalizeBasePath returns "" for root, otherwise "/a/b" without a trailing slash.

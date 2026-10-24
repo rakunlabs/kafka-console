@@ -23,7 +23,8 @@ func TestLimitBody(t *testing.T) {
 		return c.SendJSON(v)
 	}
 	api.POST("/x", handler)
-	api.POST("/topics/t/import", handler)
+	api.POST("/clusters/{cluster}/topics/{topic}/import", handler)
+	api.POST("/clusters/{cluster}/topics/{topic}", handler)
 
 	do := func(path string, size int) int {
 		body := `{"v":"` + strings.Repeat("a", size) + `"}`
@@ -43,8 +44,12 @@ func TestLimitBody(t *testing.T) {
 		t.Fatalf("body over the limit: %d, want 413", got)
 	}
 
-	if got := do("/api/v1/topics/t/import", maxBody+1); got != http.StatusOK {
+	if got := do("/api/v1/clusters/c/topics/t/import", maxBody+1); got != http.StatusOK {
 		t.Fatalf("import gets the larger limit: %d", got)
+	}
+
+	if got := do("/api/v1/clusters/c/topics/import", maxBody+1); got != http.StatusRequestEntityTooLarge {
+		t.Fatalf("a topic named import got the import limit: %d", got)
 	}
 
 }

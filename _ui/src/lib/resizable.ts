@@ -11,6 +11,8 @@
 // at its width through a stylesheet rule rather than inline styles, so rows
 // added later (paging, a refresh) follow it without being touched.
 
+import { drag } from './drag'
+
 const storeKey = (id: string) => `kc.tw.${id}`
 const minW = 40
 
@@ -114,25 +116,9 @@ export function resizable(table: HTMLTableElement, id: string) {
     h.title = 'Drag to resize · double-click to fit · right-click to reset'
 
     h.addEventListener('pointerdown', (e) => {
-      if (e.button !== 0) return
-      e.preventDefault()
-      e.stopPropagation()
-      h.setPointerCapture(e.pointerId)
       const name = nameOf(th)
-      const startX = e.clientX
       const startW = th.getBoundingClientRect().width
-      document.documentElement.classList.add('col-resizing')
-      const move = (ev: PointerEvent) => set(name, startW + ev.clientX - startX, false)
-      const end = () => {
-        h.removeEventListener('pointermove', move)
-        h.removeEventListener('pointerup', end)
-        h.removeEventListener('pointercancel', end)
-        document.documentElement.classList.remove('col-resizing')
-        save(tableId, widths)
-      }
-      h.addEventListener('pointermove', move)
-      h.addEventListener('pointerup', end)
-      h.addEventListener('pointercancel', end)
+      drag(e, { move: (dx) => set(name, startW + dx, false), end: () => save(tableId, widths), stopPropagation: true, cursor: true })
     })
     // The header may hold a sort button; resizing must not sort.
     h.addEventListener('click', (e) => e.stopPropagation())

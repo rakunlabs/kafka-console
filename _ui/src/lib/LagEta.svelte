@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onDestroy } from 'svelte'
+  import { errorMessage } from './http'
   import { fmt } from './format'
   import { Timer, Square, RotateCcw } from '@lucide/svelte'
 
@@ -41,9 +42,9 @@
       if (id !== run) return
       samples = [...samples, { at: Date.now(), ...r }].slice(-window)
       error = ''
-    } catch (e: any) {
+    } catch (e) {
       if (id !== run) return
-      error = e.message
+      error = errorMessage(e)
     }
     if (running) timer = setTimeout(() => tick(id), interval)
   }

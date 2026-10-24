@@ -1,6 +1,6 @@
 import type { ImportRecord, ImportResult } from './api'
 import { readFile, FatalError, type FileFormat, type ItemShape } from './importFile.ts'
-import { importRefused } from './http.ts'
+import { errorMessage, importRefused } from './http.ts'
 
 export type ImportOptions = {
   format: FileFormat
@@ -47,9 +47,10 @@ export async function checkFile(file: Blob, o: ImportOptions, keep = 20): Promis
     if (!b.length || out.problemCount) return
     try {
       await o.send(b, true)
-    } catch (e: any) {
-      const m = recordRef.exec(e.message)
-      problem(m ? first + Number(m[1]) - 1 : first, m ? e.message.slice(m[0].length) : e.message)
+    } catch (e) {
+      const msg = errorMessage(e)
+      const m = recordRef.exec(msg)
+      problem(m ? first + Number(m[1]) - 1 : first, m ? msg.slice(m[0].length) : msg)
     }
   }
 
@@ -70,8 +71,8 @@ export async function checkFile(file: Blob, o: ImportOptions, keep = 20): Promis
       if (batch.length >= o.batchSize) await flush()
     }
     await flush()
-  } catch (e: any) {
-    out.fatal = e instanceof FatalError ? e.message : `Could not read the file: ${e.message}`
+  } catch (e) {
+    out.fatal = e instanceof FatalError ? errorMessage(e) : `Could not read the file: ${errorMessage(e)}`
   }
   return out
 }
@@ -109,11 +110,12 @@ export async function sendFile(file: Blob, o: ImportOptions, after = 0, onBatch?
         (!Number.isInteger(r.partition) || r.partition < 0 || !Number.isInteger(r.offset) || r.offset < 0)))) {
         throw new Error('The server returned an incomplete import result')
       }
-    } catch (e: any) {
+    } catch (e) {
       out.resumeAt = first
       if (!importRefused(e)) out.uncertain = { first, last: first + b.length - 1 }
-      const m = recordRef.exec(e.message)
-      throw new Error(m ? `item ${first + Number(m[1]) - 1}: ${e.message.slice(m[0].length)}` : e.message)
+      const msg = errorMessage(e)
+      const m = recordRef.exec(msg)
+      throw new Error(m ? `item ${first + Number(m[1]) - 1}: ${msg.slice(m[0].length)}` : msg)
     }
     for (const r of res) {
       if (r.error) continue
@@ -150,8 +152,8 @@ export async function sendFile(file: Blob, o: ImportOptions, after = 0, onBatch?
       if (batch.length >= o.batchSize) await flush()
     }
     await flush()
-  } catch (e: any) {
-    out.error = e.message
+  } catch (e) {
+    out.error = errorMessage(e)
     if (!out.resumeAt) out.resumeAt = (batch.length ? first : last + 1) || 1
   }
   return out

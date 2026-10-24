@@ -1,7 +1,9 @@
 <script lang="ts">
-  import { names } from './names'
-  import { replay, type Cluster, type TopicName, type ReplayBody, type ReplayEvent, type ReplayRange } from './api'
-  import { fmt } from './format'
+  import { onDestroy, untrack } from 'svelte'
+  import { errorMessage } from './http'
+  import { topicNames } from './topicNames.svelte'
+  import { replay, type Cluster, type ReplayBody, type ReplayEvent, type ReplayRange } from './api'
+  import { fmt, inputMs } from './format'
   import { reviewedReplay } from './replay'
   import { href } from './router.svelte'
   import Modal from './Modal.svelte'
@@ -27,12 +29,18 @@
 
   type Bound = { type: string; offset: number; timestamp: string }
 
-  let from = $state<Bound>({ type: 'oldest', offset: 0, timestamp: '' })
-  let to = $state<Bound>({ type: 'newest', offset: 0, timestamp: '' })
-  let partition = $state('')
-  let search = $state('')
-  let filter = $state('')
-  let useFilter = $state(false)
+  // Mounted only while open: the form starts from the seed on every open.
+  const initial = untrack(() => seed)
+  let from = $state<Bound>(
+    initial.start === 'offset' ? { type: 'offset', offset: initial.offset, timestamp: '' }
+      : initial.since ? { type: 'timestamp', offset: 0, timestamp: initial.since }
+      : { type: 'oldest', offset: 0, timestamp: '' },
+  )
+  let to = $state<Bound>(initial.until ? { type: 'timestamp', offset: 0, timestamp: initial.until } : { type: 'newest', offset: 0, timestamp: '' })
+  let partition = $state(initial.partition)
+  let search = $state(initial.search)
+  let filter = $state(initial.filter)
+  let useFilter = $state(!!initial.filter.trim())
   let elsewhere = $state(true)
   let target = $state('')
   let keepPartition = $state(false)
@@ -41,7 +49,7 @@
   let limit = $state<number | ''>('')
   let exact = $state(false)
   let confirm = $state('')
-  let topics = $state.raw<TopicName[]>([])
+  const names = topicNames(untrack(() => cluster.name))
 
   let phase = $state<'edit' | 'counting' | 'counted' | 'running' | 'done'>('edit')
   let plan = $state<ReplayRange[]>([])
@@ -52,7 +60,7 @@
   let abort: AbortController | undefined
 
   const dest = $derived(elsewhere ? target : topic)
-  const destInfo = $derived(topics.find((t) => t.name === dest))
+  const destInfo = $derived(names.topics.find((t) => t.name === dest))
   const missing = $derived.by(() => {
     if (!keepPartition || !destInfo) return []
     const used = partition === '' ? partitions : [Number(partition)]
@@ -60,39 +68,11 @@
   })
   const busy = $derived(phase === 'counting' || phase === 'running')
 
-  let wasOpen = false
-  $effect(() => {
-    if (open && !wasOpen) {
-      from = seed.start === 'offset' ? { type: 'offset', offset: seed.offset, timestamp: '' }
-        : seed.since ? { type: 'timestamp', offset: 0, timestamp: seed.since }
-        : { type: 'oldest', offset: 0, timestamp: '' }
-      to = seed.until ? { type: 'timestamp', offset: 0, timestamp: seed.until } : { type: 'newest', offset: 0, timestamp: '' }
-      partition = seed.partition
-      search = seed.search
-      filter = seed.filter
-      useFilter = !!seed.filter.trim()
-      elsewhere = true
-      target = ''
-      keepPartition = false
-      keepTimestamp = false
-      mark = true
-      limit = ''
-      exact = false
-      confirm = ''
-      phase = 'edit'
-      plan = []
-      ev = counted = undefined
-      reviewed = undefined
-      error = ''
-      names(cluster.name).then((n) => (topics = n.topics)).catch(() => {})
-    }
-    if (!open && wasOpen) abort?.abort()
-    wasOpen = open
-  })
+  onDestroy(() => abort?.abort())
 
   function bound(b: Bound) {
     if (b.type === 'offset') return { type: 'offset', offset: Number(b.offset) }
-    if (b.type === 'timestamp') return { type: 'timestamp', timestamp: b.timestamp ? new Date(b.timestamp).getTime() : 0 }
+    if (b.type === 'timestamp') return { type: 'timestamp', timestamp: inputMs(b.timestamp) ?? 0 }
     return { type: b.type }
   }
 
@@ -138,14 +118,14 @@
         counted = ev
         phase = 'counted'
       } else phase = 'done'
-    } catch (e: any) {
+    } catch (e) {
       if (abort !== ctl || !open) return
       const last = ev as ReplayEvent | undefined
       if (ctl.signal.aborted) {
         phase = dry ? 'edit' : 'done'
         if (!dry && last) ev = { ...last, type: 'done', stopped_by: 'cancelled' }
       } else {
-        error = e.message
+        error = errorMessage(e)
         phase = dry ? 'edit' : 'done'
       }
     }
@@ -225,7 +205,7 @@
     </div>
 
     <label>Only records containing <input bind:value={search} placeholder="Any record" disabled={busy} /></label>
-    <label class="check"><input type="checkbox" bind:checked={useFilter} disabled={busy} /> Only records the JS filter keeps</label>
+    <label class="check opt"><input type="checkbox" bind:checked={useFilter} disabled={busy} /> Only records the JS filter keeps</label>
     {#if useFilter}
       {#await import('./FilterEditor.svelte')}
         <div class="cm-loading"></div>
@@ -239,19 +219,20 @@
       <label class="mode" class:on={!elsewhere}><input type="radio" name="replay-dest" checked={!elsewhere} disabled={busy} onchange={() => (elsewhere = false)} /><Repeat size={14} />Same topic</label>
     </fieldset>
     {#if elsewhere}
-      {#if busy}<div class="mono">{target}</div>{:else}<TopicPicker {topics} bind:value={target} id="replay-target" />{/if}
+      {#if busy}<div class="mono">{target}</div>{:else}<TopicPicker topics={names.topics} bind:value={target} id="replay-target" />{/if}
+      {#if names.error}<p class="err">{names.error}</p>{/if}
     {:else}
       <div class="warnbox"><TriangleAlert size={15} /><span>Consumers of <span class="mono">{topic}</span> will receive these records again, as new records at the end.</span></div>
     {/if}
 
-    <label class="check"><input type="checkbox" bind:checked={exact} disabled={busy} /> Exact count and time check
+    <label class="check opt"><input type="checkbox" bind:checked={exact} disabled={busy} /> Exact count and time check
       <span class="hint">Scans the range to count committed records and checks every later offset for out-of-order timestamps. Slower on large topics.</span></label>
-    <label class="check"><input type="checkbox" bind:checked={keepPartition} disabled={busy} /> Keep partition numbers
+    <label class="check opt"><input type="checkbox" bind:checked={keepPartition} disabled={busy} /> Keep partition numbers
       <span class="hint">Off: the key decides the partition, as for any producer.</span></label>
     {#if missing.length}<p class="err">{dest} has {destInfo?.partitions} partitions; partition {missing.join(', ')} does not exist there.</p>{/if}
-    <label class="check"><input type="checkbox" bind:checked={keepTimestamp} disabled={busy} /> Keep original timestamps
+    <label class="check opt"><input type="checkbox" bind:checked={keepTimestamp} disabled={busy} /> Keep original timestamps
       <span class="hint">Off: records get the time they are written. Topics with LogAppendTime always use the broker time.</span></label>
-    <label class="check"><input type="checkbox" bind:checked={mark} disabled={busy} /> Add an <code>x-resent-from</code> header
+    <label class="check opt"><input type="checkbox" bind:checked={mark} disabled={busy} /> Add an <code>x-resent-from</code> header
       <span class="hint">e.g. <code>{topic}/0/42</code>, so a replay can be told apart from the original.</span></label>
 
     {#if phase === 'counting' && ev}
@@ -325,18 +306,11 @@
 </Modal>
 
 <style>
-  .lead { font-size: 13px; color: var(--text-2); }
-  .hint { display: block; margin-left: 22px; font-size: 12px; color: var(--text-3); }
   .hint0 { font-size: 12px; color: var(--text-3); margin-top: -6px; }
-  .check { align-items: flex-start; flex-wrap: wrap; }
-  .err { color: var(--danger); font-size: 13px; overflow-wrap: anywhere; }
+  .err { overflow-wrap: anywhere; }
   .tbl { max-height: 220px; overflow: auto; }
   .sum { display: flex; align-items: center; gap: 6px; font-size: 14px; }
   .sum b { font-weight: 600; }
-  .donemsg { display: flex; align-items: center; gap: 6px; font-size: 14px; color: var(--ok); }
-  .donemsg b, .donemsg a { color: var(--text); }
-  .warnbox { display: flex; gap: 8px; align-items: flex-start; padding: 9px 11px; font-size: 13px; color: var(--warn); background: var(--warn-soft); border-radius: var(--radius); }
-  .warnbox :global(svg) { flex: none; margin-top: 1px; }
   .progress { display: grid; gap: 6px; font-size: 13px; }
   .bar { height: 6px; background: var(--surface-2); border: 1px solid var(--border); overflow: hidden; }
   .bar span { display: block; height: 100%; background: var(--cta-text); transition: width .3s ease-out; }

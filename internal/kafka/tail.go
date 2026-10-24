@@ -49,10 +49,15 @@ func (c *Client) Tail(ctx context.Context, topic string, req TailRequest, emit f
 		return err
 	}
 
-	filter, err := compileFilter(req.Filter)
+	if err := validStart(req.Start); err != nil {
+		return err
+	}
+
+	match, err := c.newMatcher(ctx, req.Search, req.Filter, req.Raw, req.As)
 	if err != nil {
 		return err
 	}
+	defer match.Stop()
 
 	release, err := c.stream()
 	if err != nil {
@@ -69,22 +74,25 @@ func (c *Client) Tail(ctx context.Context, topic string, req TailRequest, emit f
 		return fmt.Errorf("topic %q; %w", topic, ErrNotFound)
 	}
 
-	opts := append(append([]kgo.Opt(nil), c.options...),
+	reader, err := c.newKafkaClient(
 		kgo.ConsumePartitions(map[string]map[int32]kgo.Offset{topic: offsets}),
-		kgo.FetchMaxWait(500*time.Millisecond),
+		kgo.FetchMaxWait(streamFetchWait),
 	)
-
-	reader, err := kgo.NewClient(opts...)
 	if err != nil {
 		return fmt.Errorf("create reader; %w", err)
 	}
 	defer reader.Close()
 
-	var scanned, matched, scriptErrors int64
-
-	firstError := ""
+	var scanned, matched int64
 
 	lastProgress := time.Now()
+
+	progress := func(m *Message, errText string) bool {
+		return emit(TailEvent{
+			Message: m, Scanned: scanned, Matched: matched, Error: errText,
+			ScriptErrors: match.scriptErrors, FirstError: match.firstError,
+		})
+	}
 
 	for {
 		if ctx.Err() != nil {
@@ -96,7 +104,7 @@ func (c *Client) Tail(ctx context.Context, topic string, req TailRequest, emit f
 		cancel()
 
 		if err := fetches.Err0(); err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
-			if !emit(TailEvent{Scanned: scanned, Matched: matched, Error: err.Error()}) {
+			if !progress(nil, err.Error()) {
 				return nil
 			}
 
@@ -118,32 +126,21 @@ func (c *Client) Tail(ctx context.Context, topic string, req TailRequest, emit f
 
 			scanned++
 
-			d := c.decodeRecord(ctx, rec, req.Raw, req.As)
+			d, ok, err := match.match(ctx, rec)
+			if err != nil {
+				stop = true
 
-			if !textMatch(req.Search, rec, d) {
 				return
 			}
 
-			if filter != nil {
-				ok, err := evalFilter(ctx, filter, rec, d)
-				if err != nil {
-					scriptErrors++
-					if firstError == "" {
-						firstError = err.Error()
-					}
-
-					return
-				}
-
-				if !ok {
-					return
-				}
+			if !ok {
+				return
 			}
 
 			matched++
 
 			m := render(rec, d, defaultValueCutoff)
-			if !emit(TailEvent{Message: &m, Scanned: scanned, Matched: matched, ScriptErrors: scriptErrors, FirstError: firstError}) {
+			if !progress(&m, "") {
 				stop = true
 			}
 		})
@@ -155,7 +152,7 @@ func (c *Client) Tail(ctx context.Context, topic string, req TailRequest, emit f
 		if time.Since(lastProgress) >= tailProgressEvery {
 			lastProgress = time.Now()
 
-			if !emit(TailEvent{Scanned: scanned, Matched: matched, ScriptErrors: scriptErrors, FirstError: firstError}) {
+			if !progress(nil, "") {
 				return nil
 			}
 		}
@@ -168,10 +165,7 @@ func (c *Client) tailOffsets(ctx context.Context, topic string, req TailRequest)
 		return nil, fmt.Errorf("list end offsets; %w", accessErr(err))
 	}
 
-	wanted := map[int32]bool{}
-	for _, p := range req.Partitions {
-		wanted[p] = true
-	}
+	wanted := partitionSet(req.Partitions)
 
 	out := map[int32]kgo.Offset{}
 
@@ -182,17 +176,17 @@ func (c *Client) tailOffsets(ctx context.Context, topic string, req TailRequest)
 			}
 
 			switch req.Start {
-			case "oldest":
+			case StartOldest:
 				out[p] = kgo.NewOffset().AtStart()
-			case "last":
+			case StartLast:
 				// The last N of each partition, then everything new.
 				out[p] = kgo.NewOffset().AtEnd().Relative(-max(req.Offset, 0))
-			case "offset":
+			case StartOffset:
 				// Past a partition's end the broker answers out of range and
 				// the reader would rewind it to the start, replaying the
 				// whole partition; from its end it just waits for new ones.
 				out[p] = kgo.NewOffset().At(min(max(req.Offset, 0), o.Offset))
-			case "timestamp":
+			case StartTimestamp:
 				out[p] = kgo.NewOffset().AfterMilli(req.Timestamp)
 			default:
 				out[p] = kgo.NewOffset().At(o.Offset)
