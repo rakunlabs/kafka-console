@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -32,6 +33,14 @@ const (
 	// gcpFormatManagedKafka wraps the token in the GOOG_OAUTH2_TOKEN format
 	// expected by Google Managed Service for Apache Kafka.
 	gcpFormatManagedKafka = "managed_kafka"
+
+	// gcpSourceWIF gets tokens with X.509 workload identity federation.
+	gcpSourceWIF = "wif"
+	// gcpSourceMetadata gets tokens from the GCE/GKE metadata server, as used
+	// by GKE Workload Identity.
+	gcpSourceMetadata = "metadata"
+
+	gcpDefaultMetadataURL = "http://metadata.google.internal"
 )
 
 type gcpExternalAccount struct {
@@ -52,10 +61,12 @@ type gcpTokenSource struct {
 	timeout time.Duration
 	now     func() time.Time
 
-	mu     sync.Mutex
-	mtls   *mtlsClient
-	client *http.Client
-	cached *gcpToken
+	mu       sync.Mutex
+	mtls     *mtlsClient
+	client   *http.Client
+	metadata *http.Client
+	email    string
+	cached   *gcpToken
 }
 
 func gcpReadFile(path string) (string, error) {
@@ -67,59 +78,90 @@ func gcpReadFile(path string) (string, error) {
 	return v, nil
 }
 
-func newGCPTokenSource(c config.GCP, timeout time.Duration) (*gcpTokenSource, error) {
-	for _, p := range []struct {
-		name         string
-		inline, file string
-	}{
-		{"credentials", c.Credentials, c.CredentialsFile},
-	} {
-		if p.inline != "" && p.file != "" {
-			return nil, fmt.Errorf("gcp: %s and %s_file cannot be used together", p.name, p.name)
-		}
+func gcpValidURL(u string) error {
+	if p, err := url.Parse(u); err != nil || p.Host == "" || (p.Scheme != "https" && p.Scheme != "http") {
+		return fmt.Errorf("gcp: %q must be an absolute HTTP or HTTPS URL", u)
 	}
 
-	if c.CredentialsFile != "" {
-		v, err := gcpReadFile(c.CredentialsFile)
-		if err != nil {
+	return nil
+}
+
+func newGCPTokenSource(c config.GCP, timeout time.Duration) (*gcpTokenSource, error) {
+	switch c.Source {
+	case "":
+		c.Source = gcpSourceWIF
+	case gcpSourceWIF, gcpSourceMetadata:
+	default:
+		return nil, fmt.Errorf("gcp: unknown source %q", c.Source)
+	}
+
+	if c.Credentials != "" && c.CredentialsFile != "" {
+		return nil, errors.New("gcp: credentials and credentials_file cannot be used together")
+	}
+
+	if c.Source == gcpSourceMetadata {
+		if c.Credentials != "" || c.CredentialsFile != "" || c.Cert != "" || c.CertFile != "" || c.Key != "" || c.KeyFile != "" ||
+			c.Audience != "" || c.TokenURL != "" {
+			return nil, errors.New("gcp: credentials, cert, key, audience and token_url are not used with source metadata")
+		}
+
+		if c.MetadataURL == "" {
+			c.MetadataURL = gcpDefaultMetadataURL
+			if h := os.Getenv("GCE_METADATA_HOST"); h != "" {
+				c.MetadataURL = "http://" + h
+			}
+		}
+
+		c.MetadataURL = strings.TrimRight(c.MetadataURL, "/")
+		if err := gcpValidURL(c.MetadataURL); err != nil {
 			return nil, err
 		}
+	} else {
+		if c.MetadataURL != "" {
+			return nil, errors.New("gcp: metadata_url is only used with source metadata")
+		}
 
-		c.Credentials = v
+		if c.CredentialsFile != "" {
+			v, err := gcpReadFile(c.CredentialsFile)
+			if err != nil {
+				return nil, err
+			}
+
+			c.Credentials = v
+		}
+
+		if c.Credentials != "" {
+			var ea gcpExternalAccount
+			if err := json.Unmarshal([]byte(c.Credentials), &ea); err != nil {
+				return nil, fmt.Errorf("gcp: parse credentials: %w", err)
+			}
+
+			if ea.Type != "" && ea.Type != "external_account" {
+				return nil, fmt.Errorf("gcp: unsupported credentials type %q", ea.Type)
+			}
+
+			if ea.SubjectTokenType != "" && ea.SubjectTokenType != gcpTokenTypeMTLS {
+				return nil, fmt.Errorf("gcp: unsupported subject_token_type %q, only %s", ea.SubjectTokenType, gcpTokenTypeMTLS)
+			}
+
+			c.Audience = gcpFirst(c.Audience, ea.Audience)
+			c.TokenURL = gcpFirst(c.TokenURL, ea.TokenURL)
+			c.ServiceAccountImpersonationURL = gcpFirst(c.ServiceAccountImpersonationURL, ea.ServiceAccountImpersonationURL)
+		}
+
+		if c.Audience == "" {
+			return nil, errors.New("gcp: audience is required")
+		}
+
+		c.TokenURL = gcpFirst(c.TokenURL, gcpDefaultTokenURL)
+		if err := gcpValidURL(c.TokenURL); err != nil {
+			return nil, err
+		}
 	}
 
-	if c.Credentials != "" {
-		var ea gcpExternalAccount
-		if err := json.Unmarshal([]byte(c.Credentials), &ea); err != nil {
-			return nil, fmt.Errorf("gcp: parse credentials: %w", err)
-		}
-
-		if ea.Type != "" && ea.Type != "external_account" {
-			return nil, fmt.Errorf("gcp: unsupported credentials type %q", ea.Type)
-		}
-
-		if ea.SubjectTokenType != "" && ea.SubjectTokenType != gcpTokenTypeMTLS {
-			return nil, fmt.Errorf("gcp: unsupported subject_token_type %q, only %s", ea.SubjectTokenType, gcpTokenTypeMTLS)
-		}
-
-		c.Audience = gcpFirst(c.Audience, ea.Audience)
-		c.TokenURL = gcpFirst(c.TokenURL, ea.TokenURL)
-		c.ServiceAccountImpersonationURL = gcpFirst(c.ServiceAccountImpersonationURL, ea.ServiceAccountImpersonationURL)
-	}
-
-	if c.Audience == "" {
-		return nil, errors.New("gcp: audience is required")
-	}
-
-	c.TokenURL = gcpFirst(c.TokenURL, gcpDefaultTokenURL)
-
-	for _, u := range []string{c.TokenURL, c.ServiceAccountImpersonationURL} {
-		if u == "" {
-			continue
-		}
-
-		if p, err := url.Parse(u); err != nil || p.Host == "" || (p.Scheme != "https" && p.Scheme != "http") {
-			return nil, fmt.Errorf("gcp: %q must be an absolute HTTP or HTTPS URL", u)
+	if c.ServiceAccountImpersonationURL != "" {
+		if err := gcpValidURL(c.ServiceAccountImpersonationURL); err != nil {
+			return nil, err
 		}
 	}
 
@@ -144,13 +186,15 @@ func newGCPTokenSource(c config.GCP, timeout time.Duration) (*gcpTokenSource, er
 		c.Format = gcpFormatRaw
 	case gcpFormatRaw:
 	case gcpFormatManagedKafka:
-		if gcpServiceAccountEmail(c.ServiceAccountImpersonationURL) == "" {
+		// The metadata server reports its own service account email.
+		if c.Source == gcpSourceWIF && gcpServiceAccountEmail(c.ServiceAccountImpersonationURL) == "" {
 			return nil, errors.New("gcp: managed_kafka format requires service_account_impersonation_url")
 		}
 	default:
 		return nil, fmt.Errorf("gcp: unknown format %q", c.Format)
 	}
 
+	// For source metadata this client only reaches the impersonation endpoint.
 	m, err := newMTLSClient(config.OAuthTLS{
 		Cert: c.Cert, CertFile: c.CertFile,
 		Key: c.Key, KeyFile: c.KeyFile,
@@ -161,11 +205,20 @@ func newGCPTokenSource(c config.GCP, timeout time.Duration) (*gcpTokenSource, er
 		return nil, fmt.Errorf("gcp: %w", err)
 	}
 
+	s := &gcpTokenSource{cfg: c, timeout: timeout, now: time.Now, mtls: m}
+
+	if c.Source == gcpSourceMetadata {
+		// The metadata server is link-local; never send it through a proxy.
+		tr := http.DefaultTransport.(*http.Transport).Clone()
+		tr.Proxy = nil
+		s.metadata = &http.Client{Transport: tr}
+
+		return s, nil
+	}
+
 	if m.CertPEM() == "" {
 		return nil, errors.New("gcp: cert and key are required")
 	}
-
-	s := &gcpTokenSource{cfg: c, timeout: timeout, now: time.Now, mtls: m}
 
 	if _, err := s.subjectToken(); err != nil {
 		return nil, err
@@ -261,6 +314,26 @@ func (s *gcpTokenSource) fetch(ctx context.Context) (*gcpToken, error) {
 
 	s.client = client
 
+	var base *gcpToken
+
+	if s.cfg.Source == gcpSourceMetadata {
+		base, err = s.fetchMetadata(ctx)
+	} else {
+		base, err = s.fetchSTS(ctx)
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	if s.cfg.ServiceAccountImpersonationURL == "" {
+		return base, nil
+	}
+
+	return s.impersonate(ctx, base.accessToken)
+}
+
+func (s *gcpTokenSource) fetchSTS(ctx context.Context) (*gcpToken, error) {
 	subject, err := s.subjectToken()
 	if err != nil {
 		return nil, err
@@ -287,7 +360,7 @@ func (s *gcpTokenSource) fetch(ctx context.Context) (*gcpToken, error) {
 		ExpiresIn   int64  `json:"expires_in"`
 	}
 
-	if err := s.do(req, &sts); err != nil {
+	if err := s.do(s.client, req, &sts); err != nil {
 		return nil, fmt.Errorf("gcp: sts exchange: %w", err)
 	}
 
@@ -295,13 +368,57 @@ func (s *gcpTokenSource) fetch(ctx context.Context) (*gcpToken, error) {
 		return nil, errors.New("gcp: sts exchange: empty access_token")
 	}
 
-	if s.cfg.ServiceAccountImpersonationURL == "" {
-		return &gcpToken{
-			accessToken: sts.AccessToken,
-			expiry:      s.now().Add(time.Duration(sts.ExpiresIn) * time.Second),
-		}, nil
+	return &gcpToken{
+		accessToken: sts.AccessToken,
+		expiry:      s.now().Add(time.Duration(sts.ExpiresIn) * time.Second),
+	}, nil
+}
+
+func (s *gcpTokenSource) metadataGet(ctx context.Context, path string, v any) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.cfg.MetadataURL+"/computeMetadata/v1/instance/service-accounts/default/"+path, nil)
+	if err != nil {
+		return err
 	}
 
+	req.Header.Set("Metadata-Flavor", "Google")
+
+	return s.do(s.metadata, req, v)
+}
+
+func (s *gcpTokenSource) fetchMetadata(ctx context.Context) (*gcpToken, error) {
+	if s.cfg.Format == gcpFormatManagedKafka && s.cfg.ServiceAccountImpersonationURL == "" && s.email == "" {
+		var email string
+		if err := s.metadataGet(ctx, "email", &email); err != nil {
+			return nil, fmt.Errorf("gcp: metadata email: %w", err)
+		}
+
+		if email == "" {
+			return nil, errors.New("gcp: metadata email: empty")
+		}
+
+		s.email = email
+	}
+
+	var tok struct {
+		AccessToken string `json:"access_token"`
+		ExpiresIn   int64  `json:"expires_in"`
+	}
+
+	if err := s.metadataGet(ctx, "token?scopes="+url.QueryEscape(strings.Join(s.cfg.Scopes, ",")), &tok); err != nil {
+		return nil, fmt.Errorf("gcp: metadata token: %w", err)
+	}
+
+	if tok.AccessToken == "" {
+		return nil, errors.New("gcp: metadata token: empty access_token")
+	}
+
+	return &gcpToken{
+		accessToken: tok.AccessToken,
+		expiry:      s.now().Add(time.Duration(tok.ExpiresIn) * time.Second),
+	}, nil
+}
+
+func (s *gcpTokenSource) impersonate(ctx context.Context, accessToken string) (*gcpToken, error) {
 	body, err := json.Marshal(map[string]any{
 		"scope":    s.cfg.Scopes,
 		"lifetime": strconv.FormatInt(int64(s.cfg.Lifetime.Seconds()), 10) + "s",
@@ -310,20 +427,20 @@ func (s *gcpTokenSource) fetch(ctx context.Context) (*gcpToken, error) {
 		return nil, err
 	}
 
-	req, err = http.NewRequestWithContext(ctx, http.MethodPost, s.cfg.ServiceAccountImpersonationURL, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.cfg.ServiceAccountImpersonationURL, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+sts.AccessToken)
+	req.Header.Set("Authorization", "Bearer "+accessToken)
 
 	var imp struct {
 		AccessToken string    `json:"accessToken"`
 		ExpireTime  time.Time `json:"expireTime"`
 	}
 
-	if err := s.do(req, &imp); err != nil {
+	if err := s.do(s.client, req, &imp); err != nil {
 		return nil, fmt.Errorf("gcp: impersonation: %w", err)
 	}
 
@@ -334,8 +451,8 @@ func (s *gcpTokenSource) fetch(ctx context.Context) (*gcpToken, error) {
 	return &gcpToken{accessToken: imp.AccessToken, expiry: imp.ExpireTime}, nil
 }
 
-func (s *gcpTokenSource) do(req *http.Request, v any) error {
-	resp, err := s.client.Do(req)
+func (s *gcpTokenSource) do(client *http.Client, req *http.Request, v any) error {
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
@@ -351,7 +468,22 @@ func (s *gcpTokenSource) do(req *http.Request, v any) error {
 		return fmt.Errorf("status %d", resp.StatusCode)
 	}
 
+	if p, ok := v.(*string); ok {
+		*p = strings.TrimSpace(string(b))
+
+		return nil
+	}
+
 	return json.Unmarshal(b, v)
+}
+
+// subject is the service account email the managed_kafka token is issued for.
+func (s *gcpTokenSource) subject() string {
+	if e := gcpServiceAccountEmail(s.cfg.ServiceAccountImpersonationURL); e != "" {
+		return e
+	}
+
+	return s.email
 }
 
 func (s *gcpTokenSource) format(t *gcpToken) (string, error) {
@@ -371,7 +503,7 @@ func (s *gcpTokenSource) format(t *gcpToken) (string, error) {
 		"iat":   s.now().Unix(),
 		"iss":   "Google",
 		"scope": "kafka",
-		"sub":   gcpServiceAccountEmail(s.cfg.ServiceAccountImpersonationURL),
+		"sub":   s.subject(),
 	})
 	if err != nil {
 		return "", err

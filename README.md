@@ -304,6 +304,26 @@ sasl:
       # proxy: ""                # falls back to oauth.proxy
 ```
 
+Inside GCP, for example a GKE pod with Workload Identity, use
+`source: metadata` instead. Tokens come from the metadata server for the
+pod's service account, so no credential file, certificate or proxy is
+needed; with `format: managed_kafka` the service account email is read from
+the metadata server too. The metadata server is always reached without a
+proxy.
+
+```yaml
+tls:
+  enabled: true                  # system roots verify Google Managed Kafka
+sasl:
+  mechanism: oauthbearer
+  oauth:
+    gcp:
+      enabled: true
+      source: metadata
+      format: managed_kafka
+      # metadata_url: http://metadata.google.internal  # default; GCE_METADATA_HOST overrides
+```
+
 Certificates, keys and CAs can be given inline (`cert`, `key`, `ca`,
 `credentials`) or as files (`*_file`), but not both for the same value. Files
 are re-read on each token refresh, so rotated certificates work without a

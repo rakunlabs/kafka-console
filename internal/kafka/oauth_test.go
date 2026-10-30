@@ -680,3 +680,110 @@ func TestOAuthGCPProxy(t *testing.T) {
 		t.Fatalf("initial = %q, connects = %d, sts = %d", initial, connects.Load(), f.sts.Load())
 	}
 }
+
+type gcpMetadataFake struct {
+	srv          *httptest.Server
+	token, email atomic.Int32
+	scopes       atomic.Value
+}
+
+func newGCPMetadataFake(t *testing.T) *gcpMetadataFake {
+	t.Helper()
+
+	f := &gcpMetadataFake{}
+
+	const base = "/computeMetadata/v1/instance/service-accounts/default/"
+
+	mux := http.NewServeMux()
+	mux.HandleFunc(base+"token", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Metadata-Flavor") != "Google" {
+			http.Error(w, "missing flavor", http.StatusForbidden)
+			return
+		}
+
+		f.token.Add(1)
+		f.scopes.Store(r.URL.Query().Get("scopes"))
+		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "ya29.metadata", "expires_in": 3600, "token_type": "Bearer"})
+	})
+	mux.HandleFunc(base+"email", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Metadata-Flavor") != "Google" {
+			http.Error(w, "missing flavor", http.StatusForbidden)
+			return
+		}
+
+		f.email.Add(1)
+		_, _ = io.WriteString(w, "gke-sa@proj.iam.gserviceaccount.com")
+	})
+
+	f.srv = httptest.NewServer(mux)
+	t.Cleanup(f.srv.Close)
+
+	return f
+}
+
+func TestOAuthGCPMetadata(t *testing.T) {
+	f := newGCPMetadataFake(t)
+
+	m, err := oauthMechanism(config.OAuth{GCP: config.GCP{
+		Enabled: true, Source: gcpSourceMetadata, MetadataURL: f.srv.URL + "/", Format: gcpFormatManagedKafka,
+	}})
+	must(t, err)
+
+	for range 3 {
+		_, initial, err := m.Authenticate(t.Context(), "broker:9092")
+		must(t, err)
+
+		token := strings.TrimSuffix(strings.SplitN(string(initial), "auth=Bearer ", 2)[1], "\x01\x01")
+
+		parts := strings.Split(token, ".")
+		if len(parts) != 3 {
+			t.Fatalf("token has %d parts", len(parts))
+		}
+
+		payload, _ := base64.RawURLEncoding.DecodeString(parts[1])
+		sig, _ := base64.RawURLEncoding.DecodeString(parts[2])
+
+		if !strings.Contains(string(payload), `"sub":"gke-sa@proj.iam.gserviceaccount.com"`) || string(sig) != "ya29.metadata" {
+			t.Fatalf("payload = %s, sig = %s", payload, sig)
+		}
+	}
+
+	if f.token.Load() != 1 || f.email.Load() != 1 {
+		t.Fatalf("token calls = %d, email calls = %d", f.token.Load(), f.email.Load())
+	}
+
+	if got := f.scopes.Load(); got != gcpScopeCloudPlatform {
+		t.Fatalf("scopes = %v", got)
+	}
+}
+
+func TestOAuthGCPMetadataEnvHostAndNoProxy(t *testing.T) {
+	f := newGCPMetadataFake(t)
+	t.Setenv("GCE_METADATA_HOST", strings.TrimPrefix(f.srv.URL, "http://"))
+	t.Setenv("HTTP_PROXY", "http://127.0.0.1:1")
+
+	s, err := newGCPTokenSource(config.GCP{Enabled: true, Source: gcpSourceMetadata}, time.Second)
+	must(t, err)
+
+	token, err := s.Token(t.Context())
+	must(t, err)
+
+	if token != "ya29.metadata" || f.email.Load() != 0 {
+		t.Fatalf("token = %q, email calls = %d", token, f.email.Load())
+	}
+}
+
+func TestOAuthGCPMetadataValidation(t *testing.T) {
+	for name, c := range map[string]config.GCP{
+		"bad source":      {Enabled: true, Source: "nope"},
+		"with cert":       {Enabled: true, Source: gcpSourceMetadata, Cert: "x", Key: "y"},
+		"with creds":      {Enabled: true, Source: gcpSourceMetadata, Credentials: "{}"},
+		"with audience":   {Enabled: true, Source: gcpSourceMetadata, Audience: "a"},
+		"bad url":         {Enabled: true, Source: gcpSourceMetadata, MetadataURL: "metadata"},
+		"metadata on wif": {Enabled: true, Audience: "a", Cert: "x", Key: "y", MetadataURL: "http://m"},
+	} {
+		if _, err := oauthMechanism(config.OAuth{GCP: c}); err == nil {
+			t.Errorf("%s: want error", name)
+		}
+	}
+}

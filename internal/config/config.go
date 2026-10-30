@@ -531,9 +531,17 @@ func (t OAuthTLS) IsSet() bool {
 }
 
 // GCP gets Google Cloud access tokens with X.509 workload identity
-// federation, optionally impersonating a service account.
+// federation (source "wif", the default) or from the metadata server
+// (source "metadata", for GKE Workload Identity), optionally impersonating
+// a service account.
 type GCP struct {
 	Enabled bool `cfg:"enabled"`
+
+	// Source is "wif" (default) or "metadata".
+	Source string `cfg:"source"`
+	// MetadataURL is the metadata server for source "metadata"; default
+	// http://$GCE_METADATA_HOST or http://metadata.google.internal.
+	MetadataURL string `cfg:"metadata_url"`
 
 	// Credentials is the "external_account" JSON; credential_source is ignored.
 	Credentials     string `cfg:"credentials" log:"-"`
