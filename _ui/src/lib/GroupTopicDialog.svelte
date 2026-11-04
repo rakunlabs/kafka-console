@@ -19,6 +19,8 @@
     group: fixedGroup,
     existingTopics = [],
     activeMembers = 0,
+    topic: presetTopic = '',
+    sourceGroup = '',
     ondone,
   }: {
     cluster: Cluster
@@ -26,6 +28,10 @@
     group?: string
     existingTopics?: string[]
     activeMembers?: number
+    // Starts with this topic picked.
+    topic?: string
+    // Starts by copying this group's offsets, when it has any on the topic.
+    sourceGroup?: string
     ondone?: () => void
   } = $props()
 
@@ -35,7 +41,7 @@
 
   let step = $state<1 | 2>(1)
   let name = $state('')
-  let topic = $state('')
+  let topic = $state(untrack(() => presetTopic))
   const names = topicNames(untrack(() => cluster.name))
   let groupNames = $state<string[]>([])
   let mode = $state<Mode>('manual')
@@ -66,6 +72,10 @@
       source = sources[0]?.group ?? ''
       mode = 'manual'
       applyStart('latest')
+      if (sourceGroup && sources.some((s) => s.group === sourceGroup)) {
+        mode = 'copy'
+        copyFrom(sourceGroup)
+      }
       step = 2
     } catch (e) {
       error = errorMessage(e)
@@ -156,7 +166,7 @@
   }
 </script>
 
-<Modal title={adding ? `Add topic to ${fixedGroup}` : 'New consumer group'} bind:open width={680}>
+<Modal title={adding ? `Add topic to ${fixedGroup}` : sourceGroup ? `New group from ${sourceGroup}` : 'New consumer group'} bind:open width={680}>
   {#if result}
     <div class="donemsg"><Check size={15} />
       {adding ? `${topic} added to` : 'Created'} <b class="mono">{groupName}</b> with {result.length} {result.length === 1 ? 'partition' : 'partitions'}.

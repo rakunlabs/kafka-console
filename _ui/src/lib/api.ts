@@ -320,6 +320,8 @@ export type TopicConsumer = {
 
 export type ResetPlan = { partition: number; from: number; to: number; low: number; high: number }
 
+export type RecordTime = { partition: number; offset: number; timestamp?: string; error?: string }
+
 // offsets commits the listed offsets as they are (restore, copy a group);
 // a body with plan commits a reviewed preview.
 export type ResetStrategy = 'earliest' | 'latest' | 'offset' | 'offsets' | 'timestamp' | 'shift'
@@ -646,6 +648,8 @@ export const api = {
   topics: (c: string, q: TopicQuery = {}) => request<TopicPage>('GET', `${cl(c)}/topics?${query(q)}`),
   topic: (c: string, t: string) => request<TopicDetail>('GET', `${tp(c, t)}`),
   topicConsumers: (c: string, t: string) => request<TopicConsumer[]>('GET', `${tp(c, t)}/consumers`),
+  recordTimes: (c: string, t: string, at: PartitionOffset[]) =>
+    request<RecordTime[]>('GET', `${tp(c, t)}/record-times?${query({ at: at.map((r) => `${r.partition}:${r.offset}`).join(',') })}`),
   createTopic: (c: string, body: CreateTopicBody) =>
     request<{ name: string }>('POST', `${cl(c)}/topics`, body),
   deleteTopic: (c: string, t: string) => request<void>('DELETE', `${tp(c, t)}`),

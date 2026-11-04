@@ -410,3 +410,28 @@ func TestResendResultsMatchTheirSource(t *testing.T) {
 		t.Fatalf("order within partition 2 lost: %+v", res)
 	}
 }
+
+func TestRecordTimes(t *testing.T) {
+	c := fakeCluster(t, map[string]int32{"orders": 1})
+	at := time.UnixMilli(1_700_000_000_000)
+	seed(t, c, "orders", 0, 3, at)
+
+	got, err := c.RecordTimes(t.Context(), "orders", []RecordRef{{0, 2}, {0, 0}, {0, 9}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 || got[0].Offset != 2 || got[1].Offset != 0 {
+		t.Fatalf("not in the order asked: %+v", got)
+	}
+	if !got[0].Timestamp.Equal(at.Add(2*time.Second)) || !got[1].Timestamp.Equal(at) {
+		t.Fatalf("wrong timestamps: %+v", got)
+	}
+	if got[2].Error == "" || !got[2].Timestamp.IsZero() {
+		t.Fatalf("offset past the end not reported: %+v", got[2])
+	}
+
+	var invalid ErrInvalid
+	if _, err := c.RecordTimes(t.Context(), "orders", []RecordRef{{Partition: -1}}); !errors.As(err, &invalid) {
+		t.Fatalf("negative partition accepted: %v", err)
+	}
+}

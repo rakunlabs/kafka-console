@@ -57,3 +57,18 @@ export function href(cluster: string, section = 'overview', name = '', query?: R
 export function go(cluster: string, section = 'overview', name = '', query?: Record<string, string>) {
   location.hash = href(cluster, section, name, query)
 }
+
+// Updates query values of the current page in place, without a history
+// entry or a hashchange: for view state (open rows, filters) that a reload
+// or a shared link should keep. Empty values are removed.
+export function replaceQuery(values: Record<string, string | string[] | undefined>) {
+  const raw = location.hash.replace(/^#/, '')
+  const [path, qs = ''] = raw.split('?')
+  const q = new URLSearchParams(qs)
+  for (const [k, v] of Object.entries(values)) {
+    q.delete(k)
+    for (const one of Array.isArray(v) ? v : [v]) if (one) q.append(k, one)
+  }
+  const s = q.toString()
+  history.replaceState(history.state, '', `#${path}${s ? `?${s}` : ''}`)
+}

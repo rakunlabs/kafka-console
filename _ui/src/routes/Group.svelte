@@ -6,7 +6,7 @@
   import { api, isAbort, type Cluster } from '../lib/api'
   import { resource } from '../lib/resource.svelte'
   import { fmt, stateBadge } from '../lib/format'
-  import { href, go } from '../lib/router.svelte'
+  import { href, go, router } from '../lib/router.svelte'
   import PartitionOffsets from '../lib/PartitionOffsets.svelte'
   import OffsetDialog from '../lib/OffsetDialog.svelte'
   import ConfirmDialog from '../lib/ConfirmDialog.svelte'
@@ -66,6 +66,12 @@
     }
   }
   const hasCommits = $derived(!!data?.partitions.some((p) => p.committed >= 0 && !p.no_access))
+
+  // A link from a topic's Consumers tab names one member to point out.
+  const member = $derived(router.route.query.get('member') ?? '')
+  function reveal(el: HTMLElement) {
+    requestAnimationFrame(() => el.scrollIntoView({ block: 'center' }))
+  }
 
   // Fresh readings for the catch-up estimate; the page's own data is left alone.
   async function reading(topic?: string) {
@@ -178,7 +184,11 @@
       <thead><tr><th>Client ID</th><th>Host</th><th>Member ID</th></tr></thead>
       <tbody>
         {#each data.members as m (m.id)}
-          <tr><td class="mono">{m.client_id}</td><td class="mono">{m.host}</td><td class="mono faint small grow" title={m.id}>{m.id}</td></tr>
+          {#if m.id === member}
+            <tr class="hl" use:reveal><td class="mono">{m.client_id}</td><td class="mono">{m.host}</td><td class="mono faint small grow" title={m.id}>{m.id}</td></tr>
+          {:else}
+            <tr><td class="mono">{m.client_id}</td><td class="mono">{m.host}</td><td class="mono faint small grow" title={m.id}>{m.id}</td></tr>
+          {/if}
         {:else}
           <tr><td colspan="3" class="faint">No active members.</td></tr>
         {/each}
@@ -222,4 +232,6 @@
   .acts { display: flex; flex-wrap: wrap; gap: 8px; }
   .noaccess { padding: 12px 14px; font-size: 13px; color: var(--text-2); }
   .lagnum { background: var(--sel); padding: 0 4px; }
+  tr.hl td { background: var(--sel); }
+  tr.hl td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
 </style>

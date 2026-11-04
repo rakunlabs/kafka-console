@@ -72,6 +72,57 @@ func (c *Client) Message(ctx context.Context, topic string, ref RecordRef) (*Mes
 	return &m, nil
 }
 
+// maxRecordTimes bounds one RecordTimes request.
+const maxRecordTimes = 1000
+
+// RecordTime is when one record was written; Error says why it is unknown.
+type RecordTime struct {
+	Partition int32     `json:"partition"`
+	Offset    int64     `json:"offset"`
+	Timestamp time.Time `json:"timestamp,omitzero"`
+	Error     string    `json:"error,omitempty"`
+}
+
+// RecordTimes reads the timestamps of exact records, in the order asked,
+// without decoding them: a group's committed offsets, to tell how old the
+// oldest message it has not read yet is.
+func (c *Client) RecordTimes(ctx context.Context, topic string, refs []RecordRef) ([]RecordTime, error) {
+	if len(refs) > maxRecordTimes {
+		return nil, ErrInvalid{fmt.Errorf("at most %d records per request", maxRecordTimes)}
+	}
+
+	for _, r := range refs {
+		if r.Partition < 0 || r.Offset < 0 {
+			return nil, ErrInvalid{errors.New("partition and offset must be non-negative")}
+		}
+	}
+
+	out := make([]RecordTime, len(refs))
+	if len(refs) == 0 {
+		return out, nil
+	}
+
+	records, err := c.fetchExact(ctx, topic, refs)
+	timedOut := errors.Is(err, context.DeadlineExceeded)
+	if err != nil && !timedOut {
+		return nil, err
+	}
+
+	for i, r := range refs {
+		out[i] = RecordTime{Partition: r.Partition, Offset: r.Offset}
+		switch rec, ok := records[r]; {
+		case ok:
+			out[i].Timestamp = rec.Timestamp
+		case timedOut:
+			out[i].Error = "not read before the read stopped"
+		default:
+			out[i].Error = errGone
+		}
+	}
+
+	return out, nil
+}
+
 // RawRecord reads one exact record's bytes, for downloading a key or value
 // too large (or too binary) to show.
 func (c *Client) RawRecord(ctx context.Context, topic string, ref RecordRef) (*kgo.Record, error) {

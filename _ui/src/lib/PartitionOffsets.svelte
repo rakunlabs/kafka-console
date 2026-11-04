@@ -18,6 +18,7 @@
     rows,
     activeMembers = 0,
     showLow = false,
+    highlight,
     onchanged,
   }: {
     cluster: Cluster
@@ -26,6 +27,8 @@
     rows: PartitionLag[]
     activeMembers?: number
     showLow?: boolean
+    // Partitions to point out, such as the ones one client owns.
+    highlight?: Set<number>
     onchanged?: () => void
   } = $props()
 
@@ -95,7 +98,7 @@
     </thead>
     <tbody>
       {#each rows.slice(0, shown) as p (p.partition)}
-        <tr class:picked={selected.has(p.partition)}>
+        <tr class:picked={selected.has(p.partition)} class:hl={highlight?.has(p.partition)}>
           {#if editable}
             <td class="ck">
               <input type="checkbox" checked={selected.has(p.partition)} onchange={() => toggle(p.partition)} aria-label="Select partition {p.partition}" />
@@ -148,6 +151,8 @@
   tr:hover .edit, .edit:focus-visible { opacity: 1; color: var(--text); }
   .edit:hover:not(:disabled) { background: var(--cta); border-color: var(--cta-border); color: var(--cta-text); opacity: 1; }
   tbody tr.picked td { background: var(--sel); }
+  tbody tr.hl td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
+  tbody tr.hl td { color: var(--text); font-weight: 500; }
   .lagpill { display: inline-block; padding: 0 6px; line-height: 18px; vertical-align: top; background: var(--sel); box-shadow: inset 0 0 0 1px var(--cta-border); border-radius: 2px; font-weight: 600; }
   .selbar {
     display: flex;

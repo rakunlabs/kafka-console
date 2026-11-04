@@ -162,6 +162,7 @@ func (s *Server) routes(api *ada.Mux) {
 	c.GET("/topics/{topic}/consumers", s.topicConsumers)
 
 	c.GET("/topics/{topic}/messages", s.messages)
+	c.GET("/topics/{topic}/record-times", s.recordTimes)
 	c.GET("/topics/{topic}/messages/{partition}/{offset}", s.message)
 	c.GET("/topics/{topic}/messages/{partition}/{offset}/raw", s.rawMessage)
 	c.GET("/topics/{topic}/tail", s.tail)

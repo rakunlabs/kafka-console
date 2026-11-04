@@ -27,3 +27,18 @@ func TestMessageReferenceValidation(t *testing.T) {
 		}
 	}
 }
+
+func TestParseRefs(t *testing.T) {
+	refs, err := parseRefs(" 0:12, 3:40")
+	if err != nil || len(refs) != 2 || refs[1].Partition != 3 || refs[1].Offset != 40 {
+		t.Fatalf("got %+v, %v", refs, err)
+	}
+	if refs, err := parseRefs(""); err != nil || len(refs) != 0 {
+		t.Fatalf("empty: %+v, %v", refs, err)
+	}
+	for _, bad := range []string{"0", "a:1", "0:-1", "-1:0", "0:1,"} {
+		if _, err := parseRefs(bad); err == nil {
+			t.Errorf("%q accepted", bad)
+		}
+	}
+}

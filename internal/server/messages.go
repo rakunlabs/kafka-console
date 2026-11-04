@@ -5,6 +5,7 @@ import (
 	"mime"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/rakunlabs/ada"
@@ -99,6 +100,39 @@ func recordRef(c *ada.Context) (kafka.RecordRef, error) {
 	}
 
 	return kafka.RecordRef{Partition: int32(partition), Offset: offset}, nil
+}
+
+// recordTimes answers when records were written: ?at=0:12,3:40 lists
+// partition:offset pairs.
+func (s *Server) recordTimes(c *ada.Context) error {
+	refs, err := parseRefs(c.Request.URL.Query().Get("at"))
+	if err != nil {
+		return ada.WrapHTTPError(http.StatusBadRequest, err)
+	}
+
+	return s.handle(c, func(cl *kafka.Client) (any, error) {
+		return cl.RecordTimes(c.Request.Context(), c.Request.PathValue("topic"), refs)
+	})
+}
+
+func parseRefs(text string) ([]kafka.RecordRef, error) {
+	refs := []kafka.RecordRef{}
+	if strings.TrimSpace(text) == "" {
+		return refs, nil
+	}
+
+	for _, pair := range strings.Split(text, ",") {
+		p, o, ok := strings.Cut(strings.TrimSpace(pair), ":")
+		partition, perr := strconv.ParseInt(p, 10, 32)
+		offset, oerr := strconv.ParseInt(o, 10, 64)
+		if !ok || perr != nil || oerr != nil || partition < 0 || offset < 0 {
+			return nil, fmt.Errorf("at: %q is not partition:offset", pair)
+		}
+
+		refs = append(refs, kafka.RecordRef{Partition: int32(partition), Offset: offset})
+	}
+
+	return refs, nil
 }
 
 func (s *Server) message(c *ada.Context) error {
