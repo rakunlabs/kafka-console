@@ -33,7 +33,12 @@ func Check(source string, parameters ...string) []Problem {
 			out := make([]Problem, 0, len(list))
 			seen := map[Problem]bool{}
 			for _, e := range list {
-				p := at(e.Position.Line, e.Position.Column, e.Message)
+				line, column := 1, 1
+				if e.File != nil {
+					pos := e.File.Position(e.Offset)
+					line, column = pos.Line, pos.Column
+				}
+				p := at(line, column, e.Message)
 				if !seen[p] {
 					seen[p] = true
 					out = append(out, p)

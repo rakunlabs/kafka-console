@@ -124,6 +124,46 @@ func TestMCPPolicyAndProtocol(t *testing.T) {
 	}
 }
 
+func TestMCPServesTheBuiltInSkill(t *testing.T) {
+	cfg := &config.Config{
+		Clusters: map[string]*config.Cluster{"local": {Brokers: []string{"localhost:1"}}},
+		MCP:      config.MCP{Enabled: true},
+	}
+	server := ada.New()
+	registry, err := kafka.NewRegistry(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer registry.Close()
+	if err := mountTestMCP(server, cfg, registry); err != nil {
+		t.Fatal(err)
+	}
+	host := httptest.NewServer(server)
+	defer host.Close()
+	client := mcp.NewClient(&mcp.Implementation{Name: "console-test", Version: "1"}, nil)
+	session, err := client.Connect(t.Context(), &mcp.StreamableClientTransport{Endpoint: host.URL + "/mcp/local"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close() //nolint:errcheck // test cleanup
+	if !strings.Contains(session.InitializeResult().Instructions, "skill_reference") {
+		t.Fatalf("instructions do not point to skill_reference: %q", session.InitializeResult().Instructions)
+	}
+	out, err := session.CallTool(t.Context(), &mcp.CallToolParams{Name: "skill_reference", Arguments: map[string]any{
+		"items": []map[string]any{{"skill": "kafka-debugging"}},
+	}})
+	if err != nil || out.IsError {
+		t.Fatalf("skill_reference on a read-only endpoint: %+v, %v", out, err)
+	}
+	encoded, err := json.Marshal(out.StructuredContent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"succeeded":1`) || !strings.Contains(string(encoded), "SKILL.md") {
+		t.Fatalf("unexpected skill_reference result: %s", encoded)
+	}
+}
+
 func TestMCPWriteFloors(t *testing.T) {
 	cfg := &config.Config{Clusters: map[string]*config.Cluster{
 		"stage": {Brokers: []string{"localhost:1"}},

@@ -541,6 +541,12 @@ ones) has no counterpart in the console, so it is off unless an endpoint
 switches it on with `tools: { transform_messages: true }`. Tools of a console
 feature that is switched off (`features`) are off for MCP too.
 
+`skill_reference` serves kafka-mcp's built-in Kafka debugging skill, so an
+agent needs no separate skill installation. It reads no Kafka data and is on
+for read-only endpoints too. The connection instructions tell the agent to
+call it first. `tools: { skill_reference: false }` removes the tool and that
+pointer.
+
 Tool definitions, batch results, mutation guards and audit logging come directly
 from `kafka-mcp/pkg/kafkamcp`, the only kafka-mcp package the console imports;
 they are not reimplemented here. The console builds one MCP server per
